@@ -442,6 +442,7 @@ var (
 	ErrRevisionWrongEnvironment = errors.New("revision belongs to a different environment")
 	ErrRollbackNotSuccessful    = errors.New("can only roll back to a successful deploy")
 	ErrRollbackRunGone          = errors.New("the deploy's run was garbage-collected; cannot roll back to it")
+	ErrRedeployNoCurrent        = errors.New("environment has no current deploy to redeploy")
 )
 
 // RollbackInput points the rollback at one past revision of an
@@ -450,6 +451,14 @@ type RollbackInput struct {
 	ProjectID     uuid.UUID
 	EnvironmentID uuid.UUID
 	RevisionID    uuid.UUID
+	TriggeredBy   string
+}
+
+// RedeployCurrentInput re-runs the environment's current successful deploy as a
+// normal deploy (not a rollback), on behalf of an actor.
+type RedeployCurrentInput struct {
+	ProjectID     uuid.UUID
+	EnvironmentID uuid.UUID
 	TriggeredBy   string
 }
 
@@ -501,18 +510,53 @@ func (s *Store) RollbackToRevision(ctx context.Context, in RollbackInput) (Rerun
 		TriggeredBy: in.TriggeredBy,
 		IsRollback:  true,
 	}, func(ctx context.Context, tx pgx.Tx) error {
-		return guardRollbackNotFrozen(ctx, tx, in.ProjectID, in.EnvironmentID)
+		return guardDeployRerunNotFrozen(ctx, tx, in.ProjectID, in.EnvironmentID)
 	})
 }
 
-// guardRollbackNotFrozen resolves the environment's NAME from its id inside the
-// rollback tx, then locks + freeze-checks on that name.
+// RedeployCurrent re-runs the job that produced the environment's current
+// successful deploy, without stamping deploy_rollback. The server resolves
+// "current" at request time so a stale UI cannot accidentally ask for an older
+// revision while calling it a redeploy.
+func (s *Store) RedeployCurrent(ctx context.Context, in RedeployCurrentInput) (RerunJobResult, error) {
+	owns, err := s.EnvironmentBelongsToProject(ctx, in.ProjectID, in.EnvironmentID)
+	if err != nil {
+		return RerunJobResult{}, err
+	}
+	if !owns {
+		return RerunJobResult{}, ErrEnvironmentNotFound
+	}
+
+	rev, found, err := s.CurrentDeployment(ctx, in.EnvironmentID)
+	if err != nil {
+		return RerunJobResult{}, err
+	}
+	if !found {
+		return RerunJobResult{}, ErrRedeployNoCurrent
+	}
+	if rev.JobRunID == nil {
+		return RerunJobResult{}, ErrRollbackRunGone
+	}
+
+	// Redeploying is still a deploy to this environment, so the same freeze
+	// guard as rollback runs inside RerunJob's transaction.
+	return s.rerunJobTx(ctx, RerunJobInput{
+		JobRunID:    *rev.JobRunID,
+		TriggeredBy: in.TriggeredBy,
+		IsRollback:  false,
+	}, func(ctx context.Context, tx pgx.Tx) error {
+		return guardDeployRerunNotFrozen(ctx, tx, in.ProjectID, in.EnvironmentID)
+	})
+}
+
+// guardDeployRerunNotFrozen resolves the environment's NAME from its id inside
+// the rerun tx, then locks + freeze-checks on that name.
 //
 // The name lookup is here rather than in the caller because it must see the same
 // snapshot as the check: freezes are name-keyed (environments rows are lazy and
 // can be deleted/recreated), so resolving the name outside the tx would risk
-// locking one name and rolling back to another.
-func guardRollbackNotFrozen(ctx context.Context, tx pgx.Tx, projectID, envID uuid.UUID) error {
+// locking one name and re-running a deploy against another.
+func guardDeployRerunNotFrozen(ctx context.Context, tx pgx.Tx, projectID, envID uuid.UUID) error {
 	var name string
 	err := tx.QueryRow(ctx,
 		`SELECT name FROM environments WHERE id = $1 AND project_id = $2`,
@@ -569,6 +613,17 @@ func (s *Store) ListDeploymentHistory(ctx context.Context, envID uuid.UUID, limi
 		out = append(out, revisionFromRow(r))
 	}
 	return out, nil
+}
+
+// CountDeploymentHistory returns the full timeline size for one environment.
+// The API calls this only when a limited page is full, so small histories avoid
+// the extra query.
+func (s *Store) CountDeploymentHistory(ctx context.Context, envID uuid.UUID) (int64, error) {
+	total, err := s.q.CountDeploymentHistory(ctx, pgUUID(envID))
+	if err != nil {
+		return 0, fmt.Errorf("store: count deployment history: %w", err)
+	}
+	return total, nil
 }
 
 // ErrDeploymentRevisionNotFound is returned when no revision matches the id.

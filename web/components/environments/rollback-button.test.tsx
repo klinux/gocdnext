@@ -2,11 +2,15 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RollbackButton } from "./rollback-button.client";
-import { rollbackEnvironment } from "@/server/actions/environments";
+import {
+  redeployCurrentEnvironment,
+  rollbackEnvironment,
+} from "@/server/actions/environments";
 
 const refresh = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh }) }));
 vi.mock("@/server/actions/environments", () => ({
+  redeployCurrentEnvironment: vi.fn(),
   rollbackEnvironment: vi.fn(),
 }));
 const toastSuccess = vi.fn();
@@ -63,5 +67,22 @@ describe("RollbackButton", () => {
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("can confirm a current-version redeploy without calling rollback", async () => {
+    vi.mocked(redeployCurrentEnvironment).mockResolvedValue({ ok: true });
+    render(<RollbackButton {...props} action="redeploy" trigger={<button type="button">Redeploy current</button>} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Redeploy current" }));
+    fireEvent.click(screen.getByRole("button", { name: "Redeploy" }));
+
+    await waitFor(() =>
+      expect(redeployCurrentEnvironment).toHaveBeenCalledWith({
+        slug: "acme",
+        environmentId: "env-1",
+      }),
+    );
+    expect(rollbackEnvironment).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalled();
   });
 });

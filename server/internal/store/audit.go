@@ -31,6 +31,7 @@ const (
 	AuditActionRunSuperseded      = "run.superseded"
 	AuditActionJobRerun           = "job.rerun"
 	AuditActionDeployRollback     = "deploy.rollback"
+	AuditActionDeployRedeploy     = "deploy.redeploy"
 	AuditActionDeployTargetSet    = "deploy_target.set"
 	AuditActionDeployTargetDelete = "deploy_target.delete"
 	AuditActionEnvironmentDelete  = "environment.delete"

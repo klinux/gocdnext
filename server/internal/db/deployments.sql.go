@@ -11,6 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countDeploymentHistory = `-- name: CountDeploymentHistory :one
+SELECT COUNT(*)::bigint
+FROM deployment_revisions
+WHERE environment_id = $1
+`
+
+// Count all timeline rows for one environment. Uses the same environment_id
+// index as ListDeploymentHistory and runs only when the returned page hits
+// its limit, so the common "small history" path avoids this second query.
+func (q *Queries) CountDeploymentHistory(ctx context.Context, environmentID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countDeploymentHistory, environmentID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createDeploymentRevision = `-- name: CreateDeploymentRevision :one
 INSERT INTO deployment_revisions
     (environment_id, run_id, job_run_id, attempt, version, is_rollback, deployed_by)
