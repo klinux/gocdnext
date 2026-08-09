@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.88.1 — 2026-08-09
+
+### Fixed
+
+- **Environment card layout aligned with the design handoff.** The card header
+  now lays out as flex — a `flex-row` utility couldn't override the shadcn
+  `CardHeader`'s `grid` base (only a `display`-group utility like `flex` evicts
+  it via `tailwind-merge`), so name / status / actions were misaligned. Name and
+  status now sit left, "View deploy" / native-watch / actions right. The native
+  deploy target became a compact pill beside the version (full detail in its
+  tooltip + `aria-label`), the frozen note moved below the version/meta, and the
+  explorer search field is compact instead of stretching the toolbar. (#247)
+
 ## v0.88.0 — 2026-08-09
 
 ### Added
