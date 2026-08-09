@@ -1,7 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { EnvironmentCard } from "./environment-card.client";
+import {
+  EnvironmentCard,
+  type EnvironmentCardHandle,
+} from "./environment-card.client";
 import type { DeployTarget, EnvironmentSummary } from "@/types/api";
 
 // The history rows mount RollbackButton, which calls useRouter and
@@ -244,6 +248,45 @@ describe("EnvironmentCard", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toContain(
       "/api/v1/projects/acme/environments/env-1/deployments",
     );
+  });
+
+  it("lazily fetches history when the page toolbar expands it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        deployments: [
+          {
+            id: "rev-controlled",
+            run_id: "run-controlled",
+            attempt: 0,
+            version: "1.40.controlled",
+            status: "success",
+            is_rollback: false,
+            created_at: "2026-06-12T09:58:00Z",
+            finished_at: "2026-06-12T10:00:00Z",
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ref = createRef<EnvironmentCardHandle>();
+
+    render(
+      <EnvironmentCard
+        ref={ref}
+        slug="acme"
+        environment={withCurrent}
+        apiBaseURL=""
+        canManage={false}
+        isAdmin={false}
+      />,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    act(() => ref.current?.setHistoryOpen(true));
+
+    await waitFor(() => expect(screen.getByText("1.40.controlled")).toBeTruthy());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a history fetch error and lets the operator retry", async () => {
