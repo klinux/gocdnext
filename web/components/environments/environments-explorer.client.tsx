@@ -137,7 +137,7 @@ export function EnvironmentsExplorer({
           <Input
             value={query}
             onValueChange={(next: string) => setQuery(next)}
-            placeholder="Filter environment or version..."
+            placeholder="Filter environment, version, or target..."
             aria-label="Search environments"
             className="h-9 pl-8 text-sm"
           />
