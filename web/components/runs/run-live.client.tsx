@@ -14,7 +14,12 @@ import { LiveDuration } from "@/components/shared/live-duration";
 import { RunActions } from "@/components/runs/run-actions.client";
 import { RunTabs } from "@/components/runs/run-tabs.client";
 import { PipelineCanvas } from "@/components/runs/pipeline-canvas.client";
-import { PullRequestBanner, UpstreamBanner } from "@/components/runs/run-banners";
+import {
+  PRHeadConfigBanner,
+  PullRequestBanner,
+  UpstreamBanner,
+  prHeadConfigFromCauseDetail,
+} from "@/components/runs/run-banners";
 import { isTerminalStatus, statusTone, type StatusTone } from "@/lib/status";
 import type { LogLine, RunDetail } from "@/types/api";
 
@@ -220,6 +225,7 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           pr_base_ref?: string;
         })
       : null;
+  const prHeadConfig = prHeadConfigFromCauseDetail(data.cause_detail);
 
   const live = !isTerminalStatus(data.status);
   const tone: StatusTone = statusTone(data.status);
@@ -331,6 +337,7 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
 
       {upstream ? <UpstreamBanner upstream={upstream} /> : null}
       {pullRequest ? <PullRequestBanner pr={pullRequest} /> : null}
+      {prHeadConfig ? <PRHeadConfigBanner config={prHeadConfig} /> : null}
 
       <PipelineCanvas
         stages={mergedData.stages}
@@ -372,4 +379,3 @@ const toneDotClasses: Record<StatusTone, string> = {
   skipped: "bg-muted-foreground/40",
   neutral: "bg-muted-foreground/40",
 };
-
