@@ -470,7 +470,8 @@ func TestListDeploymentHistoryPage_Keyset(t *testing.T) {
 	}{
 		{"1.0.old", 0, "2026-06-13T10:00:00Z"},
 		{"1.1.mid", 1, "2026-06-13T11:00:00Z"},
-		{"1.2.new", 2, "2026-06-13T12:00:00Z"},
+		{"1.2.tie-a", 2, "2026-06-13T12:00:00Z"},
+		{"1.2.tie-b", 3, "2026-06-13T12:00:00Z"},
 	}
 	for _, rev := range revs {
 		revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
@@ -487,24 +488,28 @@ func TestListDeploymentHistoryPage_Keyset(t *testing.T) {
 		}
 	}
 
-	first, err := s.ListDeploymentHistoryPage(ctx, envID, 2, nil)
+	first, err := s.ListDeploymentHistoryPage(ctx, envID, 1, nil)
 	if err != nil {
 		t.Fatalf("ListDeploymentHistoryPage first: %v", err)
 	}
-	if got := []string{first[0].Version, first[1].Version}; got[0] != "1.2.new" || got[1] != "1.1.mid" {
-		t.Fatalf("first page versions = %v, want [1.2.new 1.1.mid]", got)
+	if len(first) != 1 || !isTieVersion(first[0].Version) {
+		t.Fatalf("first page = %+v, want one newest tie revision", first)
 	}
 
 	next, err := s.ListDeploymentHistoryPage(ctx, envID, 2, &store.DeploymentHistoryCursor{
-		CreatedAt: first[1].CreatedAt,
-		ID:        first[1].ID,
+		CreatedAt: first[0].CreatedAt,
+		ID:        first[0].ID,
 	})
 	if err != nil {
 		t.Fatalf("ListDeploymentHistoryPage next: %v", err)
 	}
-	if len(next) != 1 || next[0].Version != "1.0.old" {
-		t.Fatalf("next page = %+v, want only 1.0.old", next)
+	if len(next) != 2 || !isTieVersion(next[0].Version) || next[0].Version == first[0].Version || next[1].Version != "1.1.mid" {
+		t.Fatalf("next page = %+v, want other tie revision then 1.1.mid", next)
 	}
+}
+
+func isTieVersion(version string) bool {
+	return version == "1.2.tie-a" || version == "1.2.tie-b"
 }
 
 func TestListEnvironmentsWithCurrent(t *testing.T) {
