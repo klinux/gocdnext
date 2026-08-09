@@ -82,6 +82,9 @@ export default async function EnvironmentsPage({
 
   // deploy_targets are 1:1 with an environment by name.
   const targetByEnv = new Map(targets.map((t) => [t.environment, t]));
+  const knownEnvironmentNames = environments.map(
+    (environment) => environment.name,
+  );
 
   return (
     <section className="space-y-6">
@@ -102,6 +105,7 @@ export default async function EnvironmentsPage({
                 a freeze must stop. */}
             <FreezeDialog
               slug={slug}
+              environmentSuggestions={knownEnvironmentNames}
               trigger={
                 <Button variant="outline" size="sm">
                   <Snowflake className="mr-1 size-4" aria-hidden /> Freeze an
