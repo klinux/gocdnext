@@ -9,17 +9,18 @@ import {
   List,
   RefreshCw,
   Search,
-  Tag,
 } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { FilterPill } from "@/components/projects/project-filter-pills";
+import { LabelFilterPills } from "@/components/projects/label-filter-pills.client";
 import { ProjectCard } from "@/components/projects/project-card";
 import { ProjectRow } from "@/components/projects/project-row";
 import { VisibleProjectsMenu } from "@/components/projects/visible-projects-menu.client";
 import {
   countBy,
+  labelText,
   providerLabel,
   statusLabel,
   statusToTone,
@@ -39,10 +40,6 @@ const VIEW_STORAGE_KEY = "gocdnext.projects.view";
 
 function labelID(label: { key: string; value: string }): string {
   return JSON.stringify([label.key, label.value]);
-}
-
-function labelText(key: string, value: string): string {
-  return value ? `${key}:${value}` : key;
 }
 
 // ProjectsExplorer owns the toolbar (search + filter pills + view
@@ -215,21 +212,11 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
         {labelCounts.length > 0 ? (
           <>
             <span className="mx-1 h-4 w-px bg-border" aria-hidden />
-            {labelCounts.map((chip) => {
-              return (
-                <FilterPill
-                  key={chip.id}
-                  label={labelText(chip.key, chip.value)}
-                  count={chip.count}
-                  active={labelFilter === chip.id}
-                  onClick={() =>
-                    setLabelFilter(labelFilter === chip.id ? null : chip.id)
-                  }
-                  tone="neutral"
-                  icon={<Tag className="size-3" />}
-                />
-              );
-            })}
+            <LabelFilterPills
+              labels={labelCounts}
+              selected={labelFilter}
+              onSelect={setLabelFilter}
+            />
           </>
         ) : null}
       </div>

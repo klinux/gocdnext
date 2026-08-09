@@ -47,6 +47,12 @@ export function providerLabel(p: ProjectProvider): string {
   return p.charAt(0).toUpperCase() + p.slice(1);
 }
 
+// labelText renders a project label tuple as its chip caption:
+// "key:value", or just "key" when the value is empty.
+export function labelText(key: string, value: string): string {
+  return value ? `${key}:${value}` : key;
+}
+
 // Shared style tables — card-status pills, dots, active filter pill
 // variants. Pulled out so both grid and list views reach for the
 // same tokens and stay in sync visually.
