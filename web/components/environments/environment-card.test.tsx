@@ -6,6 +6,7 @@ import {
   EnvironmentCard,
   type EnvironmentCardHandle,
 } from "./environment-card.client";
+import { redeployCurrentEnvironment } from "@/server/actions/environments";
 import type { DeployTarget, EnvironmentSummary } from "@/types/api";
 
 // The history rows mount RollbackButton, which calls useRouter and
@@ -16,6 +17,7 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/server/actions/environments", () => ({
   rollbackEnvironment: vi.fn(),
+  redeployCurrentEnvironment: vi.fn(),
   setDeployTarget: vi.fn(),
   deleteDeployTarget: vi.fn(),
   deleteEnvironment: vi.fn(),
@@ -147,6 +149,55 @@ describe("EnvironmentCard", () => {
     expect(screen.getByText("Register native deploy target")).toBeTruthy();
   });
 
+  it("offers Redeploy current version in the actions menu for managers", async () => {
+    vi.mocked(redeployCurrentEnvironment).mockResolvedValue({ ok: true });
+    render(
+      <EnvironmentCard
+        slug="acme"
+        environment={withCurrent}
+        canManage
+        isAdmin={false}
+        apiBaseURL=""
+      />,
+    );
+
+    openEnvironmentActions();
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: /Redeploy current version/i }),
+    );
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByText(/Redeploy production at/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Redeploy" }));
+    await waitFor(() =>
+      expect(redeployCurrentEnvironment).toHaveBeenCalledWith({
+        slug: "acme",
+        environmentId: "env-1",
+      }),
+    );
+  });
+
+  it("hides Redeploy current version when the current deploy's run is gone", () => {
+    const runGone: EnvironmentSummary = {
+      ...withCurrent,
+      current: { ...withCurrent.current!, run_id: undefined },
+    };
+    render(
+      <EnvironmentCard
+        slug="acme"
+        environment={runGone}
+        canManage
+        isAdmin={false}
+        apiBaseURL=""
+      />,
+    );
+
+    openEnvironmentActions();
+    expect(
+      screen.queryByRole("menuitem", { name: /Redeploy current version/i }),
+    ).toBeNull();
+  });
+
   it("hides management affordances from non-managers", () => {
     render(
       <EnvironmentCard
@@ -225,6 +276,7 @@ describe("EnvironmentCard", () => {
             finished_at: "2026-06-12T10:02:00Z",
           },
         ],
+        total: 12,
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -243,7 +295,7 @@ describe("EnvironmentCard", () => {
     expect(scroll?.className).toContain("max-h-[196px]");
     expect(scroll?.className).toContain("overflow-y-auto");
     expect(screen.getByText("current")).toBeTruthy();
-    expect(screen.getByText("Showing 2 latest deployments")).toBeTruthy();
+    expect(screen.getByText("Showing 2 of 12 deployments")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toContain(
       "/api/v1/projects/acme/environments/env-1/deployments",

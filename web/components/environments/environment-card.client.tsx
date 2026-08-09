@@ -107,7 +107,7 @@ const HISTORY_SCROLL_CLASS =
 type HistoryState =
   | { phase: "idle" }
   | { phase: "loading" }
-  | { phase: "loaded"; rows: DeploymentRecord[] }
+  | { phase: "loaded"; rows: DeploymentRecord[]; total: number }
   | { phase: "error"; message: string };
 
 export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
@@ -154,7 +154,11 @@ export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
         throw new Error(`server returned ${res.status}`);
       }
       const data = (await res.json()) as DeploymentsList;
-      setHistory({ phase: "loaded", rows: data.deployments });
+      setHistory({
+        phase: "loaded",
+        rows: data.deployments,
+        total: data.total ?? data.deployments.length,
+      });
     } catch (err) {
       setHistory({
         phase: "error",
@@ -318,11 +322,16 @@ function EnvironmentActionsMenu({
 }) {
   const [targetDialog, setTargetDialog] = useState<"add" | "edit" | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [redeployOpen, setRedeployOpen] = useState(false);
   const showTargetAction = canManage;
+  const current = environment.current;
+  const showRedeploy =
+    canManage && hasRow && environmentId !== undefined && current?.run_id !== undefined;
+  const redeployEnvironmentId = showRedeploy ? environmentId : undefined;
   const removableEnvironmentId = isAdmin && hasRow ? environmentId : undefined;
   const showRemove = removableEnvironmentId !== undefined;
 
-  if (!showTargetAction && !showRemove) return null;
+  if (!showTargetAction && !showRedeploy && !showRemove) return null;
 
   return (
     <>
@@ -356,7 +365,18 @@ function EnvironmentActionsMenu({
               {deployTarget ? "Edit native target" : "Add native target"}
             </DropdownMenuItem>
           ) : null}
-          {showTargetAction && showRemove ? <DropdownMenuSeparator /> : null}
+          {showRedeploy ? (
+            <DropdownMenuItem
+              className="whitespace-nowrap"
+              onClick={() => setRedeployOpen(true)}
+            >
+              <RefreshCw className="size-3.5" aria-hidden />
+              Redeploy current version
+            </DropdownMenuItem>
+          ) : null}
+          {(showTargetAction || showRedeploy) && showRemove ? (
+            <DropdownMenuSeparator />
+          ) : null}
           {showRemove ? (
             <DropdownMenuItem
               variant="destructive"
@@ -384,6 +404,18 @@ function EnvironmentActionsMenu({
           presetEnvironment={environment.name}
           open
           onOpenChange={(next) => setTargetDialog(next ? "add" : null)}
+        />
+      ) : null}
+      {showRedeploy && current && redeployEnvironmentId ? (
+        <RollbackButton
+          action="redeploy"
+          slug={slug}
+          environmentId={redeployEnvironmentId}
+          environmentName={environment.name}
+          version={current.version}
+          open={redeployOpen}
+          onOpenChange={setRedeployOpen}
+          trigger={null}
         />
       ) : null}
       {showRemove ? (
@@ -657,8 +689,8 @@ function DeployHistory({
       {state.phase === "loaded" && state.rows.length > 0 ? (
         <div className="flex items-center justify-between border-t border-border/60 bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
           <span>
-            Showing {state.rows.length} latest deployment
-            {state.rows.length === 1 ? "" : "s"}
+            Showing {state.rows.length} of {state.total} deployment
+            {state.total === 1 ? "" : "s"}
           </span>
         </div>
       ) : null}

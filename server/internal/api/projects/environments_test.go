@@ -29,6 +29,7 @@ func environmentsRouter(t *testing.T) (http.Handler, *store.Store, *pgxpool.Pool
 	r.Get("/api/v1/projects/{slug}/environments", h.ListEnvironments)
 	r.Get("/api/v1/projects/{slug}/environments/{envID}/deployments", h.ListEnvironmentDeployments)
 	r.Post("/api/v1/projects/{slug}/environments/{envID}/rollback", h.RollbackEnvironment)
+	r.Post("/api/v1/projects/{slug}/environments/{envID}/redeploy", h.RedeployCurrentEnvironment)
 	r.Delete("/api/v1/projects/{slug}/environments/{envID}", h.DeleteEnvironment)
 	return r, s, pool
 }
@@ -52,6 +53,15 @@ func postRollback(t *testing.T, router http.Handler, slug, envID, toRevision str
 	body := strings.NewReader(`{"to_revision_id":"` + toRevision + `"}`)
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/projects/"+slug+"/environments/"+envID+"/rollback", body)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	return rr.Code
+}
+
+func postRedeploy(t *testing.T, router http.Handler, slug, envID string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/projects/"+slug+"/environments/"+envID+"/redeploy", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 	return rr.Code
@@ -229,6 +239,46 @@ func TestListEnvironmentDeployments_CrossProject404(t *testing.T) {
 	}
 }
 
+func TestListEnvironmentDeployments_IncludesTotal(t *testing.T) {
+	router, s, _ := environmentsRouter(t)
+	ctx := t.Context()
+	projectID := seedProjectForEnv(t, s, "history-total")
+	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
+
+	for _, version := range []string{"1.0.0", "1.1.0", "1.2.0"} {
+		if _, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+			EnvironmentID: envID,
+			Version:       version,
+		}); err != nil {
+			t.Fatalf("create revision %s: %v", version, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/projects/history-total/environments/"+envID.String()+"/deployments?limit=2", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Deployments []struct {
+			Version string `json:"version"`
+		} `json:"deployments"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Deployments) != 2 {
+		t.Fatalf("deployments len = %d, want limited page of 2", len(resp.Deployments))
+	}
+	if resp.Total != 3 {
+		t.Fatalf("total = %d, want full history count 3", resp.Total)
+	}
+}
+
 func TestRollbackEnvironment_ErrorMapping(t *testing.T) {
 	router, s, pool := environmentsRouter(t)
 	ctx := t.Context()
@@ -262,6 +312,30 @@ func TestRollbackEnvironment_ErrorMapping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := postRollback(t, router, "demo", tt.envID, tt.rev); got != tt.want {
+				t.Fatalf("status = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRedeployCurrentEnvironment_ErrorMapping(t *testing.T) {
+	router, s, _ := environmentsRouter(t)
+	ctx := t.Context()
+	projectID := seedProjectForEnv(t, s, "redeploy-demo")
+	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
+
+	tests := []struct {
+		name  string
+		envID string
+		want  int
+	}{
+		{"no current deploy", envID.String(), http.StatusUnprocessableEntity},
+		{"unknown environment", uuid.NewString(), http.StatusNotFound},
+		{"malformed environment id", "not-a-uuid", http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := postRedeploy(t, router, "redeploy-demo", tt.envID); got != tt.want {
 				t.Fatalf("status = %d, want %d", got, tt.want)
 			}
 		})

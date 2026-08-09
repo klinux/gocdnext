@@ -235,6 +235,10 @@ type Querier interface {
 	// Application cluster OR its Rollout cluster) can't be deleted — also enforced by
 	// both FKs' ON DELETE RESTRICT; this gives the friendly message.
 	CountDeployTargetsForCluster(ctx context.Context, cluster string) (int64, error)
+	// Count all timeline rows for one environment. Uses the same environment_id
+	// index as ListDeploymentHistory and runs only when the returned page hits
+	// its limit, so the common "small history" path avoids this second query.
+	CountDeploymentHistory(ctx context.Context, environmentID pgtype.UUID) (int64, error)
 	// Global backlog for autoscaling (#185): job_runs that can be handed to an agent
 	// RIGHT NOW — queued, unassigned, not an approval gate, in their run's active
 	// (lowest-ordinal non-terminal) stage, AND whose run is not held back by the

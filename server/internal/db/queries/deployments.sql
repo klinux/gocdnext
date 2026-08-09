@@ -201,3 +201,11 @@ FROM deployment_revisions
 WHERE environment_id = $1
 ORDER BY created_at DESC
 LIMIT $2;
+
+-- name: CountDeploymentHistory :one
+-- Count all timeline rows for one environment. Uses the same environment_id
+-- index as ListDeploymentHistory and runs only when the returned page hits
+-- its limit, so the common "small history" path avoids this second query.
+SELECT COUNT(*)::bigint
+FROM deployment_revisions
+WHERE environment_id = $1;
