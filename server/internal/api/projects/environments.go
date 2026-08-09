@@ -70,6 +70,7 @@ type environmentsListResponse struct {
 
 type deploymentsListResponse struct {
 	Deployments []deploymentDTO `json:"deployments"`
+	Total       int64           `json:"total"`
 }
 
 // deploymentHistoryLimit caps the timeline page. Generous: the
@@ -208,12 +209,21 @@ func (h *Handler) ListEnvironmentDeployments(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	total := int64(len(revs))
+	if len(revs) == limit {
+		total, err = h.store.CountDeploymentHistory(r.Context(), envID)
+		if err != nil {
+			h.log.Error("count deployments", "slug", slug, "env_id", envID, "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
 	out := make([]deploymentDTO, 0, len(revs))
 	for _, rev := range revs {
 		out = append(out, toDeploymentDTO(rev))
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(deploymentsListResponse{Deployments: out})
+	_ = json.NewEncoder(w).Encode(deploymentsListResponse{Deployments: out, Total: total})
 }
 
 type rollbackRequest struct {
@@ -297,6 +307,68 @@ func (h *Handler) RollbackEnvironment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the deploy job is still active — wait for it to finish", http.StatusConflict)
 	default:
 		h.log.Error("rollback", "slug", slug, "env_id", envID, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
+// RedeployCurrentEnvironment handles
+// POST /api/v1/projects/{slug}/environments/{envID}/redeploy. The server
+// resolves the current successful deployment at request time and re-runs its
+// deploy job as a normal redeploy, not as a rollback. Gated to maintainer+ at
+// the router. Returns 202 (the re-dispatch is async).
+func (h *Handler) RedeployCurrentEnvironment(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	envID, err := uuid.Parse(chi.URLParam(r, "envID"))
+	if err != nil {
+		http.Error(w, "malformed environment id", http.StatusBadRequest)
+		return
+	}
+
+	detail, err := h.store.GetProjectDetail(r.Context(), slug, 1)
+	if err != nil {
+		if errors.Is(err, store.ErrProjectNotFound) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		}
+		h.log.Error("redeploy: load project", "slug", slug, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	triggeredBy := ""
+	if u, ok := authapi.UserFromContext(r.Context()); ok {
+		triggeredBy = u.ID.String()
+	}
+
+	res, err := h.store.RedeployCurrent(r.Context(), store.RedeployCurrentInput{
+		ProjectID:     detail.Project.ID,
+		EnvironmentID: envID,
+		TriggeredBy:   triggeredBy,
+	})
+	switch {
+	case err == nil:
+		audit.Emit(r.Context(), h.log, h.store,
+			store.AuditActionDeployRedeploy, "environment", envID.String(),
+			map[string]any{"slug": slug, "rerun_job_run_id": res.JobRunID.String()})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_run_id": res.JobRunID.String(),
+			"run_id":     res.RunID.String(),
+			"attempt":    res.Attempt,
+		})
+	case errors.Is(err, store.ErrEnvironmentNotFound):
+		http.Error(w, "environment not found", http.StatusNotFound)
+	case errors.Is(err, store.ErrRedeployNoCurrent):
+		http.Error(w, "environment has no current deploy to redeploy", http.StatusUnprocessableEntity)
+	case errors.Is(err, store.ErrRollbackRunGone):
+		http.Error(w, "the current deploy's run was garbage-collected; cannot redeploy it", http.StatusUnprocessableEntity)
+	case errors.Is(err, store.ErrEnvironmentFrozen):
+		http.Error(w, "this environment is frozen — lift the freeze before redeploying", http.StatusConflict)
+	case errors.Is(err, store.ErrJobRunActive):
+		http.Error(w, "the deploy job is still active — wait for it to finish", http.StatusConflict)
+	default:
+		h.log.Error("redeploy", "slug", slug, "env_id", envID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
 }

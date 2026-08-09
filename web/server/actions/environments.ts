@@ -15,6 +15,11 @@ const rollbackSchema = z.object({
   toRevisionId: z.string().min(1),
 });
 
+const redeployCurrentSchema = z.object({
+  slug: z.string().min(1),
+  environmentId: z.string().min(1),
+});
+
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
 // rollbackEnvironment re-runs the deploy job of a past revision (#39
@@ -51,6 +56,46 @@ export async function rollbackEnvironment(
       return {
         ok: false,
         error: `server ${res.status}: ${body.trim().slice(0, 200) || "rollback failed"}`,
+      };
+    }
+    revalidatePath(`/projects/${parsed.data.slug}/environments`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// redeployCurrentEnvironment re-runs the environment's current successful
+// deploy as a normal deploy. The server resolves "current" at request time and
+// refuses frozen/no-current/GC'd-run cases.
+export async function redeployCurrentEnvironment(
+  input: z.infer<typeof redeployCurrentSchema>,
+): Promise<ActionResult> {
+  const parsed = redeployCurrentSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/environments/${encodeURIComponent(parsed.data.environmentId)}/redeploy`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        error: `server ${res.status}: ${body.trim().slice(0, 200) || "redeploy failed"}`,
       };
     }
     revalidatePath(`/projects/${parsed.data.slug}/environments`);

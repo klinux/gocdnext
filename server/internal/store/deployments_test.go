@@ -484,6 +484,35 @@ func TestRollbackToRevision_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRedeployCurrent_HappyPath(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	runID, _, _, jobID, _ := seedRunningJob(t, pool)
+	projectID := projectIDForRun(t, pool, runID)
+	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
+
+	rev, _ := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "1.42.current",
+	})
+	mustFinalizeAt(t, pool, rev, "success", "2026-06-13T10:00:00Z")
+	mustMarkJobTerminal(t, pool, jobID) // RerunJob requires a terminal row.
+
+	res, err := s.RedeployCurrent(ctx, store.RedeployCurrentInput{
+		ProjectID: projectID, EnvironmentID: envID, TriggeredBy: "user:alice",
+	})
+	if err != nil {
+		t.Fatalf("RedeployCurrent: %v", err)
+	}
+	if res.JobRunID != jobID {
+		t.Fatalf("re-ran job %s, want current deploy job %s", res.JobRunID, jobID)
+	}
+	if deployRollbackOf(t, s, runID, jobID) {
+		t.Fatal("redeploy current stamped deploy_rollback; only rollback should do that")
+	}
+}
+
 func TestRollbackToRevision_Rejections(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

@@ -805,6 +805,7 @@ func main() {
 		p.Delete("/api/v1/projects/{slug}/crons/{id}", projectsHandler.DeleteProjectCron)
 		p.Post("/api/v1/projects/{slug}/run-all", projectsHandler.RunAllPipelines)
 		p.Post("/api/v1/projects/{slug}/environments/{envID}/rollback", projectsHandler.RollbackEnvironment)
+		p.Post("/api/v1/projects/{slug}/environments/{envID}/redeploy", projectsHandler.RedeployCurrentEnvironment)
 		// Environment change-freeze (#202). Keyed by NAME, not environments.id:
 		// environment rows are lazy (created at the first deploy), so a maintainer
 		// must be able to freeze `production` BEFORE anything has ever shipped
