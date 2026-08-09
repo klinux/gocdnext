@@ -8,6 +8,48 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.88.0 — 2026-08-09
+
+### Added
+
+- **Environment deploy history, counts, and redeploy.** Project environment
+  cards gained a full deploy timeline. Each environment now persists a
+  `total_deploys` counter — maintained transactionally on the create/cleanup of
+  every deploy revision (single-statement CTEs, `GREATEST(…,0)` floor,
+  replay-safe), so cards render counts with no `COUNT(*)` probe. A dedicated
+  **full history page** paginates the timeline with a keyset `(created_at, id)`
+  cursor, which stays deterministic even when two deploys share a timestamp. And
+  a **"Redeploy current version"** action re-runs the environment's current
+  deploy job: the server resolves "current" at request time (a stale UI can't
+  redeploy an older revision), refuses frozen environments inside the same
+  transaction as rollback, and records the result as a normal deploy — not a
+  rollback. History views show "showing N of TOTAL". (#244, #246, #243)
+
+- **Environment explorer toolbar.** Search environments by name / version /
+  target, filter by All / Active / Frozen / No-deploy (each with a live count),
+  and expand-all history — all client-side over the already-loaded set. (#242)
+
+- **Environment card actions menu.** Per-environment actions (set target, remove,
+  redeploy) collapse into a `⋯` menu so the card stays compact; its dialogs
+  render outside the menu to survive the menu unmounting. (#241)
+
+- **Freeze dialog suggests environments.** The change-freeze dialog now
+  autocompletes known environment names instead of offering a blank
+  free-text field. (#239)
+
+- **PR-head config provenance on runs.** A run driven by a PR head's own
+  ephemeral `.gocdnext` config now carries a banner making that provenance
+  explicit on the run detail. (#238)
+
+- **Searchable project label filter.** When a project carries many labels
+  (e.g. `team:*`), the filter collapses to the first few pills plus a searchable
+  "+N" menu instead of overflowing the toolbar. (#237)
+
+### Fixed
+
+- **Stable environment card history layout.** Expanding the history region no
+  longer shifts the card's height as rows load. (#240)
+
 ## v0.87.0 — 2026-08-08
 
 ### Added
