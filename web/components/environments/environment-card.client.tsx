@@ -1,6 +1,13 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
+import {
+  forwardRef,
+  type ReactNode,
+  useCallback,
+  useImperativeHandle,
+  useState,
+  useTransition,
+} from "react";
 import Link from "next/link";
 import type { Route } from "next";
 import {
@@ -17,7 +24,6 @@ import {
   Snowflake,
   Trash2,
 } from "lucide-react";
-import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
@@ -73,6 +79,12 @@ type Props = {
   // Browser-facing API base; "" = same-origin. Threaded from the RSC
   // page so the lazy history fetch hits the right host.
   apiBaseURL: string;
+  // Optional notification for page-level controls such as "expand histories".
+  onHistoryOpenChange?: (open: boolean) => void;
+};
+
+export type EnvironmentCardHandle = {
+  setHistoryOpen: (open: boolean) => void;
 };
 
 // Left-border accent by the current deploy's tone — mirrors
@@ -98,14 +110,19 @@ type HistoryState =
   | { phase: "loaded"; rows: DeploymentRecord[] }
   | { phase: "error"; message: string };
 
-export function EnvironmentCard({
-  slug,
-  environment,
-  deployTarget,
-  canManage,
-  isAdmin,
-  apiBaseURL,
-}: Props) {
+export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
+  function EnvironmentCard(
+    {
+      slug,
+      environment,
+      deployTarget,
+      canManage,
+      isAdmin,
+      apiBaseURL,
+      onHistoryOpenChange,
+    },
+    ref,
+  ) {
   const { current } = environment;
   const accentTone: StatusTone = environment.frozen
     ? "warning"
@@ -121,7 +138,7 @@ export function EnvironmentCard({
   const environmentId = environment.id;
   const hasRow = environment.has_environment_row && environmentId !== undefined;
 
-  async function loadHistory() {
+  const loadHistory = useCallback(async () => {
     if (!hasRow) return;
     setHistory({ phase: "loading" });
     try {
@@ -144,19 +161,30 @@ export function EnvironmentCard({
         message: err instanceof Error ? err.message : "failed to load history",
       });
     }
-  }
+  }, [apiBaseURL, environmentId, hasRow, slug]);
+
+  const setHistoryOpenState = useCallback(
+    (next: boolean) => {
+      if (!hasRow) return;
+      setOpen(next);
+      onHistoryOpenChange?.(next);
+      if (next && (history.phase === "idle" || history.phase === "error")) {
+        void loadHistory();
+      }
+    },
+    [hasRow, history.phase, loadHistory, onHistoryOpenChange],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setHistoryOpen: setHistoryOpenState,
+    }),
+    [setHistoryOpenState],
+  );
 
   function toggleHistory() {
-    if (!hasRow) return;
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    setOpen(true);
-    // Fetch once, then keep the result while toggling open/closed.
-    if (history.phase === "idle" || history.phase === "error") {
-      void loadHistory();
-    }
+    setHistoryOpenState(!open);
   }
 
   return (
@@ -268,7 +296,8 @@ export function EnvironmentCard({
       ) : null}
     </Card>
   );
-}
+  },
+);
 
 function EnvironmentActionsMenu({
   slug,

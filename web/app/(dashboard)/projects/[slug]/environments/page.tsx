@@ -3,9 +3,8 @@ import type { Metadata } from "next";
 import { Plus, Rocket, Snowflake } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { EnvironmentCard } from "@/components/environments/environment-card.client";
 import { DeployTargetDialog } from "@/components/environments/deploy-target-dialog.client";
-import { DeployWatchesProvider } from "@/components/environments/deploy-watches-provider.client";
+import { EnvironmentsExplorer } from "@/components/environments/environments-explorer.client";
 import { FreezeDialog } from "@/components/environments/freeze-dialog.client";
 import { env } from "@/lib/env";
 import { type AuthState, resolveAuthState } from "@/server/queries/auth";
@@ -80,8 +79,6 @@ export default async function EnvironmentsPage({
     auth.mode === "disabled" ||
     (auth.mode === "authenticated" && auth.user.role === "admin");
 
-  // deploy_targets are 1:1 with an environment by name.
-  const targetByEnv = new Map(targets.map((t) => [t.environment, t]));
   const knownEnvironmentNames = environments.map(
     (environment) => environment.name,
   );
@@ -129,31 +126,14 @@ export default async function EnvironmentsPage({
       {environments.length === 0 ? (
         <EmptyState />
       ) : (
-        // Client provider polls this project's in-flight native deploys once and feeds
-        // each card its live chip; the cards stay RSC-composed here.
-        <DeployWatchesProvider
+        <EnvironmentsExplorer
           slug={slug}
+          environments={environments}
+          targets={targets}
+          canManage={canManage}
+          isAdmin={isAdmin}
           apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
-        >
-          <div className="grid grid-cols-1 items-start gap-4 min-[760px]:grid-cols-[repeat(auto-fill,minmax(400px,1fr))]">
-            {environments.map((e) => (
-              <EnvironmentCard
-                // Keyed by NAME, never by id: `id` is absent on a freeze-only
-                // row (#202), so two orphan freezes would share an `undefined`
-                // key and React would carry one card's local state (open
-                // history, pending state) onto the other after an unfreeze.
-                // Name is unique per project by construction.
-                key={e.name}
-                slug={slug}
-                environment={e}
-                deployTarget={targetByEnv.get(e.name)}
-                canManage={canManage}
-                isAdmin={isAdmin}
-                apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
-              />
-            ))}
-          </div>
-        </DeployWatchesProvider>
+        />
       )}
     </section>
   );
