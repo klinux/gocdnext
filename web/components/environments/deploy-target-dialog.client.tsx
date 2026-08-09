@@ -41,7 +41,9 @@ const SYNC_MODE_LABELS: Record<string, string> = {
 
 type Props = {
   slug: string;
-  trigger: ReactNode;
+  trigger?: ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   // When set, the dialog edits this existing target (fields pre-filled, the
   // environment name locked — it's the upsert key). Absent → create mode.
   initial?: DeployTarget;
@@ -54,14 +56,17 @@ type Props = {
 export function DeployTargetDialog({
   slug,
   trigger,
+  open: controlledOpen,
+  onOpenChange,
   initial,
   presetEnvironment,
 }: Props) {
   const router = useRouter();
   const isEdit = initial !== undefined;
   const envLocked = isEdit || presetEnvironment !== undefined;
+  const isOpenControlled = controlledOpen !== undefined;
 
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
   const [environment, setEnvironment] = useState(
     initial?.environment ?? presetEnvironment ?? "",
   );
@@ -93,13 +98,19 @@ export function DeployTargetDialog({
     setConfirmingRemove(false);
   };
 
+  const setDialogOpen = (next: boolean) => {
+    if (isOpenControlled) {
+      onOpenChange?.(next);
+    } else {
+      setInternalOpen(next);
+    }
+    if (!next) reset();
+  };
+
   // Programmatic close (a successful submit/remove) doesn't fire the Dialog's
   // onOpenChange, so reset explicitly here — otherwise reopening "Register"
   // would show the previously-entered values.
-  const closeAndReset = () => {
-    setOpen(false);
-    reset();
-  };
+  const closeAndReset = () => setDialogOpen(false);
 
   const submit = () => {
     const candidate = {
@@ -156,13 +167,10 @@ export function DeployTargetDialog({
 
   return (
     <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) reset();
-      }}
+      open={controlledOpen ?? internalOpen}
+      onOpenChange={setDialogOpen}
     >
-      <DialogTrigger render={trigger as React.ReactElement} />
+      {trigger ? <DialogTrigger render={trigger as React.ReactElement} /> : null}
       <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
