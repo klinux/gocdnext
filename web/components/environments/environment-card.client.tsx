@@ -8,12 +8,14 @@ import {
   Eye,
   GitBranch,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Plus,
   RefreshCw,
   Rocket,
   RotateCcw,
   Snowflake,
+  Trash2,
 } from "lucide-react";
 import { useTransition } from "react";
 import { useRouter } from "next/navigation";
@@ -29,6 +31,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RollbackButton } from "@/components/environments/rollback-button.client";
@@ -176,6 +185,15 @@ export function EnvironmentCard({
               no deploys yet
             </span>
           )}
+          <EnvironmentActionsMenu
+            slug={slug}
+            environment={environment}
+            deployTarget={deployTarget}
+            canManage={canManage}
+            isAdmin={isAdmin}
+            hasRow={hasRow}
+            environmentId={environmentId}
+          />
         </div>
       </CardHeader>
 
@@ -208,27 +226,7 @@ export function EnvironmentCard({
           <RolloutGatePrompt slug={slug} watch={watch} canManage={canManage} />
         ) : null}
 
-        {deployTarget ? (
-          <NativeTargetRow
-            slug={slug}
-            target={deployTarget}
-            canManage={canManage}
-          />
-        ) : canManage ? (
-          <DeployTargetDialog
-            slug={slug}
-            presetEnvironment={environment.name}
-            trigger={
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 w-full justify-start border-dashed text-xs text-muted-foreground hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
-              >
-                <Plus className="mr-1 size-3.5" aria-hidden /> Add native target
-              </Button>
-            }
-          />
-        ) : null}
+        {deployTarget ? <NativeTargetRow target={deployTarget} /> : null}
       </CardContent>
 
       <CardFooter className="mt-auto justify-between gap-2 rounded-none border-t border-border/60 bg-muted/40 px-4 py-2">
@@ -255,13 +253,6 @@ export function EnvironmentCard({
           {canManage ? (
             <FreezeControl slug={slug} environment={environment} />
           ) : null}
-          {isAdmin && hasRow ? (
-            <RemoveEnvironment
-              slug={slug}
-              environmentId={environmentId}
-              environmentName={environment.name}
-            />
-          ) : null}
         </span>
       </CardFooter>
 
@@ -276,6 +267,106 @@ export function EnvironmentCard({
         />
       ) : null}
     </Card>
+  );
+}
+
+function EnvironmentActionsMenu({
+  slug,
+  environment,
+  deployTarget,
+  canManage,
+  isAdmin,
+  hasRow,
+  environmentId,
+}: {
+  slug: string;
+  environment: EnvironmentSummary;
+  deployTarget?: DeployTarget;
+  canManage: boolean;
+  isAdmin: boolean;
+  hasRow: boolean;
+  environmentId?: string;
+}) {
+  const [targetDialog, setTargetDialog] = useState<"add" | "edit" | null>(null);
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const showTargetAction = canManage;
+  const removableEnvironmentId = isAdmin && hasRow ? environmentId : undefined;
+  const showRemove = removableEnvironmentId !== undefined;
+
+  if (!showTargetAction && !showRemove) return null;
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Environment actions for ${environment.name}`}
+              className="-mr-1 size-7 text-muted-foreground"
+            >
+              <MoreHorizontal className="size-4" aria-hidden />
+            </Button>
+          }
+        />
+        <DropdownMenuContent align="end" className="min-w-56">
+          <div className="px-1.5 py-1 text-xs font-medium text-muted-foreground">
+            Environment
+          </div>
+          {showTargetAction ? (
+            <DropdownMenuItem
+              className="whitespace-nowrap"
+              onClick={() => setTargetDialog(deployTarget ? "edit" : "add")}
+            >
+              {deployTarget ? (
+                <Pencil className="size-3.5" aria-hidden />
+              ) : (
+                <Plus className="size-3.5" aria-hidden />
+              )}
+              {deployTarget ? "Edit native target" : "Add native target"}
+            </DropdownMenuItem>
+          ) : null}
+          {showTargetAction && showRemove ? <DropdownMenuSeparator /> : null}
+          {showRemove ? (
+            <DropdownMenuItem
+              variant="destructive"
+              className="whitespace-nowrap"
+              onClick={() => setRemoveOpen(true)}
+            >
+              <Trash2 className="size-3.5" aria-hidden />
+              Remove environment
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {targetDialog === "edit" && deployTarget ? (
+        <DeployTargetDialog
+          slug={slug}
+          initial={deployTarget}
+          open
+          onOpenChange={(next) => setTargetDialog(next ? "edit" : null)}
+        />
+      ) : null}
+      {targetDialog === "add" ? (
+        <DeployTargetDialog
+          slug={slug}
+          presetEnvironment={environment.name}
+          open
+          onOpenChange={(next) => setTargetDialog(next ? "add" : null)}
+        />
+      ) : null}
+      {showRemove ? (
+        <RemoveEnvironment
+          slug={slug}
+          environmentId={removableEnvironmentId}
+          environmentName={environment.name}
+          open={removeOpen}
+          onOpenChange={setRemoveOpen}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -367,17 +458,9 @@ const PROVIDER_LABELS: Record<string, string> = { argocd: "ArgoCD" };
 
 // The registered native provider target for this env. Maintainer-only (the parent
 // only passes it when the maintainer-gated fetch succeeded). Config, not live state —
-// live sync/degraded status lands in a later increment via a polled endpoint. When
-// the viewer may manage targets, an inline Edit opens the dialog (edit + remove).
-function NativeTargetRow({
-  slug,
-  target,
-  canManage,
-}: {
-  slug: string;
-  target: DeployTarget;
-  canManage: boolean;
-}) {
+// live sync/degraded status lands in a later increment via a polled endpoint. Edit
+// lives in the card actions menu so the target row stays informational.
+function NativeTargetRow({ target }: { target: DeployTarget }) {
   const SyncIcon = target.sync_mode === "observe" ? Eye : RefreshCw;
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
@@ -406,22 +489,6 @@ function NativeTargetRow({
             rollouts
           </span>
         </>
-      ) : null}
-      {canManage ? (
-        <DeployTargetDialog
-          slug={slug}
-          initial={target}
-          trigger={
-            <Button
-              variant="ghost"
-              size="icon"
-              className="ml-auto size-6 text-muted-foreground"
-              aria-label={`Edit native target for ${target.environment}`}
-            >
-              <Pencil className="size-3.5" aria-hidden />
-            </Button>
-          }
-        />
       ) : null}
     </div>
   );
