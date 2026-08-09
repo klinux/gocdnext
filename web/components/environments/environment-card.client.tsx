@@ -13,8 +13,7 @@ import type { Route } from "next";
 import {
   ArrowRight,
   ChevronDown,
-  Eye,
-  GitBranch,
+  ExternalLink,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -199,25 +198,17 @@ export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
         borderToneClasses[accentTone],
       )}
     >
-      <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 px-4 pb-0 pt-4">
-        <CardTitle className="flex min-w-0 items-center gap-2 text-base font-semibold">
+      <CardHeader className="flex items-center justify-between gap-3 space-y-0 px-4 pb-0 pt-4">
+        <div className="flex min-w-0 items-center gap-2">
           <Rocket className="size-4 text-muted-foreground" aria-hidden />
-          <span className="truncate">{environment.name}</span>
-        </CardTitle>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <CardTitle className="min-w-0 truncate text-[15px] font-semibold leading-5">
+            {environment.name}
+          </CardTitle>
+          <EnvironmentStatusChip environment={environment} />
+        </div>
+        <div className="flex shrink-0 items-center justify-end gap-1.5">
+          {current?.run_id ? <ViewDeployLink runId={current.run_id} /> : null}
           {watch ? <NativeWatchChip watch={watch} /> : null}
-          {environment.frozen ? (
-            <span className="inline-flex h-5 items-center gap-1 rounded-4xl bg-amber-500/10 px-2 text-xs font-medium text-amber-700 dark:text-amber-400">
-              <Snowflake className="size-3" aria-hidden />
-              Frozen
-            </span>
-          ) : current ? (
-            <StatusBadge status={current.status} />
-          ) : (
-            <span className="inline-flex h-5 items-center rounded-4xl bg-muted px-2 text-xs font-medium text-muted-foreground">
-              no deploys yet
-            </span>
-          )}
           <EnvironmentActionsMenu
             slug={slug}
             environment={environment}
@@ -235,14 +226,15 @@ export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
           <p className="text-sm text-muted-foreground">{environment.description}</p>
         ) : null}
 
-        {environment.frozen ? <FrozenBanner environment={environment} /> : null}
-
         {current ? (
-          <CurrentDeploy slug={slug} current={current} />
+          <CurrentDeploy slug={slug} current={current} deployTarget={deployTarget} />
         ) : hasRow ? (
-          <p className="text-sm text-muted-foreground">
-            Nothing has shipped to this environment yet.
-          </p>
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Nothing has shipped to this environment yet.
+            </p>
+            {deployTarget ? <NativeTargetPill target={deployTarget} /> : null}
+          </div>
         ) : (
           // Freeze-only: there is no environments row behind this card, so
           // saying "nothing has shipped yet" would imply an environment that
@@ -253,13 +245,14 @@ export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
           </p>
         )}
 
+        {environment.frozen ? <FrozenBanner environment={environment} /> : null}
+
         {/* Armed canary gate (ADR-0001 Phase 2): the approval prompt + Approve/Reject.
             The server enforces the approvers allow-list + the gate_id token. */}
         {watch?.gate_id && !watch.gate_decision ? (
           <RolloutGatePrompt slug={slug} watch={watch} canManage={canManage} />
         ) : null}
 
-        {deployTarget ? <NativeTargetRow target={deployTarget} /> : null}
       </CardContent>
 
       <CardFooter className="mt-auto justify-between gap-2 rounded-none border-t border-border/60 bg-muted/40 px-4 py-2">
@@ -307,6 +300,54 @@ export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
   );
   },
 );
+
+function EnvironmentStatusChip({
+  environment,
+}: {
+  environment: EnvironmentSummary;
+}) {
+  const current = environment.current;
+
+  if (environment.frozen) {
+    return (
+      <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-4xl bg-amber-500/10 px-2 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+        <Snowflake className="size-3" aria-hidden />
+        Frozen
+      </span>
+    );
+  }
+
+  if (current) {
+    return (
+      <StatusBadge
+        status={current.status}
+        className="h-5 shrink-0 px-2 text-[11px] font-semibold"
+      />
+    );
+  }
+
+  return (
+    <span className="inline-flex h-5 shrink-0 items-center rounded-4xl bg-muted px-2 text-[11px] font-semibold text-muted-foreground">
+      no deploys yet
+    </span>
+  );
+}
+
+function ViewDeployLink({ runId }: { runId: string }) {
+  return (
+    <Button
+      variant="ghost"
+      size="xs"
+      className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+      render={
+        <Link href={`/runs/${runId}` as Route}>
+          View deploy
+          <ExternalLink className="size-3" aria-hidden />
+        </Link>
+      }
+    />
+  );
+}
 
 function EnvironmentActionsMenu({
   slug,
@@ -522,41 +563,30 @@ function FreezeControl({
 
 const PROVIDER_LABELS: Record<string, string> = { argocd: "ArgoCD" };
 
-// The registered native provider target for this env. Maintainer-only (the parent
-// only passes it when the maintainer-gated fetch succeeded). Config, not live state —
-// live sync/degraded status lands in a later increment via a polled endpoint. Edit
-// lives in the card actions menu so the target row stays informational.
-function NativeTargetRow({ target }: { target: DeployTarget }) {
-  const SyncIcon = target.sync_mode === "observe" ? Eye : RefreshCw;
+function NativeTargetPill({ target }: { target: DeployTarget }) {
+  const provider = PROVIDER_LABELS[target.provider] ?? target.provider;
+  const detail = [
+    `${provider} · ${target.application}`,
+    `cluster ${target.cluster}`,
+    `namespace ${target.namespace}`,
+    `sync ${target.sync_mode}`,
+    target.rollout_aware ? "rollout aware" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-      <span className="font-medium text-foreground">Native</span>
+    <span
+      className="inline-flex max-w-full items-center gap-1.5 rounded-4xl border border-border/60 bg-muted/60 px-2 py-0.5 text-[11.5px] font-medium text-muted-foreground"
+      title={detail}
+      aria-label={`Native target: ${detail}`}
+    >
+      <span className="truncate">{provider}</span>
       <Dot />
-      <span>{PROVIDER_LABELS[target.provider] ?? target.provider}</span>
-      <Dot />
-      <span>
-        app <span className="font-mono text-foreground">{target.application}</span>
+      <span className="min-w-0 truncate font-mono text-foreground">
+        {target.application}
       </span>
-      <Dot />
-      <span>
-        cluster{" "}
-        <span className="font-mono text-foreground">{target.cluster}</span>
-      </span>
-      <Dot />
-      <span className="inline-flex items-center gap-1">
-        <SyncIcon className="size-3" aria-hidden />
-        {target.sync_mode}
-      </span>
-      {target.rollout_aware ? (
-        <>
-          <Dot />
-          <span className="inline-flex items-center gap-1 text-teal-600 dark:text-teal-400">
-            <GitBranch className="size-3" aria-hidden />
-            rollouts
-          </span>
-        </>
-      ) : null}
-    </div>
+    </span>
   );
 }
 
@@ -568,15 +598,24 @@ function Dot() {
   );
 }
 
-function CurrentDeploy({ slug, current }: { slug: string; current: DeploymentRecord }) {
+function CurrentDeploy({
+  slug,
+  current,
+  deployTarget,
+}: {
+  slug: string;
+  current: DeploymentRecord;
+  deployTarget?: DeployTarget;
+}) {
   return (
     <div className="space-y-1">
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
         {/* break-all + min-w-0: long OCI tags/digests wrap instead of
             pushing the rollback badge off the card. */}
         <span className="min-w-0 break-all font-mono text-base font-semibold tracking-tight">
           {current.version}
         </span>
+        {deployTarget ? <NativeTargetPill target={deployTarget} /> : null}
         {current.is_rollback ? <RollbackBadge /> : null}
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">

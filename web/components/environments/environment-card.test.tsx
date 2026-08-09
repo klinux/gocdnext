@@ -66,6 +66,9 @@ describe("EnvironmentCard", () => {
     expect(screen.getByText(/by alice/)).toBeTruthy();
     const runLink = screen.getByRole("link", { name: "run" });
     expect(runLink.getAttribute("href")).toBe("/runs/run-9");
+    expect(
+      screen.getByRole("link", { name: /View deploy/i }).getAttribute("href"),
+    ).toBe("/runs/run-9");
   });
 
   it("shows the persisted history count without fetching history", () => {
@@ -120,16 +123,16 @@ describe("EnvironmentCard", () => {
         apiBaseURL=""
       />,
     );
-    expect(screen.getByText("Native")).toBeTruthy();
     expect(screen.getByText("ArgoCD")).toBeTruthy();
     expect(screen.getByText("checkout")).toBeTruthy();
-    expect(screen.getByText("prod-gke")).toBeTruthy();
-    expect(screen.getByText("trigger")).toBeTruthy();
+    const targetPill = screen.getByTitle(
+      "ArgoCD · checkout · cluster prod-gke · namespace argocd · sync trigger",
+    );
+    expect(targetPill).toBeTruthy();
   });
 
   it("omits the native row when there is no target (or the viewer can't see it)", () => {
     render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} isAdmin={false} />);
-    expect(screen.queryByText("Native")).toBeNull();
     expect(screen.queryByText("checkout")).toBeNull();
   });
 
