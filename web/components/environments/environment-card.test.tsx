@@ -30,6 +30,7 @@ const withCurrent: EnvironmentSummary = {
   id: "env-1",
   name: "production",
   has_environment_row: true,
+  total_deploys: 12,
   frozen: false,
   created_at: "2026-06-13T09:00:00Z",
   updated_at: "2026-06-13T10:00:00Z",
@@ -67,8 +68,24 @@ describe("EnvironmentCard", () => {
     expect(runLink.getAttribute("href")).toBe("/runs/run-9");
   });
 
+  it("shows the persisted history count without fetching history", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} isAdmin={false} />);
+
+    expect(
+      screen.getByRole("button", { name: "History, 12 deployments" }),
+    ).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("renders the empty state when nothing has deployed", () => {
-    const empty: EnvironmentSummary = { ...withCurrent, current: null };
+    const empty: EnvironmentSummary = {
+      ...withCurrent,
+      current: null,
+      total_deploys: 0,
+    };
     render(<EnvironmentCard slug="acme" environment={empty} apiBaseURL="" canManage={false} isAdmin={false} />);
     expect(screen.getByText("no deploys yet")).toBeTruthy();
     expect(screen.getByText(/Nothing has shipped/)).toBeTruthy();
@@ -461,6 +478,7 @@ describe("EnvironmentCard — change-freeze", () => {
     const orphan: EnvironmentSummary = {
       name: "production",
       has_environment_row: false,
+      total_deploys: 0,
       frozen: true,
       frozen_at: "2026-07-01T08:00:00Z",
       current: null,

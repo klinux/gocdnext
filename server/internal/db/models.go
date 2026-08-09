@@ -260,12 +260,13 @@ type DeploymentRevision struct {
 }
 
 type Environment struct {
-	ID          pgtype.UUID
-	ProjectID   pgtype.UUID
-	Name        string
-	Description string
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
+	ID           pgtype.UUID
+	ProjectID    pgtype.UUID
+	Name         string
+	Description  string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	TotalDeploys int64
 }
 
 // Manual change-freeze on a deploy environment. A row means frozen: no deploy to (project_id, name) is admitted until it is deleted.

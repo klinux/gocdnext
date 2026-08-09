@@ -235,10 +235,6 @@ type Querier interface {
 	// Application cluster OR its Rollout cluster) can't be deleted — also enforced by
 	// both FKs' ON DELETE RESTRICT; this gives the friendly message.
 	CountDeployTargetsForCluster(ctx context.Context, cluster string) (int64, error)
-	// Count all timeline rows for one environment. Uses the same environment_id
-	// index as ListDeploymentHistory and runs only when the returned page hits
-	// its limit, so the common "small history" path avoids this second query.
-	CountDeploymentHistory(ctx context.Context, environmentID pgtype.UUID) (int64, error)
 	// Global backlog for autoscaling (#185): job_runs that can be handed to an agent
 	// RIGHT NOW — queued, unassigned, not an approval gate, in their run's active
 	// (lowest-ordinal non-terminal) stage, AND whose run is not held back by the
@@ -328,7 +324,9 @@ type Querier interface {
 	// per-arm / decision / action gate columns stay NULL until the watcher arms a step.
 	CreateDeployWatch(ctx context.Context, arg CreateDeployWatchParams) (DeployWatch, error)
 	// Recorded at dispatch with the resolved version, status in_progress,
-	// tagged with the dispatch attempt so retries don't collide.
+	// tagged with the dispatch attempt so retries don't collide. The environment's
+	// timeline counter bumps in the same statement, so cards can render counts from
+	// GET /environments without a COUNT(*) per environment.
 	CreateDeploymentRevision(ctx context.Context, arg CreateDeploymentRevisionParams) (pgtype.UUID, error)
 	// "What's deployed now": newest successful revision. Served straight
 	// off idx_deployment_revisions_current.
@@ -377,7 +375,8 @@ type Querier interface {
 	DeleteDeployWatchClaimed(ctx context.Context, arg DeleteDeployWatchClaimedParams) (int64, error)
 	// Removes a revision created at dispatch when the dispatch then failed
 	// to reach an agent (the frame never went out, so no deploy happened).
-	// Scoped to in_progress so it can never erase a finalized audit row.
+	// Scoped to in_progress so it can never erase a finalized audit row. The
+	// timeline counter only decrements when a row was actually removed.
 	DeleteDeploymentRevision(ctx context.Context, id pgtype.UUID) error
 	// Unfreeze. The `project_id` predicate IS the scope check — no separate
 	// EnvironmentBelongsToProject precheck is needed (and none would help: the
@@ -690,6 +689,9 @@ type Querier interface {
 	// read so the claim query stays a plain deploy_watches SELECT (its row model is shared).
 	GetDeployWatchCancelRequestedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error)
 	GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error)
+	// Scope guard + O(1) timeline total for a project-owned environment. A missing
+	// row maps to 404 at the API boundary.
+	GetEnvironmentDeploymentTotalByProject(ctx context.Context, arg GetEnvironmentDeploymentTotalByProjectParams) (int64, error)
 	// Single-env freeze state, PK probe. ErrNoRows = not frozen.
 	GetEnvironmentFreeze(ctx context.Context, arg GetEnvironmentFreezeParams) (GetEnvironmentFreezeRow, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
@@ -1178,7 +1180,7 @@ type Querier interface {
 	// Bootstrap + reload path: rows the registry should actually
 	// instantiate on startup.
 	ListEnabledVCSIntegrations(ctx context.Context) ([]VcsIntegration, error)
-	ListEnvironmentsByProject(ctx context.Context, projectID pgtype.UUID) ([]Environment, error)
+	ListEnvironmentsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListEnvironmentsByProjectRow, error)
 	// One row per environment with its CURRENT deployment (newest
 	// successful revision) attached via LEFT JOIN LATERAL — environments
 	// with nothing deployed yet still appear, with NULL current_* columns.
