@@ -11,6 +11,7 @@ import type {
   CachesList,
   DashboardMetrics,
   DeployTargetsList,
+  DeploymentsList,
   EnvironmentsList,
   FindingsList,
   GlobalRunSummary,
@@ -213,6 +214,18 @@ export async function listEnvironments(
 ): Promise<EnvironmentsList> {
   return readJSON<EnvironmentsList>(
     `/api/v1/projects/${encodeURIComponent(slug)}/environments`,
+  );
+}
+
+export async function listEnvironmentDeployments(
+  slug: string,
+  environmentId: string,
+  opts: { limit?: number; cursor?: string } = {},
+): Promise<DeploymentsList> {
+  const qs = new URLSearchParams({ limit: String(opts.limit ?? 50) });
+  if (opts.cursor) qs.set("cursor", opts.cursor);
+  return readJSON<DeploymentsList>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/environments/${encodeURIComponent(environmentId)}/deployments?${qs.toString()}`,
   );
 }
 

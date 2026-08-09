@@ -689,11 +689,11 @@ type Querier interface {
 	// read so the claim query stays a plain deploy_watches SELECT (its row model is shared).
 	GetDeployWatchCancelRequestedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error)
 	GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error)
-	// Scope guard + O(1) timeline total for a project-owned environment. A missing
-	// row maps to 404 at the API boundary.
-	GetEnvironmentDeploymentTotalByProject(ctx context.Context, arg GetEnvironmentDeploymentTotalByProjectParams) (int64, error)
 	// Single-env freeze state, PK probe. ErrNoRows = not frozen.
 	GetEnvironmentFreeze(ctx context.Context, arg GetEnvironmentFreezeParams) (GetEnvironmentFreezeRow, error)
+	// Scope guard + O(1) timeline metadata for a project-owned environment. A
+	// missing row maps to 404 at the API boundary.
+	GetEnvironmentHistoryMetaByProject(ctx context.Context, arg GetEnvironmentHistoryMetaByProjectParams) (GetEnvironmentHistoryMetaByProjectRow, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
 	// run finishes. Returns ErrNoRows when the run didn't produce a
 	// check (most common path: no App installed, or feature disabled).
@@ -1164,8 +1164,10 @@ type Querier interface {
 	// Config fields (cluster/application/sync_mode) are returned here but sanitised by
 	// role at the HTTP layer — viewers never see them.
 	ListDeployWatchesForProject(ctx context.Context, projectID pgtype.UUID) ([]ListDeployWatchesForProjectRow, error)
-	// Timeline for one environment, all statuses, newest first.
-	ListDeploymentHistory(ctx context.Context, arg ListDeploymentHistoryParams) ([]DeploymentRevision, error)
+	// Timeline for one environment, all statuses, newest first. Cursor pagination
+	// uses (created_at, id) so rows with identical timestamps still paginate
+	// deterministically.
+	ListDeploymentHistoryPage(ctx context.Context, arg ListDeploymentHistoryPageParams) ([]DeploymentRevision, error)
 	// Returns queued jobs in the lowest-ordinal stage that still has queued or
 	// running work. The scheduler does needs-satisfaction checking in Go so the
 	// query stays readable; the stage gate is the only SQL-level constraint.
