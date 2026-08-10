@@ -51,7 +51,7 @@ func buildCIVars(run store.RunForDispatch, jobName string) map[string]string {
 	}
 	addPullRequestVars(out, run.Cause, run.CauseDetail)
 	addTagVars(out, run.Cause, run.CauseDetail)
-	addUpstreamVars(out, run.Cause, run.CauseDetail)
+	addUpstreamVars(out, run.CauseDetail)
 	return out
 }
 
@@ -64,29 +64,37 @@ type upstreamDetail struct {
 	Stage      string `json:"upstream_stage"`
 }
 
-// addUpstreamVars materialises CI_UPSTREAM_* for an upstream-triggered
-// run, surfacing the TRIGGERING pipeline's identity + counter. The key
+// addUpstreamVars materialises CI_UPSTREAM_* when the run carries an upstream
+// run counter, surfacing the TRIGGERING pipeline's identity + counter. The key
 // one is CI_UPSTREAM_RUN_COUNTER: a downstream (e.g. a deploy) can rebuild
 // the exact version/tag the upstream produced — `1.${CI_UPSTREAM_RUN_COUNTER}.
 // ${CI_COMMIT_SHORT_SHA}` matches the upstream's
 // `1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}`. Without it the downstream's
 // own CI_RUN_COUNTER differs (counters don't cross pipelines), so the deploy
-// would template an image tag that was never built. Non-upstream causes and
-// malformed JSON skip, same "empty → leave literal" rule as the tag/PR vars.
-func addUpstreamVars(out map[string]string, cause string, detail []byte) {
-	if cause != "upstream" || len(detail) == 0 {
+// would template an image tag that was never built.
+//
+// Gated on the counter, NOT the cause: the fanout stamps these on a
+// cause="upstream" run, and a manual re-deploy (TriggerManualRun resolving its
+// `upstream` material to the latest successful build) stamps the SAME keys on a
+// cause="manual" run — both must surface CI_UPSTREAM_* so the deploy marker
+// resolves. A non-upstream detail (tag/PR/plain manual) decodes with
+// RunCounter == 0 and is left untouched, same "empty → leave literal" rule as
+// the tag/PR vars.
+func addUpstreamVars(out map[string]string, detail []byte) {
+	if len(detail) == 0 {
 		return
 	}
 	var u upstreamDetail
 	if err := json.Unmarshal(detail, &u); err != nil {
 		return
 	}
+	if u.RunCounter <= 0 {
+		return
+	}
 	if u.Pipeline != "" {
 		out["CI_UPSTREAM_PIPELINE"] = u.Pipeline
 	}
-	if u.RunCounter > 0 {
-		out["CI_UPSTREAM_RUN_COUNTER"] = strconv.FormatInt(u.RunCounter, 10)
-	}
+	out["CI_UPSTREAM_RUN_COUNTER"] = strconv.FormatInt(u.RunCounter, 10)
 	if u.Stage != "" {
 		out["CI_UPSTREAM_STAGE"] = u.Stage
 	}

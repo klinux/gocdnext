@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -694,6 +695,30 @@ func (s *Store) TriggerManualRun(ctx context.Context, in TriggerManualRunInput) 
 	}
 	delivery := cause + "-" + in.PipelineID.String()
 
+	// Upstream-driven pipeline (e.g. a deploy fed by `build`): a hand kick can't
+	// carry the upstream's run counter, so resolve the LATEST successful upstream
+	// run and inherit its counter + commit — the pull-side mirror of the fanout.
+	// Without this the run seeds from the deploy repo's HEAD with no
+	// CI_UPSTREAM_RUN_COUNTER, and `deploy.version: 1.${{ CI_UPSTREAM_RUN_COUNTER }}
+	// .${{ CI_COMMIT_SHORT_SHA }}` fails at dispatch AFTER earlier jobs already
+	// shipped a `1..<sha>` image. When the upstream has no green run yet (or the
+	// pipeline has 0 / >1 upstream materials) the resolver reports not-resolved
+	// and we fall through to the existing path, so a standalone downstream stays
+	// hand-kickable before its upstream lands. Ref (supersede lane, #97) + any
+	// caller cause_detail (cron schedule_*) are carried through.
+	if up, resolved, err := s.resolveManualUpstreamContext(ctx, in.PipelineID, in.CauseDetail); err != nil {
+		return RunCreated{}, err
+	} else if resolved {
+		return s.insertRunSkeleton(ctx, insertRunSkeletonInput{
+			PipelineID:  in.PipelineID,
+			Cause:       cause,
+			CauseDetail: up.causeDetail,
+			Revisions:   up.revisions,
+			Ref:         up.ref,
+			TriggeredBy: triggeredBy,
+		})
+	}
+
 	mod, err := s.q.GetLatestModificationForPipeline(ctx, pgUUID(in.PipelineID))
 	switch {
 	case err == nil:
@@ -1103,9 +1128,14 @@ func (s *Store) pipelineHasGitMaterial(ctx context.Context, pipelineID uuid.UUID
 }
 
 // pickPrimaryRevision unmarshals the revisions JSONB (shape:
-// {"<material_id>": {"revision": "...", "branch": "..."}}) and
-// returns the first entry. Runs today only have one material slot,
-// so "first" is stable enough for replay semantics.
+// {"<material_id>": {"revision": "...", "branch": "..."}}) and returns the entry
+// to replay from. An upstream / manual-upstream run carries TWO slots — the git
+// checkout (real branch + commit) AND the branchless upstream material (revision
+// = the upstream RUN's UUID). Keys are sorted for a deterministic choice and the
+// first branch-bearing entry wins, so a rerun looks up the git modification (a
+// real commit) rather than the UUID slot — which has no modification and dropped
+// rerun into ErrNoModificationForPipeline. Falls back to the sorted-first entry
+// when none carries a branch (single-material runs — unchanged behaviour).
 func pickPrimaryRevision(raw []byte) (uuid.UUID, string, *string, error) {
 	if len(raw) == 0 {
 		return uuid.Nil, "", nil, ErrRunRevisionsMissing
@@ -1117,17 +1147,30 @@ func pickPrimaryRevision(raw []byte) (uuid.UUID, string, *string, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return uuid.Nil, "", nil, fmt.Errorf("store: decode revisions: %w", err)
 	}
-	for k, v := range parsed {
-		matID, err := uuid.Parse(k)
-		if err != nil {
-			return uuid.Nil, "", nil, fmt.Errorf("store: revisions key not a UUID: %w", err)
-		}
-		branch := v.Branch
-		var branchPtr *string
-		if branch != "" {
-			branchPtr = &branch
-		}
-		return matID, v.Revision, branchPtr, nil
+	if len(parsed) == 0 {
+		return uuid.Nil, "", nil, ErrRunRevisionsMissing
 	}
-	return uuid.Nil, "", nil, ErrRunRevisionsMissing
+	keys := make([]string, 0, len(parsed))
+	for k := range parsed {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pick := keys[0]
+	for _, k := range keys {
+		if parsed[k].Branch != "" {
+			pick = k
+			break
+		}
+	}
+	matID, err := uuid.Parse(pick)
+	if err != nil {
+		return uuid.Nil, "", nil, fmt.Errorf("store: revisions key not a UUID: %w", err)
+	}
+	v := parsed[pick]
+	var branchPtr *string
+	if v.Branch != "" {
+		branch := v.Branch
+		branchPtr = &branch
+	}
+	return matID, v.Revision, branchPtr, nil
 }

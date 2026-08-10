@@ -116,6 +116,44 @@ func TestBuildCIVars(t *testing.T) {
 			},
 		},
 		{
+			// A hand-kicked deploy that resolved its `upstream` material to the
+			// latest successful build (TriggerManualRun) stays cause="manual"
+			// but carries the SAME upstream detail the fanout would stamp. CI
+			// vars must fire on the counter, not the cause, so the deploy marker
+			// `1.${{ CI_UPSTREAM_RUN_COUNTER }}.${{ CI_COMMIT_SHORT_SHA }}`
+			// resolves to the already-built version instead of `1..<sha>`.
+			name: "manual re-deploy carries CI_UPSTREAM_* from synthesized upstream detail",
+			run: store.RunForDispatch{
+				ID:          runID,
+				PipelineID:  pipelineID,
+				ProjectID:   projectID,
+				Counter:     3,
+				Cause:       "manual",
+				CauseDetail: json.RawMessage(`{"upstream_pipeline":"build","upstream_run_counter":9,"upstream_stage":"image","manual_upstream":true}`),
+				Revisions: json.RawMessage(`{
+					"00001111-0000-0000-0000-000000000000":{"revision":"01c214cc-837d-4234-bae4-03f647579182","branch":""},
+					"` + materialA + `":{"revision":"` + fullSHA + `","branch":"gocdnext-tests"}
+				}`),
+			},
+			jobName: "stage-set",
+			want: map[string]string{
+				"CI":                      "true",
+				"GOCDNEXT":                "true",
+				"CI_RUN_ID":               runID.String(),
+				"CI_RUN_COUNTER":          "3",
+				"CI_PIPELINE_ID":          pipelineID.String(),
+				"CI_PROJECT_ID":           projectID.String(),
+				"CI_JOB_NAME":             "stage-set",
+				"CI_COMMIT_SHA":           fullSHA,
+				"CI_COMMIT_SHORT_SHA":     fullSHA[:8],
+				"CI_BRANCH":               "gocdnext-tests",
+				"CI_CAUSE":                "manual",
+				"CI_UPSTREAM_PIPELINE":    "build",
+				"CI_UPSTREAM_RUN_COUNTER": "9",
+				"CI_UPSTREAM_STAGE":       "image",
+			},
+		},
+		{
 			name: "manual trigger without revisions leaves commit/branch unset",
 			run: store.RunForDispatch{
 				ID:         runID,
