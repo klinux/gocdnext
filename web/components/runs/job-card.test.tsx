@@ -164,3 +164,35 @@ describe("JobCard — freeze hold (#227)", () => {
     expect((approve as HTMLButtonElement).disabled).toBe(false);
   });
 });
+
+describe("JobCard — log counter (Logs X of Y)", () => {
+  const tailLogs = Array.from({ length: 5 }, (_, i) => ({
+    seq: 596 + i,
+    stream: "stdout",
+    at: "2026-06-10T12:00:00Z",
+    text: `line ${596 + i}`,
+  }));
+
+  // The bug: a tail-only response (no head/omitted) rendered "5 of 5"
+  // while the visible lines were seq 596-600. logs_total keeps it honest.
+  it("uses logs_total for the total, not the fetched window", () => {
+    renderCard(
+      <JobCard
+        job={makeJob({ status: "success", logs: tailLogs, logs_total: 602 })}
+        runID="run-1"
+      />,
+    );
+    expect(screen.getByText(/Logs \(5 of 602\)/)).toBeTruthy();
+  });
+
+  // Older server without logs_total: fall back to visible + omitted.
+  it("falls back to window + omitted when logs_total is absent", () => {
+    renderCard(
+      <JobCard
+        job={makeJob({ status: "success", logs: tailLogs, logs_omitted: 10 })}
+        runID="run-1"
+      />,
+    );
+    expect(screen.getByText(/Logs \(5 of 15\)/)).toBeTruthy();
+  });
+});

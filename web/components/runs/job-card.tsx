@@ -53,6 +53,16 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
   // them to head; tail is empty when head covers all). Looking at
   // tail alone would mistakenly collapse the details.
   const hasLogs = ((job.logs?.length ?? 0) + (job.logs_head?.length ?? 0)) > 0;
+  const logsShown = (job.logs_head?.length ?? 0) + (job.logs?.length ?? 0);
+  // Prefer the server's TRUE total; fall back to the window sum for
+  // older servers. Keeps "Logs (X of Y)" honest even on a tail-only /
+  // headless / cursor-poll response — no more "50 of 50" while showing
+  // seq 590-602.
+  const logsTotal = job.logs_total ?? logsShown + (job.logs_omitted ?? 0);
+  // Omitted derived from the true total, so the LogPane divider is right
+  // even when the response carried no head (earlier lines still surface
+  // as "(N omitted)").
+  const logsOmitted = Math.max(0, logsTotal - logsShown);
   const awaiting = job.status === "awaiting_approval" && job.approval_gate;
   const decided = job.approval_gate && !!job.decision;
   const isNotify = job.name.startsWith(SYNTH_NOTIFY_PREFIX);
@@ -263,13 +273,13 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
 
       <details open={hasLogs} className="mt-2">
         <summary className="cursor-pointer select-none text-[11px] text-muted-foreground hover:text-foreground">
-          Logs ({((job.logs_head?.length ?? 0) + (job.logs?.length ?? 0))} of {((job.logs_head?.length ?? 0) + (job.logs?.length ?? 0) + (job.logs_omitted ?? 0))})
+          Logs ({logsShown} of {logsTotal})
         </summary>
         <div className="mt-2 overflow-hidden rounded-md border border-border">
           <LogPane
             logs={job.logs ?? []}
             head={job.logs_head ?? []}
-            omitted={job.logs_omitted ?? 0}
+            omitted={logsOmitted}
             jobStartedAt={job.started_at ?? undefined}
             running={job.status === "running"}
             downloadHref={`${apiBaseURL}/api/v1/runs/${runID}/jobs/${job.id}/log.txt`}
