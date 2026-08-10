@@ -54,13 +54,16 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
   // tail alone would mistakenly collapse the details.
   const hasLogs = ((job.logs?.length ?? 0) + (job.logs_head?.length ?? 0)) > 0;
   const logsShown = (job.logs_head?.length ?? 0) + (job.logs?.length ?? 0);
-  // Prefer the server's TRUE total; fall back to the window sum for
-  // older servers. Keeps "Logs (X of Y)" honest even on a tail-only /
-  // headless / cursor-poll response — no more "50 of 50" while showing
-  // seq 590-602.
-  const logsTotal = job.logs_total ?? logsShown + (job.logs_omitted ?? 0);
-  // Omitted derived from the true total, so the LogPane divider is right
-  // even when the response carried no head (earlier lines still surface
+  // Prefer the server's TRUE total; fall back to the window sum for older
+  // servers. Keeps "Logs (X of Y)" honest even on a tail-only / headless /
+  // cursor-poll response — no more "50 of 50" while showing seq 590-602.
+  // Clamp to at least what's visible: between 2s polls the SSE stream appends
+  // lines to the tail while logs_total still holds the LAST poll's value, so a
+  // raw read would render an impossible "101 of 100" until the next tick.
+  const logsFallbackTotal = logsShown + (job.logs_omitted ?? 0);
+  const logsTotal = Math.max(job.logs_total ?? 0, logsFallbackTotal, logsShown);
+  // Omitted derived from the (clamped) true total, so the LogPane divider is
+  // right even when the response carried no head (earlier lines still surface
   // as "(N omitted)").
   const logsOmitted = Math.max(0, logsTotal - logsShown);
   const awaiting = job.status === "awaiting_approval" && job.approval_gate;

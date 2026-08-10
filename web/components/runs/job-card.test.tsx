@@ -195,4 +195,24 @@ describe("JobCard — log counter (Logs X of Y)", () => {
     );
     expect(screen.getByText(/Logs \(5 of 15\)/)).toBeTruthy();
   });
+
+  // Between 2s polls the SSE stream appends lines while logs_total still holds
+  // the last poll's value — the count must never render an impossible X > Y.
+  it("clamps to the visible count when logs_total is stale (SSE ahead of poll)", () => {
+    const sixLines = Array.from({ length: 6 }, (_, i) => ({
+      seq: 96 + i,
+      stream: "stdout",
+      at: "2026-06-10T12:00:00Z",
+      text: `line ${96 + i}`,
+    }));
+    renderCard(
+      <JobCard
+        job={makeJob({ status: "running", logs: sixLines, logs_total: 5 })}
+        runID="run-1"
+      />,
+    );
+    // 6 visible with a stale total of 5 → "6 of 6", never "6 of 5".
+    expect(screen.getByText(/Logs \(6 of 6\)/)).toBeTruthy();
+    expect(screen.queryByText(/Logs \(6 of 5\)/)).toBeNull();
+  });
 });

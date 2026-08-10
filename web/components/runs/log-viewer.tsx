@@ -99,7 +99,9 @@ export function LogViewer({
       ) : (
         <>
           {hasHead && head?.map(renderLine)}
-          {hasHead && hasOmitted && <OmittedDivider count={omitted ?? 0} />}
+          {/* Divider whenever lines are hidden — not only with a head. In a
+              tail-only view (head=[]) it sits before the tail as "(N omitted)". */}
+          {hasOmitted && <OmittedDivider count={omitted ?? 0} />}
           {logs.map(renderLine)}
         </>
       )}
@@ -112,7 +114,7 @@ function OmittedDivider({ count }: { count: number }) {
     <div
       data-divider="omitted"
       className="my-1 grid grid-cols-1 border-t border-b border-dashed border-muted-foreground/30 bg-muted/20 px-2 py-1 text-center text-[10px] uppercase tracking-wide text-muted-foreground"
-      aria-label={`${count} log lines omitted between head and tail`}
+      aria-label={`${count} log lines omitted`}
     >
       · · · {count.toLocaleString()} lines omitted · · ·
     </div>
