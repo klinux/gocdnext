@@ -214,4 +214,12 @@ describe("LogPane phase folding", () => {
     // not nested inside a [data-section] — it's a top-level barrier.
     expect(divider.closest("[data-section]")).toBeNull();
   });
+
+  // Archived / headless tail-only view: no head, but lines are hidden. The
+  // divider must still render (before the tail) so "Logs (50 of 602)" doesn't
+  // present a tail that looks like the whole log.
+  it("shows the omitted divider with an empty head (tail-only)", () => {
+    render(<LogPane head={[]} logs={lines} omitted={552} />);
+    expect(screen.getByLabelText(/552 log lines omitted/)).toBeTruthy();
+  });
 });

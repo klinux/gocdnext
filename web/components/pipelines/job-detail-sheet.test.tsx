@@ -124,3 +124,26 @@ describe("JobDetailSheet — re-fetch on reopen (stale after rerun)", () => {
     expect(screen.getByText("agent-new")).toBeTruthy();
   });
 });
+
+describe("JobDetailSheet — omitted divider (tail-only / archived)", () => {
+  // The drawer fetches head=0, so a completed/archived job's response carries
+  // logs_total but NO logs_omitted. The "(N omitted)" divider must still show,
+  // deriving the count from logs_total, so the tail doesn't look complete.
+  it("shows the omitted divider from logs_total on a headless response", async () => {
+    fetchJobDetail.mockResolvedValue(
+      okResult({
+        status: "success",
+        logs: Array.from({ length: 5 }, (_, i) => ({
+          seq: 596 + i,
+          stream: "stdout",
+          at: "",
+          text: `line ${596 + i}`,
+        })),
+        logs_total: 602,
+      }),
+    );
+    render(<Wrap open />);
+    // 597 = 602 total - 5 shown, surfaced even though logs_omitted was absent.
+    expect(await screen.findByLabelText(/597 log lines omitted/)).toBeTruthy();
+  });
+});

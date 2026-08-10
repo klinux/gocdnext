@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { isComplianceEntry } from "@/lib/compliance";
+import { logWindowCounts } from "@/lib/log-window";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { LogPane } from "@/components/runs/log-pane.client";
@@ -53,6 +54,14 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
   // them to head; tail is empty when head covers all). Looking at
   // tail alone would mistakenly collapse the details.
   const hasLogs = ((job.logs?.length ?? 0) + (job.logs_head?.length ?? 0)) > 0;
+  // Honest "Logs (X of Y)" + omitted divider, tolerant of every fetch shape
+  // (tail-only, headless, SSE-ahead-of-poll). Shared with the JobDetailSheet
+  // drawer so the two never drift — see lib/log-window.
+  const {
+    shown: logsShown,
+    total: logsTotal,
+    omitted: logsOmitted,
+  } = logWindowCounts(job);
   const awaiting = job.status === "awaiting_approval" && job.approval_gate;
   const decided = job.approval_gate && !!job.decision;
   const isNotify = job.name.startsWith(SYNTH_NOTIFY_PREFIX);
@@ -263,13 +272,13 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
 
       <details open={hasLogs} className="mt-2">
         <summary className="cursor-pointer select-none text-[11px] text-muted-foreground hover:text-foreground">
-          Logs ({((job.logs_head?.length ?? 0) + (job.logs?.length ?? 0))} of {((job.logs_head?.length ?? 0) + (job.logs?.length ?? 0) + (job.logs_omitted ?? 0))})
+          Logs ({logsShown} of {logsTotal})
         </summary>
         <div className="mt-2 overflow-hidden rounded-md border border-border">
           <LogPane
             logs={job.logs ?? []}
             head={job.logs_head ?? []}
-            omitted={job.logs_omitted ?? 0}
+            omitted={logsOmitted}
             jobStartedAt={job.started_at ?? undefined}
             running={job.status === "running"}
             downloadHref={`${apiBaseURL}/api/v1/runs/${runID}/jobs/${job.id}/log.txt`}
