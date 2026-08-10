@@ -143,22 +143,31 @@ export function PullRequestBanner({
 
 export function UpstreamBanner({
   upstream,
+  cause,
 }: {
   upstream: {
     upstream_run_id?: string;
     upstream_pipeline?: string;
     upstream_stage?: string;
     upstream_run_counter?: number;
-    manual_upstream?: boolean;
   };
+  cause?: string;
 }) {
   const {
     upstream_run_id,
     upstream_pipeline,
     upstream_stage,
     upstream_run_counter,
-    manual_upstream,
   } = upstream;
+  // Label by how the run was triggered, not by a cause_detail marker: a fanout
+  // run (cause="upstream") reads "Triggered by"; a hand-kick or a schedule that
+  // resolved the latest successful build reads "Manual/Scheduled re-deploy of".
+  const lead =
+    cause === "manual"
+      ? "Manual re-deploy of"
+      : cause === "schedule"
+        ? "Scheduled re-deploy of"
+        : "Triggered by";
   // Two chips share the banner: the pipeline that triggered this
   // run (no link target — pipelines are sub-views of their project,
   // not standalone) and the upstream run itself (clickable, takes
@@ -166,9 +175,7 @@ export function UpstreamBanner({
   // hint inside the pipeline chip when present.
   return (
     <aside className="flex flex-wrap items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
-      <span className="text-muted-foreground">
-        {manual_upstream ? "Manual re-deploy of" : "Triggered by"}
-      </span>
+      <span className="text-muted-foreground">{lead}</span>
       {upstream_pipeline ? (
         <EntityChip
           kind="pipeline"

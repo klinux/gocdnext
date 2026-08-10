@@ -209,7 +209,6 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
         upstream_pipeline?: string;
         upstream_stage?: string;
         upstream_run_counter?: number;
-        manual_upstream?: boolean;
       }
     | undefined;
   // Show the upstream banner for a fanout run (cause="upstream") AND for a
@@ -344,7 +343,9 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
         </div>
       </header>
 
-      {upstream ? <UpstreamBanner upstream={upstream} /> : null}
+      {upstream ? (
+        <UpstreamBanner upstream={upstream} cause={data.cause} />
+      ) : null}
       {pullRequest ? <PullRequestBanner pr={pullRequest} /> : null}
       {prHeadConfig ? <PRHeadConfigBanner config={prHeadConfig} /> : null}
 

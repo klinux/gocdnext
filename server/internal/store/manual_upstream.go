@@ -57,10 +57,12 @@ func (s *Store) resolveManualUpstreamContext(ctx context.Context, pipelineID uui
 
 	// Merge the upstream keys onto whatever the caller stamped (project cron
 	// passes schedule_id / schedule_name / expression). Upstream keys are
-	// authoritative on collision; a malformed callerDetail degrades to none.
+	// authoritative on collision. A malformed callerDetail — OR the literal JSON
+	// `null`, which unmarshals a map to nil — degrades to an empty map, so the
+	// assignments below never write into a nil map (which would panic).
 	detail := map[string]any{}
 	if len(callerDetail) > 0 {
-		if err := json.Unmarshal(callerDetail, &detail); err != nil {
+		if err := json.Unmarshal(callerDetail, &detail); err != nil || detail == nil {
 			detail = map[string]any{}
 		}
 	}
@@ -69,10 +71,11 @@ func (s *Store) resolveManualUpstreamContext(ctx context.Context, pipelineID uui
 	detail["upstream_run_counter"] = row.UpstreamRunCounter
 	detail["upstream_pipeline"] = row.UpstreamPipeline
 	detail["upstream_stage"] = row.UpstreamStage
-	// Marks a hand-kicked deploy that resolved to the latest build, as opposed to
-	// a fanout-created run (cause="upstream"). The run stays honestly
-	// cause="manual" while still surfacing CI_UPSTREAM_* + the upstream banner.
-	detail["manual_upstream"] = true
+	// Marks a run whose upstream was resolved at trigger time (pull-side), as
+	// opposed to a fanout-created run (cause="upstream", push-side). Deliberately
+	// cause-agnostic — the trigger may be a manual kick OR a schedule — so the UI
+	// labels the banner by the run's cause, not by this marker.
+	detail["resolved_upstream"] = true
 	causeDetail, err := json.Marshal(detail)
 	if err != nil {
 		return manualUpstreamContext{}, false, fmt.Errorf("store: manual upstream: marshal detail: %w", err)

@@ -67,7 +67,7 @@ func TestTriggerManualRun_ResolvesLatestUpstream(t *testing.T) {
 		UpstreamRunCounter int64  `json:"upstream_run_counter"`
 		UpstreamPipeline   string `json:"upstream_pipeline"`
 		UpstreamStage      string `json:"upstream_stage"`
-		ManualUpstream     bool   `json:"manual_upstream"`
+		ResolvedUpstream   bool   `json:"resolved_upstream"`
 	}
 	if err := json.Unmarshal(detailRaw, &detail); err != nil {
 		t.Fatalf("decode cause_detail: %v", err)
@@ -81,8 +81,8 @@ func TestTriggerManualRun_ResolvesLatestUpstream(t *testing.T) {
 	if detail.UpstreamPipeline != "build-core" || detail.UpstreamStage != "test" {
 		t.Fatalf("upstream identity = %q/%q, want build-core/test", detail.UpstreamPipeline, detail.UpstreamStage)
 	}
-	if !detail.ManualUpstream {
-		t.Fatal("manual_upstream marker not set")
+	if !detail.ResolvedUpstream {
+		t.Fatal("resolved_upstream marker not set")
 	}
 
 	// Revisions carry the BUILD's git commit (not the deploy repo's HEAD).
@@ -135,6 +135,40 @@ func TestTriggerManualRun_MergesCallerCauseDetail(t *testing.T) {
 		t.Fatalf("caller cause_detail lost: %s", detailRaw)
 	}
 	if _, ok := d["upstream_run_counter"]; !ok {
+		t.Fatalf("upstream context missing: %s", detailRaw)
+	}
+}
+
+// A CauseDetail of literal JSON `null` unmarshals a map to nil; the upstream
+// merge must not assign into it (that panics). It degrades to the upstream keys
+// only.
+func TestTriggerManualRun_NullCauseDetailNoPanic(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	coreID, apiID, _, coreMat := seedFanoutProject(t, pool)
+	coreRunID, _ := completeUpstreamTestStage(t, pool, coreID, coreMat)
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='success' WHERE run_id=$1 AND name='test'`, coreRunID,
+	); err != nil {
+		t.Fatalf("mark stage: %v", err)
+	}
+
+	res, err := s.TriggerManualRun(ctx, store.TriggerManualRunInput{
+		PipelineID:  apiID,
+		TriggeredBy: "user:alice",
+		CauseDetail: json.RawMessage(`null`),
+	})
+	if err != nil {
+		t.Fatalf("TriggerManualRun with null cause_detail: %v", err)
+	}
+
+	var detailRaw []byte
+	if err := pool.QueryRow(ctx, `SELECT cause_detail FROM runs WHERE id=$1`, res.RunID).Scan(&detailRaw); err != nil {
+		t.Fatalf("load detail: %v", err)
+	}
+	if !strings.Contains(string(detailRaw), "upstream_run_counter") {
 		t.Fatalf("upstream context missing: %s", detailRaw)
 	}
 }

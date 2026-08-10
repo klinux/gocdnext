@@ -11,25 +11,28 @@ describe("UpstreamBanner", () => {
     upstream_run_counter: 14,
   };
 
-  // A fanout-triggered run reads as "Triggered by".
-  it("labels a fanout run as triggered by its upstream", () => {
-    render(<UpstreamBanner upstream={base} />);
-    expect(screen.getByText(/Triggered by/i)).toBeTruthy();
-    expect(screen.getByText("build")).toBeTruthy();
-    expect(
-      screen.getByRole("link", { name: /#14/ }).getAttribute("href"),
-    ).toBe("/runs/run-14");
+  // Labelled by the run's cause, not a cause_detail marker — so a schedule that
+  // resolved an upstream is never mislabelled as a manual re-deploy.
+  it("labels by cause and surfaces the resolved build", () => {
+    const cases: Array<[string | undefined, RegExp]> = [
+      ["upstream", /Triggered by/i],
+      ["manual", /Manual re-deploy of/i],
+      ["schedule", /Scheduled re-deploy of/i],
+    ];
+    for (const [cause, label] of cases) {
+      const { unmount } = render(<UpstreamBanner upstream={base} cause={cause} />);
+      expect(screen.getByText(label)).toBeTruthy();
+      expect(screen.getByText("build")).toBeTruthy();
+      expect(
+        screen.getByRole("link", { name: /#14/ }).getAttribute("href"),
+      ).toBe("/runs/run-14");
+      unmount();
+    }
   });
 
-  // A manual re-deploy resolved the latest build — the operator must see WHICH
-  // build shipped, and that it was a hand-kick rather than a fanout.
-  it("labels a manual re-deploy and surfaces the resolved build", () => {
-    render(<UpstreamBanner upstream={{ ...base, manual_upstream: true }} />);
-    expect(screen.getByText(/Manual re-deploy of/i)).toBeTruthy();
+  // A manual re-deploy is not mislabelled "Triggered by".
+  it("does not label a manual re-deploy as triggered-by", () => {
+    render(<UpstreamBanner upstream={base} cause="manual" />);
     expect(screen.queryByText(/Triggered by/i)).toBeNull();
-    expect(screen.getByText("build")).toBeTruthy();
-    expect(
-      screen.getByRole("link", { name: /#14/ }).getAttribute("href"),
-    ).toBe("/runs/run-14");
   });
 });
