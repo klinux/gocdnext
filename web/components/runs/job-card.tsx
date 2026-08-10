@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { isComplianceEntry } from "@/lib/compliance";
+import { logWindowCounts } from "@/lib/log-window";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { LogPane } from "@/components/runs/log-pane.client";
@@ -53,19 +54,14 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
   // them to head; tail is empty when head covers all). Looking at
   // tail alone would mistakenly collapse the details.
   const hasLogs = ((job.logs?.length ?? 0) + (job.logs_head?.length ?? 0)) > 0;
-  const logsShown = (job.logs_head?.length ?? 0) + (job.logs?.length ?? 0);
-  // Prefer the server's TRUE total; fall back to the window sum for older
-  // servers. Keeps "Logs (X of Y)" honest even on a tail-only / headless /
-  // cursor-poll response — no more "50 of 50" while showing seq 590-602.
-  // Clamp to at least what's visible: between 2s polls the SSE stream appends
-  // lines to the tail while logs_total still holds the LAST poll's value, so a
-  // raw read would render an impossible "101 of 100" until the next tick.
-  const logsFallbackTotal = logsShown + (job.logs_omitted ?? 0);
-  const logsTotal = Math.max(job.logs_total ?? 0, logsFallbackTotal, logsShown);
-  // Omitted derived from the (clamped) true total, so the LogPane divider is
-  // right even when the response carried no head (earlier lines still surface
-  // as "(N omitted)").
-  const logsOmitted = Math.max(0, logsTotal - logsShown);
+  // Honest "Logs (X of Y)" + omitted divider, tolerant of every fetch shape
+  // (tail-only, headless, SSE-ahead-of-poll). Shared with the JobDetailSheet
+  // drawer so the two never drift — see lib/log-window.
+  const {
+    shown: logsShown,
+    total: logsTotal,
+    omitted: logsOmitted,
+  } = logWindowCounts(job);
   const awaiting = job.status === "awaiting_approval" && job.approval_gate;
   const decided = job.approval_gate && !!job.decision;
   const isNotify = job.name.startsWith(SYNTH_NOTIFY_PREFIX);
