@@ -339,6 +339,13 @@ type JobDetail struct {
 	// also zero when the caller didn't request head at all (tail-
 	// only consumers can ignore this field).
 	LogsOmitted int64 `json:"logs_omitted,omitempty"`
+	// LogsTotal is the job's TRUE total line count, independent of the
+	// fetched window (head/tail/cursor) or storage (live log_lines vs
+	// cold archive). The UI reads "Logs (X of Y)" from this so a
+	// tail-only / headless / cursor-poll response can't collapse the
+	// total to the window size ("50 of 50" while showing seq 590-602).
+	// Zero (omitted) only when genuinely unknown.
+	LogsTotal int64 `json:"logs_total,omitempty"`
 
 	// Approval gate fields. Populated only when approval_gate is
 	// true so regular jobs don't carry dead JSON on every response.
@@ -1081,6 +1088,7 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 		}
 		if logsPerJob > 0 {
 			var logs []LogLineSummary
+			var logsTotal int64
 			jobUUID := fromPgUUID(j.ID)
 			cursor, hasCursor := since[jobUUID]
 
@@ -1095,9 +1103,9 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 			}
 			if arch.HasArchive && s.logArchiveSrc != nil {
 				if hasCursor {
-					logs, err = s.archivedAfterSeq(ctx, arch.URI, cursor, int64(logsPerJob))
+					logs, logsTotal, err = s.archivedAfterSeq(ctx, arch.URI, cursor, int64(logsPerJob))
 				} else {
-					logs, err = s.archivedTail(ctx, arch.URI, logsPerJob)
+					logs, logsTotal, err = s.archivedTail(ctx, arch.URI, logsPerJob)
 				}
 			} else if hasCursor {
 				// Delta fetch: lines strictly after the cursor,
@@ -1149,8 +1157,20 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 						omitted = 0
 					}
 					jd.LogsOmitted = omitted
+					// headTotal is authoritative (archive decode or
+					// CountLogLinesByJob) — carry it as the true total.
+					logsTotal = headTotal
 				}
 			}
+			// A live job on a tail-only / cursor path has no archive
+			// total and skipped the head count — fill the TRUE total
+			// so "Logs (X of Y)" never collapses to the window size.
+			if logsTotal == 0 && !(arch.HasArchive && s.logArchiveSrc != nil) {
+				if n, cErr := s.q.CountLogLinesByJob(ctx, j.ID); cErr == nil {
+					logsTotal = n
+				}
+			}
+			jd.LogsTotal = logsTotal
 		}
 		// Synthetic notification job: stamp the human-readable
 		// trigger + plugin ref so the UI can render a real label

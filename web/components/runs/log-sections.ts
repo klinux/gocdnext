@@ -196,8 +196,12 @@ export function buildLogBlocks(head: LogLine[], logs: LogLine[], omitted: number
   const blocks: LogBlock[] = [];
   if (head.length > 0) {
     for (const section of sectionsOfSegment(head)) blocks.push({ kind: "section", section });
-    if (omitted > 0) blocks.push({ kind: "omitted", count: omitted });
   }
+  // The omitted divider renders whenever lines are hidden — INCLUDING a
+  // tail-only view (head=[]), where it sits before the tail as "(N omitted)"
+  // so the operator sees the log isn't complete. Previously gated on a
+  // non-empty head, so an archived/headless "Logs (50 of 602)" showed no gap.
+  if (omitted > 0) blocks.push({ kind: "omitted", count: omitted });
   for (const section of sectionsOfSegment(logs)) blocks.push({ kind: "section", section });
   return blocks;
 }

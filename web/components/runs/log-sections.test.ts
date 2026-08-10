@@ -125,6 +125,22 @@ describe("buildLogBlocks", () => {
     expect(blocks[omittedIdx]).toEqual({ kind: "omitted", count: 47 });
   });
 
+  // Tail-only (head=[]) with lines hidden: the omitted divider must still
+  // appear, BEFORE the tail, so an archived "Logs (50 of 602)" shows the gap
+  // instead of a tail that looks complete.
+  it("emits the omitted divider before the tail when there is no head", () => {
+    const logs = [ln(596, "linking"), ln(597, "done")];
+    const blocks = buildLogBlocks([], logs, 552);
+    expect(blocks[0]).toEqual({ kind: "omitted", count: 552 });
+    expect(blocks.slice(1).every((b) => b.kind === "section")).toBe(true);
+  });
+
+  // No hidden lines → no divider (short job, everything visible).
+  it("emits no divider when nothing is omitted", () => {
+    const blocks = buildLogBlocks([], [ln(1, "a"), ln(2, "b")], 0);
+    expect(blocks.some((b) => b.kind === "omitted")).toBe(false);
+  });
+
   it("parses hour-scale durations (Go's `1h2m3s`) on singleton summaries", () => {
     const logs = [
       ln(1, "compiling everything"),

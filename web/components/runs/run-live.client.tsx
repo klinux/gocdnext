@@ -74,6 +74,26 @@ async function fetchRun(
   return (await res.json()) as RunDetail;
 }
 
+export type LogMeta = {
+  logs_head?: LogLine[];
+  logs_omitted?: number;
+  logs_total?: number;
+};
+
+// mergeLogMeta carries the richest log metadata forward across polls. The 2s
+// poll fetches `logs=50` with NO `head`, so its per-job response has no
+// logs_head/logs_omitted; without preserving the prior values the initial
+// head+tail+total load would collapse to a tail-only "N of N" window. The
+// CURRENT value wins when present (logs_total now comes fresh on every poll);
+// otherwise the prior rich value survives.
+export function mergeLogMeta(current: LogMeta, prior: LogMeta | undefined): LogMeta {
+  return {
+    logs_head: current.logs_head ?? prior?.logs_head,
+    logs_omitted: current.logs_omitted ?? prior?.logs_omitted,
+    logs_total: current.logs_total ?? prior?.logs_total,
+  };
+}
+
 export function RunLive({ initial, runId, apiBaseURL }: Props) {
   // The log state that survives across polls. Each bucket is a
   // seq→line map so deltas coming back from the server merge in
@@ -84,6 +104,18 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
   // every line of the new one.
   const logsByJobRef = useRef<Map<string, Map<number, LogLine>>>(new Map());
   const prevStatusRef = useRef<Map<string, string>>(new Map());
+  // Preserves the RICH log metadata (head / omitted / total) across
+  // polls. The 2s poll fetches `logs=50` with NO `head`, so its per-job
+  // response carries no logs_head/logs_omitted; without this the initial
+  // SSR head+omitted+total would collapse to a tail-only "N of N" window
+  // on the first tick. logs_total now comes fresh on every poll (server
+  // fix) and still wins when present.
+  const logMetaByJobRef = useRef<
+    Map<
+      string,
+      { logs_head?: LogLine[]; logs_omitted?: number; logs_total?: number }
+    >
+  >(new Map());
   // sseRev bumps every time an SSE event lands a new line. It exists
   // only to retrigger the useMemo that flattens logsByJobRef back
   // into job.logs arrays — the ref itself doesn't trigger a React
@@ -178,6 +210,7 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           (job.status === "queued" || job.status === "running")
         ) {
           map.delete(job.id);
+          logMetaByJobRef.current.delete(job.id);
         }
         prevStatus.set(job.id, job.status);
 
@@ -190,7 +223,12 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
         const merged = Array.from(bucket.values()).sort(
           (a, b) => a.seq - b.seq,
         );
-        return { ...job, logs: merged };
+        // Carry the richest head/omitted/total forward: a headless poll
+        // response must not drop what the initial head+tail load carried.
+        const metaMap = logMetaByJobRef.current;
+        const nextMeta = mergeLogMeta(job, metaMap.get(job.id));
+        metaMap.set(job.id, nextMeta);
+        return { ...job, ...nextMeta, logs: merged };
       }),
     }));
     return { ...data, stages };

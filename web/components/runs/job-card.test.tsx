@@ -164,3 +164,55 @@ describe("JobCard — freeze hold (#227)", () => {
     expect((approve as HTMLButtonElement).disabled).toBe(false);
   });
 });
+
+describe("JobCard — log counter (Logs X of Y)", () => {
+  const tailLogs = Array.from({ length: 5 }, (_, i) => ({
+    seq: 596 + i,
+    stream: "stdout",
+    at: "2026-06-10T12:00:00Z",
+    text: `line ${596 + i}`,
+  }));
+
+  // The bug: a tail-only response (no head/omitted) rendered "5 of 5"
+  // while the visible lines were seq 596-600. logs_total keeps it honest.
+  it("uses logs_total for the total, not the fetched window", () => {
+    renderCard(
+      <JobCard
+        job={makeJob({ status: "success", logs: tailLogs, logs_total: 602 })}
+        runID="run-1"
+      />,
+    );
+    expect(screen.getByText(/Logs \(5 of 602\)/)).toBeTruthy();
+  });
+
+  // Older server without logs_total: fall back to visible + omitted.
+  it("falls back to window + omitted when logs_total is absent", () => {
+    renderCard(
+      <JobCard
+        job={makeJob({ status: "success", logs: tailLogs, logs_omitted: 10 })}
+        runID="run-1"
+      />,
+    );
+    expect(screen.getByText(/Logs \(5 of 15\)/)).toBeTruthy();
+  });
+
+  // Between 2s polls the SSE stream appends lines while logs_total still holds
+  // the last poll's value — the count must never render an impossible X > Y.
+  it("clamps to the visible count when logs_total is stale (SSE ahead of poll)", () => {
+    const sixLines = Array.from({ length: 6 }, (_, i) => ({
+      seq: 96 + i,
+      stream: "stdout",
+      at: "2026-06-10T12:00:00Z",
+      text: `line ${96 + i}`,
+    }));
+    renderCard(
+      <JobCard
+        job={makeJob({ status: "running", logs: sixLines, logs_total: 5 })}
+        runID="run-1"
+      />,
+    );
+    // 6 visible with a stale total of 5 → "6 of 6", never "6 of 5".
+    expect(screen.getByText(/Logs \(6 of 6\)/)).toBeTruthy();
+    expect(screen.queryByText(/Logs \(6 of 5\)/)).toBeNull();
+  });
+});

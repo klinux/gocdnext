@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/tooltip";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { LogPane } from "@/components/runs/log-pane.client";
+import { logWindowCounts } from "@/lib/log-window";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import {
@@ -219,7 +220,11 @@ function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true
           <LogPane
             logs={job.logs ?? []}
             head={job.logs_head ?? []}
-            omitted={job.logs_omitted ?? 0}
+            // Derive omitted from logs_total: the drawer fetches head=0, so the
+            // server sends no logs_omitted — without this the tail-only /
+            // archived case shows no "(N omitted)" divider (shared rule with
+            // JobCard, see lib/log-window).
+            omitted={logWindowCounts(job).omitted}
             running={job.status === "running"}
             // Relative on purpose: project-page components follow the
             // same-origin convention (see pipeline-card.tsx) — only

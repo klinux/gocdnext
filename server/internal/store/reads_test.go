@@ -1,18 +1,29 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
+	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
+
+// memArchiveSrc is a one-blob LogArchiveSource fake: every key returns the same
+// archive bytes. Enough for a single-job archived-read test.
+type memArchiveSrc struct{ blob []byte }
+
+func (m memArchiveSrc) Get(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(m.blob)), nil
+}
 
 func TestListProjects_EmptyWhenNoProjects(t *testing.T) {
 	pool := dbtest.SetupPool(t)
@@ -618,6 +629,9 @@ func TestGetRunDetailWithLogs_HeadAndTailRendersStartAndEnd(t *testing.T) {
 	if jd.LogsOmitted != 90 {
 		t.Errorf("LogsOmitted = %d, want 90 (100 - 5 head - 5 tail)", jd.LogsOmitted)
 	}
+	if jd.LogsTotal != 100 {
+		t.Errorf("LogsTotal = %d, want 100 (the true line count)", jd.LogsTotal)
+	}
 	// Head = first 5 by seq, ascending.
 	if jd.LogsHead[0].Seq != 1 || jd.LogsHead[4].Seq != 5 {
 		t.Errorf("head seqs = [%d..%d], want [1..5]",
@@ -628,6 +642,126 @@ func TestGetRunDetailWithLogs_HeadAndTailRendersStartAndEnd(t *testing.T) {
 		t.Errorf("tail seqs = [%d..%d], want [96..100]",
 			jd.Logs[0].Seq, jd.Logs[len(jd.Logs)-1].Seq)
 	}
+}
+
+// A TAIL-ONLY window (Head=0) must still carry the TRUE total line count.
+// Regression for the "Logs (50 of 50)" bug where a headless response
+// collapsed the total to the fetched window while the visible lines were
+// seq 590-602 — proving the total came from the window, not the job.
+func TestGetRunDetailWithLogs_TailOnlyStillCarriesTotal(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	run, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	jobID := run.JobRuns[0].ID
+
+	now := time.Now().UTC()
+	for seq := int64(1); seq <= 100; seq++ {
+		if err := s.InsertLogLine(ctx, store.LogLine{
+			JobRunID: jobID, Seq: seq, Stream: "stdout",
+			At:   now.Add(time.Duration(seq) * time.Millisecond),
+			Text: fmt.Sprintf("line %d", seq),
+		}); err != nil {
+			t.Fatalf("log %d: %v", seq, err)
+		}
+	}
+
+	// Head=0: the tail-only glance the drawer / a headless poll fetches.
+	got, err := s.GetRunDetailWithLogs(ctx, run.RunID, store.LogWindow{Head: 0, Tail: 5})
+	if err != nil {
+		t.Fatalf("GetRunDetailWithLogs: %v", err)
+	}
+	var jd store.JobDetail
+	for _, st := range got.Stages {
+		for _, j := range st.Jobs {
+			if j.ID == jobID {
+				jd = j
+			}
+		}
+	}
+	if jd.ID == uuid.Nil {
+		t.Fatal("job not found in detail")
+	}
+	if len(jd.LogsHead) != 0 {
+		t.Errorf("LogsHead = %d, want 0 (tail-only)", len(jd.LogsHead))
+	}
+	if len(jd.Logs) != 5 {
+		t.Errorf("Logs (tail) = %d, want 5", len(jd.Logs))
+	}
+	// The fix: total is the job's real line count, NOT the window (5).
+	if jd.LogsTotal != 100 {
+		t.Errorf("LogsTotal = %d, want 100 — the total must survive a headless window", jd.LogsTotal)
+	}
+}
+
+// The exact production case: a COMPLETED job whose log_lines were purged and
+// shipped to the cold archive. A tail-only read must still report the archive's
+// true total (600), not the fetched window (5) — the "Logs (50 of 50) while
+// showing seq 590-602" bug.
+func TestGetRunDetailWithLogs_ArchivedTailOnlyCarriesTotal(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	ctx := context.Background()
+
+	// A 600-line archive blob.
+	now := time.Now().UTC()
+	lines := make([]logarchive.Line, 0, 600)
+	for seq := int64(1); seq <= 600; seq++ {
+		lines = append(lines, logarchive.Line{
+			Seq: seq, At: now.Add(time.Duration(seq) * time.Millisecond),
+			Stream: "stdout", Text: fmt.Sprintf("line %d", seq),
+		})
+	}
+	var buf bytes.Buffer
+	if _, err := logarchive.WriteArchive(&buf, lines); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+	s := store.New(pool).WithLogArchiveSource(memArchiveSrc{blob: buf.Bytes()})
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	run, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	jobID := run.JobRuns[0].ID
+	// Stamp the archive URI: the read path now hits the archive, not log_lines.
+	if err := s.MarkJobLogsArchived(ctx, jobID, "archives/job.tar.gz"); err != nil {
+		t.Fatalf("mark archived: %v", err)
+	}
+
+	// Head=0 tail-only — the drawer / a headless poll.
+	got, err := s.GetRunDetailWithLogs(ctx, run.RunID, store.LogWindow{Head: 0, Tail: 5})
+	if err != nil {
+		t.Fatalf("GetRunDetailWithLogs: %v", err)
+	}
+	var jd store.JobDetail
+	for _, st := range got.Stages {
+		for _, j := range st.Jobs {
+			if j.ID == jobID {
+				jd = j
+			}
+		}
+	}
+	if jd.ID == uuid.Nil {
+		t.Fatal("job not found")
+	}
+	if len(jd.Logs) != 5 || jd.Logs[len(jd.Logs)-1].Seq != 600 {
+		t.Fatalf("tail = %d lines ending seq %d, want 5 ending 600", len(jd.Logs), lastSeq(jd.Logs))
+	}
+	if jd.LogsTotal != 600 {
+		t.Errorf("LogsTotal = %d, want 600 (archive total, not the window of 5)", jd.LogsTotal)
+	}
+}
+
+func lastSeq(ls []store.LogLineSummary) int64 {
+	if len(ls) == 0 {
+		return 0
+	}
+	return ls[len(ls)-1].Seq
 }
 
 // TestGetRunDetailWithLogs_HeadTailOverlapDedupes covers the short-

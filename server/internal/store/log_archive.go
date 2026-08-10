@@ -241,12 +241,15 @@ func (s *Store) readArchive(ctx context.Context, key string) ([]logarchive.Line,
 
 // archivedTail returns the last `limit` lines of an archived job,
 // oldest-first within the returned window — same shape as
-// TailLogLinesByJob produces from log_lines.
-func (s *Store) archivedTail(ctx context.Context, key string, limit int32) ([]LogLineSummary, error) {
+// TailLogLinesByJob produces from log_lines. Also returns the archive's
+// TRUE total line count (from the same decode) so the caller can stamp
+// LogsTotal without a second read.
+func (s *Store) archivedTail(ctx context.Context, key string, limit int32) ([]LogLineSummary, int64, error) {
 	lines, err := s.readArchive(ctx, key)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	total := int64(len(lines))
 	if int(limit) > 0 && len(lines) > int(limit) {
 		lines = lines[len(lines)-int(limit):]
 	}
@@ -256,7 +259,7 @@ func (s *Store) archivedTail(ctx context.Context, key string, limit int32) ([]Lo
 			Seq: l.Seq, Stream: l.Stream, At: l.At, Text: l.Text,
 		})
 	}
-	return out, nil
+	return out, total, nil
 }
 
 // archivedHead returns the first `limit` lines of an archived job
@@ -286,12 +289,15 @@ func (s *Store) archivedHead(ctx context.Context, key string, limit int32) ([]Lo
 
 // archivedAfterSeq returns archived lines with seq strictly greater
 // than `cursor`, oldest-first, capped at `limit`. Mirrors
-// logLinesAfterSeq's contract for the cursor-poll path.
-func (s *Store) archivedAfterSeq(ctx context.Context, key string, cursor int64, limit int64) ([]LogLineSummary, error) {
+// logLinesAfterSeq's contract for the cursor-poll path. Also returns the
+// archive's TRUE total line count so a cursor poll can keep "X of Y"
+// honest instead of collapsing the total to the delta size.
+func (s *Store) archivedAfterSeq(ctx context.Context, key string, cursor int64, limit int64) ([]LogLineSummary, int64, error) {
 	lines, err := s.readArchive(ctx, key)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	total := int64(len(lines))
 	out := make([]LogLineSummary, 0, 64)
 	for _, l := range lines {
 		if l.Seq <= cursor {
@@ -304,5 +310,5 @@ func (s *Store) archivedAfterSeq(ctx context.Context, key string, cursor int64, 
 			break
 		}
 	}
-	return out, nil
+	return out, total, nil
 }

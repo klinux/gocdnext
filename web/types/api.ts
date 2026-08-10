@@ -263,6 +263,12 @@ export type JobDetail = {
   // and zero when the caller didn't request head. The UI shows
   // this as a divider between head and tail.
   logs_omitted?: number;
+  // logs_total is the job's TRUE total line count, independent of the
+  // fetched window (head/tail/cursor) or storage (live vs archived).
+  // Read this for "Logs (X of Y)" so a tail-only / headless / cursor
+  // poll can't collapse the total to the window size. Undefined only
+  // when the server couldn't determine it.
+  logs_total?: number;
 
   // Approval-gate metadata. Populated only when the job is a
   // manual approval gate; the server omits these fields on
