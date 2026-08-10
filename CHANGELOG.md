@@ -8,6 +8,25 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.89.1 — 2026-08-10
+
+### Fixed
+
+- **Log pane no longer under-reports a job's line count.** A completed job's
+  `log_lines` are shipped to the cold archive and purged, so `COUNT(*)` returned
+  0 and the true total was only computed when a `head` window was fetched. Any
+  headless read — the "recent log tail" drawer, a `?since=` cursor poll, the live
+  2 s poll — then showed `Logs (50 of 50)` while the visible lines were, say,
+  seq 590–602: the "total" was the size of the fetched window, not the job. Runs
+  now carry a real `logs_total` (from the archive decode or a line count),
+  surfaced through a shared UI helper so the full-run page and the drawer agree.
+  The count is clamped to at least the visible lines (the SSE stream appends
+  between polls, which could momentarily read `101 of 100`), the "(N omitted)"
+  divider now shows in tail-only views, and the live poll keeps the head/omitted
+  it already loaded instead of collapsing to a tail-only window. No log data was
+  lost — the archive is intact and the download button always streamed it in
+  full; this was purely the displayed count. (#250)
+
 ## v0.89.0 — 2026-08-10
 
 ### Fixed
