@@ -8,6 +8,32 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.89.0 — 2026-08-10
+
+### Fixed
+
+- **Manually triggering an upstream-driven deploy now reuses the latest build.**
+  A pipeline fed only by an `upstream:` material (a `deploy` driven by `build`)
+  couldn't carry the upstream's run counter when triggered by hand: the run
+  seeded from the deploy repo's HEAD with `cause=manual`, so
+  `CI_UPSTREAM_RUN_COUNTER` was unset. Jobs using the shell form
+  `${CI_UPSTREAM_RUN_COUNTER}` shipped a malformed `…version=1..<sha>`
+  (ImagePullBackOff) while the strict `${{ CI_UPSTREAM_RUN_COUNTER }}` in the
+  deploy marker failed at dispatch — **after** earlier jobs already mutated the
+  environment. `TriggerManualRun` now resolves the pipeline's single `upstream`
+  material to the **latest successful upstream run** and inherits its counter,
+  commit **and** ref as a unit (the pull-side mirror of the fanout), so a
+  hand-kicked or re-run deploy rebuilds the exact `1.<counter>.<sha>` the build
+  produced and re-applies the **already-built image** — no rebuild. Falls back
+  to the plain manual path when the upstream has no green run yet or the pipeline
+  declares more than one upstream material. (#249)
+
+- **Re-running an upstream/deploy run no longer fails with "no modification".**
+  Such runs carry two revision slots (the git checkout + the branchless upstream
+  material); the replay picked one non-deterministically and could land on the
+  UUID slot. It now prefers the branch-bearing material, so the re-run resolves
+  the git modification and re-deploys the same version. (#249)
+
 ## v0.88.1 — 2026-08-09
 
 ### Fixed
