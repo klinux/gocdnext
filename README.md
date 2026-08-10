@@ -203,7 +203,7 @@ your tooling prefers.
 ```bash
 helm repo add gocdnext https://klinux.github.io/gocdnext
 helm repo update
-helm install gocd gocdnext/gocdnext --version 0.39.3 \
+helm install gocd gocdnext/gocdnext --version 0.88.1 \
   --set devDatabase.enabled=true \
   --set agent.tokenSecret.value="$(openssl rand -hex 32)" \
   --set webhookToken.value="$(openssl rand -hex 32)" \
@@ -214,7 +214,7 @@ helm install gocd gocdnext/gocdnext --version 0.39.3 \
 **OCI** (Helm 3.8+):
 
 ```bash
-helm install gocd oci://ghcr.io/klinux/charts/gocdnext --version 0.39.3 \
+helm install gocd oci://ghcr.io/klinux/charts/gocdnext --version 0.88.1 \
   --set devDatabase.enabled=true \
   ...
 ```
@@ -232,7 +232,7 @@ See the [Architecture deep-dive](https://klinux.github.io/gocdnext/docs/concepts
 
 ![Architecture](docs/public/imgs/architecture.png)
 
-## What's shipped (v0.68.0)
+## What's shipped (v0.88.1)
 
 - **Pipeline core** — `.gocdnext/` folder, stage/job/needs/matrix, materials
   (git + upstream), webhook-first ingest with polling fallback.
@@ -251,13 +251,26 @@ See the [Architecture deep-dive](https://klinux.github.io/gocdnext/docs/concepts
 - **Runtimes** — Docker on the agent host **or** Kubernetes pod-per-job
   with runner profiles (K1–K4), `node_selector`/`tolerations` scheduling,
   and a DinD sidecar for `docker: true` jobs.
+- **Fleet resilience** — agent autoscaling off a `queue_depth{dispatchable}`
+  signal (HPA / KEDA), graceful drain on `SIGTERM` (finish in-flight, refuse
+  new), and **preemption retry**: a spot-node teardown (exit 143) is reported
+  as `DISRUPTED` and re-dispatched instead of failing — except deploy /
+  env-mutating jobs, which fail terminal with logs + artifacts preserved.
 - **Keyless cloud auth** — OIDC token issuer: jobs mint short-lived
   `id_tokens:` (RS256, JWKS at `/.well-known/`), exchangeable for cloud
   credentials via workload identity federation (GCP/AWS/Azure/Vault) — no
   static service-account keys.
 - **Deployment tracking** — `deploy:` markers record version-per-environment,
-  an Environments tab with history, and **one-click rollback** that re-runs
-  with the prior revision's immutable outputs.
+  an Environments tab with per-env deploy counts and a keyset-paginated
+  history, and **one-click rollback** / **redeploy-current** that re-run the
+  prior / current revision's immutable outputs (no manifest snapshot; redeploy
+  is a normal forward deploy, so it doesn't skew change-failure signals).
+- **Native deploy targets** — a registered ArgoCD provider (server-managed,
+  Model A) can drive the deploy instead of your `script:`, bound to a named
+  cluster, observe-only or trigger-sync.
+- **Environment change-freeze** — block *all* promotion to an environment for a
+  window, independent of approvals, with expiry, cancel, audit, and a
+  `quorum_by_label` override; the freeze surfaces on the project's approve node.
 - **Gated delivery** — release-train flow: a curated release PR (sign-off
   gate) cuts a tag that drives build → stage → **approval gate (promote)** →
   production. Approval gates are pure DB state (approver groups + quorum +
@@ -293,10 +306,13 @@ See the [Architecture deep-dive](https://klinux.github.io/gocdnext/docs/concepts
   attestation in the release path.
 - **Operability** — VSM, single-host Ingress / Gateway API in the Helm
   chart, OpenTelemetry traces, Prometheus `/metrics`, `slog` with
-  `trace_id`/`span_id` correlation, phase-marked logs + full-log streaming.
+  `trace_id`/`span_id` correlation, phase-marked logs + full-log streaming,
+  and a byte-bounded log batcher with visible drop metrics.
 
 ## What's open
 
+- **Windows / macOS agents** — a host executor for non-Linux targets;
+  scheduler routes by `os`/`arch`. Deferred (#69).
 - **Per-project agent scope / lock** — deferred from the k8s runtime
   rollout.
 - **`isolation: per-stage`** — share workspace across jobs in the same

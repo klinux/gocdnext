@@ -80,6 +80,17 @@ gocdnext_agent_drain_total{outcome="abandoned"} 1
 # HELP gocdnext_agent_drain_duration_seconds Seconds from the Draining signal to stream close, by outcome.
 # TYPE gocdnext_agent_drain_duration_seconds histogram
 gocdnext_agent_drain_duration_seconds_bucket{outcome="clean",le="30"} 21
+
+# HELP gocdnext_jobs_disrupted_total Preempted jobs (spot-node teardown, exit 143) by how they were resolved.
+# TYPE gocdnext_jobs_disrupted_total counter
+gocdnext_jobs_disrupted_total{outcome="requeued"} 14
+gocdnext_jobs_disrupted_total{outcome="failed_unsafe_target"} 2
+gocdnext_jobs_disrupted_total{outcome="failed_capped"} 1
+
+# HELP gocdnext_log_lines_dropped_total Log lines dropped by the per-stream batcher, by reason.
+# TYPE gocdnext_log_lines_dropped_total counter
+gocdnext_log_lines_dropped_total{reason="backpressure"} 31
+gocdnext_log_lines_dropped_total{reason="bytes_full"} 4
 ```
 
 Plus the standard Go runtime metrics (`go_*`, `process_*`).
@@ -225,6 +236,8 @@ It covers:
   signal → desired replicas, fleet saturation
 - gRPC & job lifecycle: reclaim + sweep errors, agent drain outcomes, gRPC
   request/error rate + unary p95 latency
+- Reliability: preempted-job resolutions (`jobs_disrupted_total`) and log-line
+  drops by reason (`log_lines_dropped_total`)
 
 Import via *Dashboards → New → Import* and paste the JSON; pick
 your Prometheus datasource on the variables panel and you're done.

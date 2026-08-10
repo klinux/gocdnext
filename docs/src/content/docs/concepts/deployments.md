@@ -98,14 +98,17 @@ Every dispatch of a deploy job writes a **deployment revision**:
   or retry records a distinct revision rather than mutating the
   prior one.
 
-The Environments tab shows the current (latest `success`) version
-per environment and the full revision history. Via the API:
+The Environments tab shows, per environment, the current (latest
+`success`) version, a **deploy count**, and the **revision history** —
+a keyset-paginated timeline that gets its own page once it outgrows the
+card. Via the API:
 
 | Method | Path | Returns |
 |---|---|---|
-| `GET` | `/api/v1/projects/{slug}/environments` | environments with their current version |
-| `GET` | `/api/v1/projects/{slug}/environments/{envID}/deployments` | revision history for one environment |
+| `GET` | `/api/v1/projects/{slug}/environments` | environments with their current version + deploy count |
+| `GET` | `/api/v1/projects/{slug}/environments/{envID}/deployments` | revision history (keyset-paginated via `cursor`, with the timeline `total`) |
 | `POST` | `/api/v1/projects/{slug}/environments/{envID}/rollback` | roll back (see below) |
+| `POST` | `/api/v1/projects/{slug}/environments/{envID}/redeploy` | redeploy the current version (see below) |
 | `PUT`/`DELETE` | `/api/v1/projects/{slug}/environment-freezes/{name}` | [freeze / unfreeze](/gocdnext/docs/concepts/environment-freeze/) the environment (maintainer) |
 
 ## One-click rollback
@@ -131,6 +134,23 @@ action isn't offered: there's nothing immutable left to replay.
 A rollback **is** a deploy, so it is refused with `409` while the
 environment is under a
 [change-freeze](/gocdnext/docs/concepts/environment-freeze/).
+
+## Redeploy the current version
+
+Alongside rollback, an environment offers **Redeploy current version** —
+re-run the deploy job behind the environment's *current* successful
+revision. It's the "ship the same thing again" button: a wedged rollout,
+a flaked post-deploy step, a cluster that drifted out from under you.
+
+The server resolves *current* **at request time**, so a stale tab can't
+ask to redeploy an older revision while calling it current. Like rollback
+it replays a real job — immutable outputs re-resolve to the same version —
+is refused with `409` under a
+[change-freeze](/gocdnext/docs/concepts/environment-freeze/), and is
+unavailable once the current revision's run has been pruned. Unlike
+rollback it is **not** flagged `is_rollback`: a redeploy is a normal
+forward deploy, so it doesn't distort rollback-based change-failure
+signals.
 
 ## What this is not
 
