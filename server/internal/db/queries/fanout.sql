@@ -35,3 +35,33 @@ WHERE pipeline_id = @pipeline_id::uuid
   AND cause = 'upstream'
   AND (cause_detail->>'upstream_run_id')::uuid = @upstream_run_id::uuid
 LIMIT 1;
+
+-- name: LatestUpstreamRunForManualTrigger :one
+-- Resolve a downstream pipeline's `upstream` material to the LATEST successful
+-- run of the upstream pipeline whose required stage is green — the pull-side
+-- mirror of the fanout (which stamps the same on the push side when the stage
+-- completes). Returns the counter AND the upstream run's revisions so a
+-- hand-kicked deploy rebuilds the exact 1.<counter>.<sha> the build produced,
+-- never mixing the build's counter with the deploy's own HEAD. Project-scoped
+-- (upstream refs are project-local) and honours the material's configured status
+-- (default 'success'). Newest by counter.
+SELECT
+    m.id                       AS downstream_material_id,
+    up_run.id                  AS upstream_run_id,
+    up_run.counter             AS upstream_run_counter,
+    up_run.revisions           AS upstream_revisions,
+    up.name                    AS upstream_pipeline,
+    COALESCE(m.config->>'stage', '')::text AS upstream_stage
+FROM materials m
+JOIN pipelines down ON down.id = m.pipeline_id
+JOIN pipelines up ON up.project_id = down.project_id
+                 AND up.name = m.config->>'pipeline'
+JOIN runs up_run ON up_run.pipeline_id = up.id
+JOIN stage_runs s ON s.run_id = up_run.id
+                 AND s.name = m.config->>'stage'
+                 AND s.status = 'success'
+WHERE m.pipeline_id = @downstream_pipeline_id::uuid
+  AND m.type = 'upstream'
+  AND COALESCE(m.config->>'status', 'success') = 'success'
+ORDER BY up_run.counter DESC
+LIMIT 1;

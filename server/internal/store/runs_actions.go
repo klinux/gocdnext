@@ -694,6 +694,27 @@ func (s *Store) TriggerManualRun(ctx context.Context, in TriggerManualRunInput) 
 	}
 	delivery := cause + "-" + in.PipelineID.String()
 
+	// Upstream-driven pipeline (e.g. a deploy fed by `build`): a hand kick can't
+	// carry the upstream's run counter, so resolve the LATEST successful upstream
+	// run and inherit its counter + commit — the pull-side mirror of the fanout.
+	// Without this the run seeds from the deploy repo's HEAD with no
+	// CI_UPSTREAM_RUN_COUNTER, and `deploy.version: 1.${{ CI_UPSTREAM_RUN_COUNTER }}
+	// .${{ CI_COMMIT_SHORT_SHA }}` fails at dispatch AFTER earlier jobs already
+	// shipped a `1..<sha>` image. When the upstream has no green run yet the
+	// resolver reports not-resolved and we fall through to the existing path, so
+	// a standalone downstream stays hand-kickable before its upstream lands.
+	if up, resolved, err := s.resolveManualUpstreamContext(ctx, in.PipelineID); err != nil {
+		return RunCreated{}, err
+	} else if resolved {
+		return s.insertRunSkeleton(ctx, insertRunSkeletonInput{
+			PipelineID:  in.PipelineID,
+			Cause:       cause,
+			CauseDetail: up.causeDetail,
+			Revisions:   up.revisions,
+			TriggeredBy: triggeredBy,
+		})
+	}
+
 	mod, err := s.q.GetLatestModificationForPipeline(ctx, pgUUID(in.PipelineID))
 	switch {
 	case err == nil:
