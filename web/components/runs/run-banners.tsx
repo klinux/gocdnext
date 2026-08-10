@@ -149,6 +149,7 @@ export function UpstreamBanner({
     upstream_pipeline?: string;
     upstream_stage?: string;
     upstream_run_counter?: number;
+    manual_upstream?: boolean;
   };
 }) {
   const {
@@ -156,6 +157,7 @@ export function UpstreamBanner({
     upstream_pipeline,
     upstream_stage,
     upstream_run_counter,
+    manual_upstream,
   } = upstream;
   // Two chips share the banner: the pipeline that triggered this
   // run (no link target — pipelines are sub-views of their project,
@@ -164,7 +166,9 @@ export function UpstreamBanner({
   // hint inside the pipeline chip when present.
   return (
     <aside className="flex flex-wrap items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
-      <span className="text-muted-foreground">Triggered by</span>
+      <span className="text-muted-foreground">
+        {manual_upstream ? "Manual re-deploy of" : "Triggered by"}
+      </span>
       {upstream_pipeline ? (
         <EntityChip
           kind="pipeline"

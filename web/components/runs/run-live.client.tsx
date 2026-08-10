@@ -203,14 +203,23 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sseRev is the intentional recompute trigger for SSE-delivered lines that mutate logsByJobRef in place
   }, [data, sseRev]);
 
+  const upstreamDetail = data.cause_detail as
+    | {
+        upstream_run_id?: string;
+        upstream_pipeline?: string;
+        upstream_stage?: string;
+        upstream_run_counter?: number;
+        manual_upstream?: boolean;
+      }
+    | undefined;
+  // Show the upstream banner for a fanout run (cause="upstream") AND for a
+  // manual re-deploy that resolved to the latest successful build (cause stays
+  // "manual", but the run carries the synthesized upstream context), so the
+  // operator sees WHICH build shipped.
   const upstream =
-    data.cause === "upstream" && data.cause_detail
-      ? (data.cause_detail as {
-          upstream_run_id?: string;
-          upstream_pipeline?: string;
-          upstream_stage?: string;
-          upstream_run_counter?: number;
-        })
+    upstreamDetail &&
+    (data.cause === "upstream" || upstreamDetail.upstream_run_counter != null)
+      ? upstreamDetail
       : null;
 
   const pullRequest =

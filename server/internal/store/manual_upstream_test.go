@@ -5,15 +5,20 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // A manual trigger of an upstream-driven pipeline (deploy-api, whose only
 // trigger is the `build-core` upstream) must resolve to the LATEST successful
-// upstream run and inherit its counter + commit — so `deploy.version` templates
-// the already-built 1.<counter>.<sha> instead of a contextless 1..<sha>.
+// upstream run and inherit its counter + commit + ref — so `deploy.version`
+// templates the already-built 1.<counter>.<sha> on the SAME lane, instead of a
+// contextless 1..<sha> on ref "".
 func TestTriggerManualRun_ResolvesLatestUpstream(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
@@ -21,11 +26,9 @@ func TestTriggerManualRun_ResolvesLatestUpstream(t *testing.T) {
 
 	coreID, apiID, _, coreMat := seedFanoutProject(t, pool)
 	coreRunID, _ := completeUpstreamTestStage(t, pool, coreID, coreMat)
-
-	// completeUpstreamTestStage bypasses the scheduler, so it completes the JOBS
-	// but leaves the stage_runs 'queued'. In production the `test` stage is
-	// 'success' when the build finishes (that's what fires the fanout); mirror
-	// that precondition — the material gates on the stage being green.
+	// completeUpstreamTestStage bypasses the scheduler and leaves the stage_runs
+	// 'queued'; in production the `test` stage is 'success' when the build
+	// finishes (that's what the material gates on). Mirror that precondition.
 	if _, err := pool.Exec(ctx,
 		`UPDATE stage_runs SET status='success' WHERE run_id=$1 AND name='test'`, coreRunID,
 	); err != nil {
@@ -33,28 +36,28 @@ func TestTriggerManualRun_ResolvesLatestUpstream(t *testing.T) {
 	}
 
 	var wantCounter int64
-	if err := pool.QueryRow(ctx, `SELECT counter FROM runs WHERE id = $1`, coreRunID).Scan(&wantCounter); err != nil {
-		t.Fatalf("core counter: %v", err)
+	var buildRef string
+	if err := pool.QueryRow(ctx,
+		`SELECT counter, COALESCE(ref,'') FROM runs WHERE id = $1`, coreRunID,
+	).Scan(&wantCounter, &buildRef); err != nil {
+		t.Fatalf("core counter/ref: %v", err)
 	}
 
 	res, err := s.TriggerManualRun(ctx, store.TriggerManualRunInput{
-		PipelineID:  apiID,
-		TriggeredBy: "user:alice",
+		PipelineID: apiID, TriggeredBy: "user:alice",
 	})
 	if err != nil {
 		t.Fatalf("TriggerManualRun: %v", err)
 	}
 
-	var cause string
+	var cause, runRef string
 	var detailRaw, revisionsRaw []byte
 	if err := pool.QueryRow(ctx,
-		`SELECT cause, cause_detail, revisions FROM runs WHERE id = $1`, res.RunID,
-	).Scan(&cause, &detailRaw, &revisionsRaw); err != nil {
+		`SELECT cause, cause_detail, revisions, COALESCE(ref,'') FROM runs WHERE id = $1`, res.RunID,
+	).Scan(&cause, &detailRaw, &revisionsRaw, &runRef); err != nil {
 		t.Fatalf("load run: %v", err)
 	}
 
-	// Honestly labelled a manual run — the operator kicked it — while still
-	// carrying the upstream context so the deploy marker resolves.
 	if cause != "manual" {
 		t.Fatalf("cause = %q, want manual", cause)
 	}
@@ -82,43 +85,162 @@ func TestTriggerManualRun_ResolvesLatestUpstream(t *testing.T) {
 		t.Fatal("manual_upstream marker not set")
 	}
 
-	// Revisions must carry the BUILD's git commit (not the deploy repo's HEAD),
-	// so CI_COMMIT_SHA pairs with the counter above.
+	// Revisions carry the BUILD's git commit (not the deploy repo's HEAD).
 	if !strings.Contains(string(revisionsRaw), "abc123abc123abc123abc123abc123abc123abc1") {
 		t.Fatalf("revisions missing the build commit: %s", revisionsRaw)
 	}
+	// Ref (supersede lane #97) matches the build's, not default "".
+	if buildRef == "" {
+		t.Fatal("precondition: build ref should be non-empty (main)")
+	}
+	if runRef != buildRef {
+		t.Fatalf("ref = %q, want the build's ref %q", runRef, buildRef)
+	}
 }
 
-// With an upstream material but no successful upstream run yet, a manual trigger
-// falls back to a plain manual run (no upstream context) — a standalone
-// downstream stays hand-kickable before its upstream lands, matching the
-// pre-existing contract. It must NOT invent a counter it cannot have.
-func TestTriggerManualRun_UpstreamNoSuccessfulRunFallsBack(t *testing.T) {
+// The caller's cause_detail (project cron passes schedule_id / schedule_name /
+// expression) must survive the upstream merge — the run carries BOTH.
+func TestTriggerManualRun_MergesCallerCauseDetail(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	ctx := context.Background()
 
-	_, apiID, _, _ := seedFanoutProject(t, pool)
+	coreID, apiID, _, coreMat := seedFanoutProject(t, pool)
+	coreRunID, _ := completeUpstreamTestStage(t, pool, coreID, coreMat)
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='success' WHERE run_id=$1 AND name='test'`, coreRunID,
+	); err != nil {
+		t.Fatalf("mark stage: %v", err)
+	}
 
 	res, err := s.TriggerManualRun(ctx, store.TriggerManualRunInput{
 		PipelineID:  apiID,
-		TriggeredBy: "user:alice",
+		TriggeredBy: "cron",
+		Cause:       "schedule",
+		CauseDetail: json.RawMessage(`{"schedule_id":"sched-1","schedule_name":"nightly"}`),
 	})
 	if err != nil {
 		t.Fatalf("TriggerManualRun: %v", err)
 	}
 
-	var cause string
 	var detailRaw []byte
-	if err := pool.QueryRow(ctx,
-		`SELECT cause, cause_detail FROM runs WHERE id = $1`, res.RunID,
-	).Scan(&cause, &detailRaw); err != nil {
-		t.Fatalf("load run: %v", err)
+	if err := pool.QueryRow(ctx, `SELECT cause_detail FROM runs WHERE id=$1`, res.RunID).Scan(&detailRaw); err != nil {
+		t.Fatalf("load detail: %v", err)
 	}
-	if cause != "manual" {
-		t.Fatalf("cause = %q, want manual", cause)
+	var d map[string]any
+	if err := json.Unmarshal(detailRaw, &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if d["schedule_id"] != "sched-1" || d["schedule_name"] != "nightly" {
+		t.Fatalf("caller cause_detail lost: %s", detailRaw)
+	}
+	if _, ok := d["upstream_run_counter"]; !ok {
+		t.Fatalf("upstream context missing: %s", detailRaw)
+	}
+}
+
+// A manual-upstream run carries TWO revisions (git checkout + branchless upstream
+// material). Re-running it must pick the git checkout — not the UUID slot, which
+// has no modification and dropped rerun into ErrNoModificationForPipeline.
+func TestRerunRun_ManualUpstreamRunPicksGitMaterial(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	coreID, apiID, _, coreMat := seedFanoutProject(t, pool)
+	coreRunID, _ := completeUpstreamTestStage(t, pool, coreID, coreMat)
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='success' WHERE run_id=$1 AND name='test'`, coreRunID,
+	); err != nil {
+		t.Fatalf("mark stage: %v", err)
+	}
+
+	// In production the build ran from a real webhook, so the git material has a
+	// modification row; RerunRun's GetModificationByKey needs it. (The bypass
+	// helper doesn't create one.)
+	if _, err := s.InsertModification(ctx, store.Modification{
+		MaterialID:  coreMat,
+		Revision:    "abc123abc123abc123abc123abc123abc123abc1",
+		Branch:      "main",
+		CommittedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("seed modification: %v", err)
+	}
+
+	created, err := s.TriggerManualRun(ctx, store.TriggerManualRunInput{
+		PipelineID: apiID, TriggeredBy: "user:alice",
+	})
+	if err != nil {
+		t.Fatalf("TriggerManualRun: %v", err)
+	}
+	// RerunRun only accepts a terminal run.
+	if _, err := pool.Exec(ctx, `UPDATE runs SET status='success' WHERE id=$1`, created.RunID); err != nil {
+		t.Fatalf("mark run terminal: %v", err)
+	}
+
+	rerun, err := s.RerunRun(ctx, store.RerunRunInput{RunID: created.RunID, TriggeredBy: "user:bob"})
+	if err != nil {
+		t.Fatalf("RerunRun of a manual-upstream run: %v", err)
+	}
+	if rerun.RunID == created.RunID {
+		t.Fatal("rerun should be a fresh run")
+	}
+}
+
+// A pipeline with MORE THAN ONE upstream material is ambiguous — counters aren't
+// comparable across pipelines — so a manual trigger must fall back to a plain
+// manual run rather than guess which upstream to deploy.
+func TestTriggerManualRun_MultipleUpstreamsFallsBack(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	buildMat := func(name string) domain.Material {
+		url := "https://example.com/" + name
+		return domain.Material{
+			Type: domain.MaterialGit, Fingerprint: domain.GitFingerprint(url, "main"), AutoUpdate: true,
+			Git: &domain.GitMaterial{URL: url, Branch: "main", Events: []string{"push"}},
+		}
+	}
+	upstreamMat := func(name string) domain.Material {
+		return domain.Material{
+			Type: domain.MaterialUpstream, Fingerprint: domain.UpstreamFingerprint(name, "test"), AutoUpdate: true,
+			Upstream: &domain.UpstreamMaterial{Pipeline: name, Stage: "test", Status: "success"},
+		}
+	}
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "multi", Name: "Multi",
+		Pipelines: []*domain.Pipeline{
+			{Name: "build-a", Stages: []string{"test"}, Materials: []domain.Material{buildMat("build-a")},
+				Jobs: []domain.Job{{Name: "t", Stage: "test", Tasks: []domain.Task{{Script: "make"}}}}},
+			{Name: "build-b", Stages: []string{"test"}, Materials: []domain.Material{buildMat("build-b")},
+				Jobs: []domain.Job{{Name: "t", Stage: "test", Tasks: []domain.Task{{Script: "make"}}}}},
+			{Name: "fan-in", Stages: []string{"deploy"},
+				Materials: []domain.Material{upstreamMat("build-a"), upstreamMat("build-b")},
+				Jobs:      []domain.Job{{Name: "deploy", Stage: "deploy", Tasks: []domain.Task{{Script: "echo"}}}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	var fanInID uuid.UUID
+	for _, p := range applied.Pipelines {
+		if p.Name == "fan-in" {
+			fanInID = p.PipelineID
+		}
+	}
+
+	res, err := s.TriggerManualRun(ctx, store.TriggerManualRunInput{
+		PipelineID: fanInID, TriggeredBy: "user:alice",
+	})
+	if err != nil {
+		t.Fatalf("TriggerManualRun (multi-upstream): %v", err)
+	}
+	var detailRaw []byte
+	if err := pool.QueryRow(ctx, `SELECT cause_detail FROM runs WHERE id=$1`, res.RunID).Scan(&detailRaw); err != nil {
+		t.Fatalf("load detail: %v", err)
 	}
 	if strings.Contains(string(detailRaw), "upstream_run_counter") {
-		t.Fatalf("fallback run must carry no upstream context, got %s", detailRaw)
+		t.Fatalf("multi-upstream must fall back to a plain manual run, got upstream context: %s", detailRaw)
 	}
 }

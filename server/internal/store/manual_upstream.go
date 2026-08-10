@@ -10,30 +10,43 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// manualUpstreamContext is the cause_detail + revisions a manual trigger of an
-// upstream-driven pipeline inherits from the latest successful upstream run —
-// the pull-side mirror of what the fanout stamps on the push side.
+// manualUpstreamContext is the cause_detail + revisions + supersede ref a manual
+// trigger of an upstream-driven pipeline inherits from the latest successful
+// upstream run — the pull-side mirror of what the fanout stamps on the push side.
 type manualUpstreamContext struct {
 	causeDetail json.RawMessage
 	revisions   json.RawMessage
+	ref         string
 }
 
 // resolveManualUpstreamContext resolves the pipeline's `upstream` material to
 // the latest successful run of the upstream pipeline, returning the cause_detail
-// (upstream_run_id/counter/pipeline/stage) + revisions the fanout would stamp.
+// (upstream_run_id/counter/pipeline/stage, merged onto any callerDetail), the
+// revisions, and the supersede ref the fanout would stamp.
 //
-// resolved == true only when a successful upstream run exists; the caller then
-// seeds the manual run from it. resolved == false covers BOTH "no upstream
-// material" and "has one but its upstream has no green run yet" — the caller
-// falls back to its existing git-modification / bare-skeleton path unchanged, so
-// a standalone downstream stays hand-kickable before its upstream ever lands.
+// resolved == true only when the pipeline declares EXACTLY ONE upstream material
+// AND that upstream has a successful run. resolved == false covers "no upstream
+// material", "multiple upstream materials" (ambiguous — counters aren't
+// comparable across pipelines, so we don't guess) and "has one but no green run
+// yet"; the caller falls back to its existing git-modification / bare-skeleton
+// path unchanged, so a standalone downstream stays hand-kickable.
 //
 // Resolving here (not just at fanout time) is what lets a hand-kicked deploy
-// rebuild the SAME 1.<counter>.<sha> the upstream produced: the counter AND the
-// commit are pulled together from the one build run, never mixing the build's
-// counter with the deploy repo's live HEAD (which would template an image that
-// was never built).
-func (s *Store) resolveManualUpstreamContext(ctx context.Context, pipelineID uuid.UUID) (manualUpstreamContext, bool, error) {
+// rebuild the SAME 1.<counter>.<sha> the upstream produced, on the SAME lane:
+// counter, commit AND ref are pulled together from the one build run, never
+// mixing the build's counter with the deploy repo's live HEAD.
+func (s *Store) resolveManualUpstreamContext(ctx context.Context, pipelineID uuid.UUID, callerDetail []byte) (manualUpstreamContext, bool, error) {
+	// Auto-resolve only when there is exactly one upstream material: run counters
+	// are per-pipeline, so "newest across two upstreams" is meaningless. Anything
+	// else falls back to the plain manual path rather than deploy the wrong build.
+	n, err := s.q.CountUpstreamMaterials(ctx, pgUUID(pipelineID))
+	if err != nil {
+		return manualUpstreamContext{}, false, fmt.Errorf("store: manual upstream: material count: %w", err)
+	}
+	if n != 1 {
+		return manualUpstreamContext{}, false, nil
+	}
+
 	row, err := s.q.LatestUpstreamRunForManualTrigger(ctx, pgUUID(pipelineID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return manualUpstreamContext{}, false, nil
@@ -42,17 +55,25 @@ func (s *Store) resolveManualUpstreamContext(ctx context.Context, pipelineID uui
 		return manualUpstreamContext{}, false, fmt.Errorf("store: manual upstream: latest run: %w", err)
 	}
 
+	// Merge the upstream keys onto whatever the caller stamped (project cron
+	// passes schedule_id / schedule_name / expression). Upstream keys are
+	// authoritative on collision; a malformed callerDetail degrades to none.
+	detail := map[string]any{}
+	if len(callerDetail) > 0 {
+		if err := json.Unmarshal(callerDetail, &detail); err != nil {
+			detail = map[string]any{}
+		}
+	}
 	upstreamRunID := fromPgUUID(row.UpstreamRunID)
-	causeDetail, err := json.Marshal(map[string]any{
-		"upstream_run_id":      upstreamRunID.String(),
-		"upstream_run_counter": row.UpstreamRunCounter,
-		"upstream_pipeline":    row.UpstreamPipeline,
-		"upstream_stage":       row.UpstreamStage,
-		// Marks a hand-kicked deploy that resolved to the latest build, as
-		// opposed to a fanout-created run (cause="upstream"). The run stays
-		// honestly cause="manual" while still surfacing CI_UPSTREAM_*.
-		"manual_upstream": true,
-	})
+	detail["upstream_run_id"] = upstreamRunID.String()
+	detail["upstream_run_counter"] = row.UpstreamRunCounter
+	detail["upstream_pipeline"] = row.UpstreamPipeline
+	detail["upstream_stage"] = row.UpstreamStage
+	// Marks a hand-kicked deploy that resolved to the latest build, as opposed to
+	// a fanout-created run (cause="upstream"). The run stays honestly
+	// cause="manual" while still surfacing CI_UPSTREAM_* + the upstream banner.
+	detail["manual_upstream"] = true
+	causeDetail, err := json.Marshal(detail)
 	if err != nil {
 		return manualUpstreamContext{}, false, fmt.Errorf("store: manual upstream: marshal detail: %w", err)
 	}
@@ -77,5 +98,5 @@ func (s *Store) resolveManualUpstreamContext(ctx context.Context, pipelineID uui
 		return manualUpstreamContext{}, false, fmt.Errorf("store: manual upstream: marshal revisions: %w", err)
 	}
 
-	return manualUpstreamContext{causeDetail: causeDetail, revisions: revisions}, true, nil
+	return manualUpstreamContext{causeDetail: causeDetail, revisions: revisions, ref: row.UpstreamRef}, true, nil
 }

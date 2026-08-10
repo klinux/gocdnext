@@ -293,6 +293,12 @@ type Querier interface {
 	// pulling the full case list. Empty when the job didn't produce
 	// reports.
 	CountTestResultsByJobRun(ctx context.Context, jobRunIds []pgtype.UUID) ([]CountTestResultsByJobRunRow, error)
+	// How many `upstream` materials a pipeline declares. TriggerManualRun only
+	// auto-resolves when there is EXACTLY ONE: run counters are per-pipeline, so
+	// "newest across two different upstreams" is meaningless — a pipeline with
+	// multiple upstream materials falls back to the plain manual path rather than
+	// guess which upstream (and which counter) to deploy.
+	CountUpstreamMaterials(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Pair for ListWebhookDeliveries so the UI can render "N of M".
 	CountWebhookDeliveries(ctx context.Context, arg CountWebhookDeliveriesParams) (int64, error)
 	// Latest coverage per series from MAINLINE runs, used as the delta
@@ -1066,14 +1072,15 @@ type Querier interface {
 	// (migration 00055) carries the names of those services so the card
 	// can label them without that fetch.
 	LatestRunPerPipelineByProjectSlug(ctx context.Context, slug string) ([]LatestRunPerPipelineByProjectSlugRow, error)
-	// Resolve a downstream pipeline's `upstream` material to the LATEST successful
-	// run of the upstream pipeline whose required stage is green — the pull-side
-	// mirror of the fanout (which stamps the same on the push side when the stage
-	// completes). Returns the counter AND the upstream run's revisions so a
-	// hand-kicked deploy rebuilds the exact 1.<counter>.<sha> the build produced,
-	// never mixing the build's counter with the deploy's own HEAD. Project-scoped
-	// (upstream refs are project-local) and honours the material's configured status
-	// (default 'success'). Newest by counter.
+	// Resolve a downstream pipeline's SINGLE `upstream` material (guarded by
+	// CountUpstreamMaterials == 1) to the LATEST successful run of the upstream
+	// pipeline whose required stage is green — the pull-side mirror of the fanout
+	// (which stamps the same on the push side when the stage completes). Returns the
+	// counter, the upstream run's revisions AND its ref so a hand-kicked deploy
+	// rebuilds the exact 1.<counter>.<sha> the build produced on the SAME supersede
+	// lane, never mixing the build's counter with the deploy's own HEAD.
+	// Project-scoped (upstream refs are project-local) and honours the material's
+	// configured status (default 'success'). Newest by counter.
 	LatestUpstreamRunForManualTrigger(ctx context.Context, downstreamPipelineID pgtype.UUID) (LatestUpstreamRunForManualTriggerRow, error)
 	ListAPITokensByServiceAccount(ctx context.Context, serviceAccountID pgtype.UUID) ([]ListAPITokensByServiceAccountRow, error)
 	// Tokens this user owns, newest first. Used by /settings/api-tokens.

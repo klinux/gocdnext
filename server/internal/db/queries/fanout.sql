@@ -36,20 +36,33 @@ WHERE pipeline_id = @pipeline_id::uuid
   AND (cause_detail->>'upstream_run_id')::uuid = @upstream_run_id::uuid
 LIMIT 1;
 
+-- name: CountUpstreamMaterials :one
+-- How many `upstream` materials a pipeline declares. TriggerManualRun only
+-- auto-resolves when there is EXACTLY ONE: run counters are per-pipeline, so
+-- "newest across two different upstreams" is meaningless — a pipeline with
+-- multiple upstream materials falls back to the plain manual path rather than
+-- guess which upstream (and which counter) to deploy.
+SELECT COUNT(*)::bigint AS n
+FROM materials
+WHERE pipeline_id = @pipeline_id::uuid
+  AND type = 'upstream';
+
 -- name: LatestUpstreamRunForManualTrigger :one
--- Resolve a downstream pipeline's `upstream` material to the LATEST successful
--- run of the upstream pipeline whose required stage is green — the pull-side
--- mirror of the fanout (which stamps the same on the push side when the stage
--- completes). Returns the counter AND the upstream run's revisions so a
--- hand-kicked deploy rebuilds the exact 1.<counter>.<sha> the build produced,
--- never mixing the build's counter with the deploy's own HEAD. Project-scoped
--- (upstream refs are project-local) and honours the material's configured status
--- (default 'success'). Newest by counter.
+-- Resolve a downstream pipeline's SINGLE `upstream` material (guarded by
+-- CountUpstreamMaterials == 1) to the LATEST successful run of the upstream
+-- pipeline whose required stage is green — the pull-side mirror of the fanout
+-- (which stamps the same on the push side when the stage completes). Returns the
+-- counter, the upstream run's revisions AND its ref so a hand-kicked deploy
+-- rebuilds the exact 1.<counter>.<sha> the build produced on the SAME supersede
+-- lane, never mixing the build's counter with the deploy's own HEAD.
+-- Project-scoped (upstream refs are project-local) and honours the material's
+-- configured status (default 'success'). Newest by counter.
 SELECT
     m.id                       AS downstream_material_id,
     up_run.id                  AS upstream_run_id,
     up_run.counter             AS upstream_run_counter,
     up_run.revisions           AS upstream_revisions,
+    COALESCE(up_run.ref, '')::text AS upstream_ref,
     up.name                    AS upstream_pipeline,
     COALESCE(m.config->>'stage', '')::text AS upstream_stage
 FROM materials m
