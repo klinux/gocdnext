@@ -8,6 +8,37 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.90.0 — 2026-08-11
+
+### Added
+
+- **Service (`services:`) pods inherit the job's runner-profile scheduling.** A
+  run-shared service sidecar (postgres, redis, …) was placed with only the agent
+  baseline `node_selector` / `tolerations` and no affinity — the profile's
+  scheduling never reached it, so the default scheduler could land the service on
+  a cold pool that has to scale up a node (slow service startup, and the service
+  sitting apart from the jobs that use it). Each service now inherits the job's
+  resolved `node_selector`, `tolerations` and `preferred_node_affinity`, merged
+  with the agent baseline exactly like a task pod, so it lands on the same pool as
+  the jobs that use it. Empty hints (or a job with no profile) keep the prior
+  baseline-only behaviour. A service attaches to the run rather than one job, so
+  it inherits the scheduling of whichever job brings the services up first; an
+  explicit per-service override is a tracked follow-up. (#253)
+
+### Fixed
+
+- **Kubernetes pod/secret creates now ride out transient apiserver backpressure.**
+  The agent's pod *waiters* were already resilient to HTTP/2 `ENHANCE_YOUR_CALM` /
+  `ResourceExhausted` / 429 backpressure, but every `Create` stayed single-shot,
+  so a service, job, or isolated pod (and the isolated assignment Secret) died on
+  the first blip — the operator-visible `create service pod …: … stream terminated
+  by RST_STREAM with error code: ENHANCE_YOUR_CALM`. The four creates now retry on
+  the same capped-jitter policy, immediately on the happy path; a retry adopts an
+  `AlreadyExists` left by a committed-but-lost response (unique names) instead of
+  failing; and an ambiguous or partial create is reconciled through a cancel-safe
+  delete, so a cancelled job can no longer leak an ownerRef-less assignment Secret
+  or an unknown-state pod. (#252)
+
 ## v0.89.1 — 2026-08-10
 
 ### Fixed
