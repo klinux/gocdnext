@@ -57,14 +57,15 @@ var (
 	// backpressure — HTTP/2 RST_STREAM ENHANCE_YOUR_CALM (grpc
 	// ResourceExhausted), 429/APF, ServiceUnavailable, ServerTimeout. Both
 	// labels are CLOSED sets: `op` is the waiter (init_started, task_started,
-	// …), `reason` the classified kind — never pod/job/raw error. A rising
-	// rate here is the signal that the polling load is chronic (i.e. a
-	// watch/informer would earn its keep); occasional blips are expected and
-	// harmless (they get retried within the startup budget).
+	// …) or the create (create_job_pod, create_isolated_job_pod,
+	// create_assignment_secret, create_service_pod), `reason` the classified
+	// kind — never pod/job/raw error. A rising rate here is the signal that the
+	// apiserver load is chronic; occasional blips are expected and harmless
+	// (they get retried within the startup budget).
 	K8sTransientRetries = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gocdnext_agent_k8s_transient_retries_total",
-			Help: "Kubernetes API calls retried by pod waiters due to transient apiserver backpressure.",
+			Help: "Kubernetes API calls retried by pod waiters/creates due to transient apiserver backpressure.",
 		},
 		[]string{"op", "reason"},
 	)

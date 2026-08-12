@@ -154,6 +154,73 @@ func pollWithBackoff(ctx context.Context, op string, base time.Duration, cond wa
 	return pollWithBackoffImpl(ctx, op, base, defaultBackoffCfg(), cond)
 }
 
+// errCreateAmbiguous marks a create whose server-side outcome is UNKNOWN: the
+// last attempt hit transient backpressure (so the apiserver may have committed
+// the object) and the retry budget/ctx ran out before an AlreadyExists could
+// confirm it. Callers MUST reconcile by name — best-effort delete (or adopt) —
+// rather than assume nothing was created, otherwise an ambiguous commit leaks
+// (most acutely an isolated assignment Secret, which has no ownerRef yet and so
+// is not GC'd by anything).
+var errCreateAmbiguous = errors.New("create outcome ambiguous after transient backpressure")
+
+// createWithBackoff runs a one-shot Kubernetes create under the SAME transient
+// backpressure policy #229 gave the pod waiters. `create` is attempted
+// immediately (no added happy-path latency); a transient apiserver error
+// (classifyTransientAPIErr — e.g. the HTTP/2 ENHANCE_YOUR_CALM the flow-control
+// layer sends BEFORE the object is ever persisted) is retried with capped-jitter
+// backoff; a non-transient error aborts at once, preserving each caller's prior
+// fail-fast.
+//
+// Idempotency: a transient RST_STREAM can be sent AFTER the apiserver already
+// committed the object, so a retry may observe AlreadyExists. Every caller here
+// creates under a UNIQUE name (nowName / run+generation-scoped), so that can
+// only be OUR own prior attempt — treat it as success. AlreadyExists on the
+// FIRST attempt is NOT us; it stays fatal so a genuine name collision surfaces
+// loudly instead of silently adopting a stranger's object.
+//
+// Ambiguity: if ANY attempt reached the server and got transient backpressure
+// (commit unknown) and the loop then ends on ctx expiry/cancel, the returned
+// error wraps errCreateAmbiguous so the caller reconciles. The flag is sticky —
+// a later plain context.Canceled (e.g. the NEXT attempt's create aborting on the
+// cancelled ctx) must not erase an earlier transient's unknown commit. A
+// cleanly-cancelled ctx whose create was NEVER sent (every attempt returns a
+// context error, classified non-transient) is not flagged.
+//
+// The loop is bounded by StartupTimeout so a sustained flood fails the job loudly
+// rather than hanging its slot.
+func (k *Kubernetes) createWithBackoff(ctx context.Context, op string, create func(context.Context) error) error {
+	if k.cfg.StartupTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, k.cfg.StartupTimeout)
+		defer cancel()
+	}
+	attempts := 0
+	ambiguousPending := false
+	err := pollWithBackoff(ctx, op, k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
+		attempts++
+		e := create(ctx)
+		switch {
+		case e == nil:
+			return true, nil
+		case apierrors.IsAlreadyExists(e) && attempts > 1:
+			return true, nil
+		default:
+			// A transient attempt reached the server; its commit is unknown. Latch
+			// it — never clear on a subsequent non-transient error (e.g. a ctx
+			// cancel), so a late cancel can't hide an earlier ambiguous commit.
+			if _, _, transient := classifyTransientAPIErr(e); transient {
+				ambiguousPending = true
+			}
+			return false, e
+		}
+	})
+	if err != nil && ambiguousPending &&
+		(errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
+		return errors.Join(errCreateAmbiguous, err)
+	}
+	return err
+}
+
 func pollWithBackoffImpl(ctx context.Context, op string, base time.Duration, cfg backoffCfg, cond wait.ConditionWithContextFunc) error {
 	if base <= 0 {
 		base = time.Second
