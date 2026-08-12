@@ -126,6 +126,18 @@ type ServiceSpec struct {
 	Image   string
 	Env     map[string]string
 	Command []string
+
+	// NodeSelector / Tolerations / PreferredNodeAffinity are the
+	// scheduling hints the run-shared service pod inherits from the job
+	// that brings the run's services up (its runner profile), stamped by
+	// the runner. The Kubernetes engine merges them with the agent
+	// baseline exactly like a task pod, so a service lands on the same
+	// pool as the jobs that use it instead of wherever the default
+	// scheduler puts it. Empty => agent baseline only (prior behaviour).
+	// Non-k8s engines ignore them.
+	NodeSelector          map[string]string
+	Tolerations           []corev1.Toleration
+	PreferredNodeAffinity []corev1.PreferredSchedulingTerm
 }
 
 // HostAlias is the engine-agnostic shape an engine plumbs into its
