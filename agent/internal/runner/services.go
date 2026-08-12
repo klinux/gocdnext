@@ -41,7 +41,7 @@ func (r *Runner) startServices(
 		return noop, nil
 	}
 
-	specs := toEngineServiceSpecs(services)
+	specs := toEngineServiceSpecs(a)
 	log := func(stream, text string) { r.emitLog(a, seq, stream, text) }
 	onLifecycle := r.serviceLifecycleEmitter(a.GetRunId())
 
@@ -74,10 +74,22 @@ func (r *Runner) startServices(
 // stays proto-free (it's a runtime contract, not a wire contract).
 // Copies maps/slices defensively so a subsequent mutation of the
 // proto message can't leak into engine state.
-func toEngineServiceSpecs(services []*gocdnextv1.ServiceSpec) []engine.ServiceSpec {
+//
+// Each service inherits the JOB's profile-resolved scheduling (the same
+// node_selector/tolerations/preferred_node_affinity the task pod gets)
+// so a run-shared service pod lands on the same pool as the jobs that
+// use it rather than wherever the default scheduler places it. The
+// assignment* helpers already return fresh copies; the three values are
+// read-only in the engine (merged into a new PodSpec), so sharing them
+// across the batch is safe.
+func toEngineServiceSpecs(a *gocdnextv1.JobAssignment) []engine.ServiceSpec {
+	services := a.GetServices()
 	if len(services) == 0 {
 		return nil
 	}
+	nodeSelector := assignmentNodeSelector(a)
+	tolerations := assignmentTolerations(a)
+	preferredAffinity := assignmentPreferredNodeAffinity(a)
 	out := make([]engine.ServiceSpec, 0, len(services))
 	for _, svc := range services {
 		env := make(map[string]string, len(svc.GetEnv()))
@@ -85,10 +97,13 @@ func toEngineServiceSpecs(services []*gocdnextv1.ServiceSpec) []engine.ServiceSp
 			env[k] = v
 		}
 		out = append(out, engine.ServiceSpec{
-			Name:    svc.GetName(),
-			Image:   svc.GetImage(),
-			Env:     env,
-			Command: append([]string(nil), svc.GetCommand()...),
+			Name:                  svc.GetName(),
+			Image:                 svc.GetImage(),
+			Env:                   env,
+			Command:               append([]string(nil), svc.GetCommand()...),
+			NodeSelector:          nodeSelector,
+			Tolerations:           tolerations,
+			PreferredNodeAffinity: preferredAffinity,
 		})
 	}
 	return out

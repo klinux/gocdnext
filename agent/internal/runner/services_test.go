@@ -180,3 +180,47 @@ func TestStartServices_PassesJobIDAndSpecs(t *testing.T) {
 		t.Errorf("phase.hostAliases = %v, want one 10.0.0.1 alias", phase.hostAliases)
 	}
 }
+
+// A run-shared service pod inherits the job's profile-resolved scheduling
+// (node_selector + tolerations + preferred_node_affinity) so it lands on the
+// same pool as the jobs that use it, not wherever the default scheduler puts it.
+func TestStartServices_ServiceInheritsJobScheduling(t *testing.T) {
+	stub := &stubEngine{name: "kubernetes"}
+	r := New(Config{
+		WorkspaceRoot: t.TempDir(),
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Send:          func(*gocdnextv1.AgentMessage) {},
+		Engine:        stub,
+	})
+	a := &gocdnextv1.JobAssignment{
+		RunId: "r", JobId: "j",
+		NodeSelector: map[string]string{"pool": "gradle"},
+		Tolerations: []*gocdnextv1.Toleration{
+			{Key: "ci-only", Operator: "Equal", Value: "true", Effect: "NoSchedule"},
+		},
+		PreferredNodeAffinity: []*gocdnextv1.PreferredNodeAffinityTerm{{
+			Weight: 50,
+			MatchExpressions: []*gocdnextv1.NodeAffinityMatchExpression{
+				{Key: "cloud.google.com/gke-spot", Operator: "In", Values: []string{"true"}},
+			},
+		}},
+		Services: []*gocdnextv1.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
+	}
+	var seq atomic.Int64
+	if _, err := r.startServices(context.Background(), a, &seq); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(stub.ensureSawSpecs) != 1 {
+		t.Fatalf("want 1 spec, got %d", len(stub.ensureSawSpecs))
+	}
+	svc := stub.ensureSawSpecs[0]
+	if svc.NodeSelector["pool"] != "gradle" {
+		t.Errorf("service NodeSelector = %v, want inherited pool=gradle", svc.NodeSelector)
+	}
+	if len(svc.Tolerations) != 1 || svc.Tolerations[0].Key != "ci-only" {
+		t.Errorf("service Tolerations = %v, want inherited ci-only", svc.Tolerations)
+	}
+	if len(svc.PreferredNodeAffinity) != 1 || svc.PreferredNodeAffinity[0].Weight != 50 {
+		t.Errorf("service PreferredNodeAffinity = %v, want inherited weight 50", svc.PreferredNodeAffinity)
+	}
+}

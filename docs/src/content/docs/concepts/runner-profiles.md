@@ -156,21 +156,33 @@ The profile's affinity is applied to the task/job pod **verbatim** —
 there is no agent-baseline affinity to merge with (the agent
 StatefulSet's own affinity is separate).
 
-### Services inherit ONLY the agent baseline
+### Services inherit the job's profile scheduling
 
-`services:`-declared sidecar pods (postgres, redis, etc.) receive
-the agent baseline `nodeSelector` + `tolerations` so they can
-schedule on the same tainted nodes as the task pod. They do **not**
-receive profile-scoped scheduling (`node_selector`, `tolerations`, or
-`preferred_node_affinity`) — services attach to the run, not
-to a specific job, and don't carry the profile reference at
-materialisation time.
+`services:`-declared sidecar pods (postgres, redis, etc.) are placed
+**exactly like the task pod**: the agent baseline merged with the
+profile's `node_selector`, `tolerations`, and `preferred_node_affinity`.
+A run-shared service lands on the **same pool as the jobs that use it**
+instead of wherever the default scheduler happens to put it — which
+matters when the default choice is a cold pool that has to scale up a
+node (a real source of service-startup latency and failures).
 
-If the task pod runs on `pool: gradle` (per the profile) but the
-service pod needs to land alongside it, taint the gradle nodes
-generously enough that both pass via the agent baseline. The follow-
-up where services accept their own profile-scoped scheduling is
-tracked separately.
+Because services attach to the **run**, not a single job, a service pod
+inherits the scheduling of whichever job brings the services up first
+(the run's jobs typically share a profile, or compatible pools, so this
+is deterministic in practice). One consequence to keep in mind: if a
+profile **hard-pins** `node_selector` to a capacity-starved pool, the
+service inherits that pin and can go `Pending` too — the same risk the
+task pods already carry. The recommended pattern is the shared-label +
+`preferred_node_affinity` model above (a selector that matches both spot
+and on-demand, preferring spot), so both jobs and services stay
+schedulable with a fallback.
+
+Empty profile scheduling (or a job with no profile) leaves services on
+the agent baseline only — the prior behaviour, unchanged.
+
+> **Explicit per-service scheduling override** — pinning services to a
+> different (e.g. more stable on-demand) pool than the jobs — is a
+> tracked follow-up; today services follow the job's profile.
 
 ### Chart values
 
