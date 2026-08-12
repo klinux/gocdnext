@@ -822,6 +822,146 @@ jobs:
 	}
 }
 
+func TestParse_ServiceSchedulingOverride(t *testing.T) {
+	y := `
+stages: [test]
+materials:
+  - manual: true
+services:
+  - name: postgres
+    image: postgres:16
+    node_selector:
+      cloud.google.com/gke-nodepool: ondemand
+    tolerations:
+      - key: dedicated
+        operator: Equal
+        value: db
+        effect: NoSchedule
+jobs:
+  it:
+    stage: test
+    image: golang:1.25
+    script: [go test ./...]
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	svc := p.Services[0]
+	if svc.NodeSelector["cloud.google.com/gke-nodepool"] != "ondemand" {
+		t.Errorf("node_selector = %v", svc.NodeSelector)
+	}
+	if len(svc.Tolerations) != 1 {
+		t.Fatalf("tolerations = %d, want 1", len(svc.Tolerations))
+	}
+	tol := svc.Tolerations[0]
+	if tol.Key != "dedicated" || tol.Operator != "Equal" || tol.Value != "db" || tol.Effect != "NoSchedule" {
+		t.Errorf("toleration = %+v", tol)
+	}
+}
+
+func TestParse_ServiceSchedulingValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "bad node_selector key",
+			yaml: `
+stages: [t]
+materials: [{manual: true}]
+services:
+  - {name: pg, image: postgres:16, node_selector: {"Bad Key!": x}}
+jobs: {it: {stage: t, image: alpine, script: [true]}}
+`,
+			want: "node_selector key",
+		},
+		{
+			name: "bad toleration operator",
+			yaml: `
+stages: [t]
+materials: [{manual: true}]
+services:
+  - name: pg
+    image: postgres:16
+    tolerations:
+      - {key: k, operator: Bogus, effect: NoSchedule}
+jobs: {it: {stage: t, image: alpine, script: [true]}}
+`,
+			want: "operator",
+		},
+		{
+			name: "exists with value",
+			yaml: `
+stages: [t]
+materials: [{manual: true}]
+services:
+  - name: pg
+    image: postgres:16
+    tolerations:
+      - {key: k, operator: Exists, value: v, effect: NoSchedule}
+jobs: {it: {stage: t, image: alpine, script: [true]}}
+`,
+			want: "Exists requires empty value",
+		},
+		{
+			name: "seconds without NoExecute",
+			yaml: `
+stages: [t]
+materials: [{manual: true}]
+services:
+  - name: pg
+    image: postgres:16
+    tolerations:
+      - {key: k, operator: Equal, value: v, effect: NoSchedule, toleration_seconds: 5}
+jobs: {it: {stage: t, image: alpine, script: [true]}}
+`,
+			want: "only valid with effect=NoExecute",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(tc.yaml), "p", "n")
+			if err == nil {
+				t.Fatalf("expected a validation error for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestParse_ServiceSchedulingCaps(t *testing.T) {
+	t.Run("too many node_selector entries", func(t *testing.T) {
+		var b strings.Builder
+		for i := 0; i <= maxServiceNodeSelectorEntries; i++ { // one past the cap
+			fmt.Fprintf(&b, "      key%d: v%d\n", i, i)
+		}
+		y := "stages: [t]\nmaterials: [{manual: true}]\n" +
+			"services:\n  - name: pg\n    image: postgres:16\n    node_selector:\n" + b.String() +
+			"jobs: {it: {stage: t, image: alpine, script: [true]}}\n"
+		_, err := Parse(strings.NewReader(y), "p", "n")
+		if err == nil || !strings.Contains(err.Error(), "max") {
+			t.Errorf("expected node_selector cap error, got %v", err)
+		}
+	})
+	t.Run("too many tolerations", func(t *testing.T) {
+		var b strings.Builder
+		for i := 0; i <= maxServiceTolerations; i++ { // one past the cap
+			fmt.Fprintf(&b, "      - {key: k%d, operator: Exists, effect: NoSchedule}\n", i)
+		}
+		y := "stages: [t]\nmaterials: [{manual: true}]\n" +
+			"services:\n  - name: pg\n    image: postgres:16\n    tolerations:\n" + b.String() +
+			"jobs: {it: {stage: t, image: alpine, script: [true]}}\n"
+		_, err := Parse(strings.NewReader(y), "p", "n")
+		if err == nil || !strings.Contains(err.Error(), "max") {
+			t.Errorf("expected tolerations cap error, got %v", err)
+		}
+	})
+}
+
 func TestParse_ServiceRequiresImage(t *testing.T) {
 	bad := `
 stages: [test]

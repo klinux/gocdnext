@@ -357,6 +357,55 @@ jobs:
 	}
 }
 
+func TestEmit_RoundTripsServiceScheduling(t *testing.T) {
+	// The per-service scheduling override must survive parse → emit → re-parse
+	// so the yaml tab keeps showing what the operator pinned.
+	const src = `
+name: ci
+stages: [test]
+materials:
+  - manual: true
+services:
+  - name: postgres
+    image: postgres:16
+    node_selector:
+      cloud.google.com/gke-nodepool: ondemand
+    tolerations:
+      - key: dedicated
+        operator: Equal
+        value: db
+        effect: NoSchedule
+jobs:
+  it:
+    stage: test
+    image: golang:1.25
+    script: [go test ./...]
+`
+	first, err := ParseNamed(strings.NewReader(src), "p", "ci")
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	out, err := Emit(first)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	second, err := ParseNamed(strings.NewReader(string(out)), "p", "ci")
+	if err != nil {
+		t.Fatalf("re-parse: %v\n---\n%s", err, out)
+	}
+	if len(second.Services) != 1 {
+		t.Fatalf("service lost: %+v\n---\n%s", second.Services, out)
+	}
+	svc := second.Services[0]
+	if svc.NodeSelector["cloud.google.com/gke-nodepool"] != "ondemand" {
+		t.Errorf("node_selector lost in round-trip: %v\n---\n%s", svc.NodeSelector, out)
+	}
+	if len(svc.Tolerations) != 1 || svc.Tolerations[0].Key != "dedicated" ||
+		svc.Tolerations[0].Effect != "NoSchedule" {
+		t.Errorf("tolerations lost in round-trip: %+v\n---\n%s", svc.Tolerations, out)
+	}
+}
+
 func TestEmit_RoundTripsPluginJobs(t *testing.T) {
 	// Plugin jobs emit as `uses:` + `with:` (the ergonomic
 	// spelling), not the legacy `image:` + `settings:` form — a

@@ -180,9 +180,28 @@ schedulable with a fallback.
 Empty profile scheduling (or a job with no profile) leaves services on
 the agent baseline only — the prior behaviour, unchanged.
 
-> **Explicit per-service scheduling override** — pinning services to a
-> different (e.g. more stable on-demand) pool than the jobs — is a
-> tracked follow-up; today services follow the job's profile.
+A service can also **override** the inherited scheduling — pin it to a
+different (e.g. more stable on-demand) pool than the jobs — via
+`node_selector` / `tolerations` on the service in the pipeline YAML:
+
+```yaml
+services:
+  - name: postgres
+    image: postgres:16
+    node_selector:                       # WINS over the inherited pool
+      cloud.google.com/gke-nodepool: ondemand
+    tolerations:                         # appended to the inherited ones
+      - key: dedicated
+        operator: Equal
+        value: db
+        effect: NoSchedule
+```
+
+Override precedence: `node_selector` keys **win** over the inherited ones (so
+the service leaves the job's pool for the one you name), `tolerations` are
+**appended**. Values are validated at parse time against the same apiserver
+rules as a profile — a typo fails `gocdnext validate`, not a Pending pod hours
+later. Affinity is inherited-only (no per-service affinity override).
 
 ### Chart values
 

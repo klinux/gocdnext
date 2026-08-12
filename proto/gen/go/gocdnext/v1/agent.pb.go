@@ -2310,9 +2310,9 @@ type JobAssignment struct {
 	// runner profile (k8s nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution).
 	// It biases scheduling but NEVER overrides the hard node_selector (field 21):
 	// a preference incompatible with the selector simply has no effect. Honoured
-	// by the Kubernetes engine for the TASK/JOB pod only — `services:` pods still
-	// get just the agent scheduling baseline (follow-up tracks propagating all
-	// profile hints to services). Shell + Docker ignore it.
+	// by the Kubernetes engine for the TASK/JOB pod AND inherited by `services:`
+	// pods (a service can override node_selector/tolerations per-service, but not
+	// this affinity). Shell + Docker ignore it.
 	PreferredNodeAffinity []*PreferredNodeAffinityTerm `protobuf:"bytes,27,rep,name=preferred_node_affinity,json=preferredNodeAffinity,proto3" json:"preferred_node_affinity,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
@@ -2906,11 +2906,19 @@ func (x *CacheEntry) GetFetchFound() bool {
 // when set, overrides the image's default ENTRYPOINT/CMD — matches
 // how GitLab CI / Woodpecker expose the same knob.
 type ServiceSpec struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Image         string                 `protobuf:"bytes,2,opt,name=image,proto3" json:"image,omitempty"`
-	Env           map[string]string      `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Command       []string               `protobuf:"bytes,4,rep,name=command,proto3" json:"command,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Name    string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Image   string                 `protobuf:"bytes,2,opt,name=image,proto3" json:"image,omitempty"`
+	Env     map[string]string      `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Command []string               `protobuf:"bytes,4,rep,name=command,proto3" json:"command,omitempty"`
+	// Per-service scheduling OVERRIDE (Kubernetes engine only). When set on a
+	// service in the pipeline YAML, it wins over the scheduling the service
+	// otherwise inherits from the job that brings the run's services up:
+	// node_selector keys override the inherited ones (so a service can be pinned
+	// to a different, e.g. more stable on-demand, pool than the jobs), tolerations
+	// are appended. Absent => inherit the job's scheduling (the default).
+	NodeSelector  map[string]string `protobuf:"bytes,5,rep,name=node_selector,json=nodeSelector,proto3" json:"node_selector,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Tolerations   []*Toleration     `protobuf:"bytes,6,rep,name=tolerations,proto3" json:"tolerations,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2969,6 +2977,20 @@ func (x *ServiceSpec) GetEnv() map[string]string {
 func (x *ServiceSpec) GetCommand() []string {
 	if x != nil {
 		return x.Command
+	}
+	return nil
+}
+
+func (x *ServiceSpec) GetNodeSelector() map[string]string {
+	if x != nil {
+		return x.NodeSelector
+	}
+	return nil
+}
+
+func (x *ServiceSpec) GetTolerations() []*Toleration {
+	if x != nil {
+		return x.Tolerations
 	}
 	return nil
 }
@@ -3616,13 +3638,18 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\tfetch_url\x18\x03 \x01(\tR\bfetchUrl\x12!\n" +
 	"\ffetch_sha256\x18\x04 \x01(\tR\vfetchSha256\x12\x1f\n" +
 	"\vfetch_found\x18\x05 \x01(\bR\n" +
-	"fetchFound\"\xbe\x01\n" +
+	"fetchFound\"\x8b\x03\n" +
 	"\vServiceSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05image\x18\x02 \x01(\tR\x05image\x123\n" +
 	"\x03env\x18\x03 \x03(\v2!.gocdnext.v1.ServiceSpec.EnvEntryR\x03env\x12\x18\n" +
-	"\acommand\x18\x04 \x03(\tR\acommand\x1a6\n" +
+	"\acommand\x18\x04 \x03(\tR\acommand\x12O\n" +
+	"\rnode_selector\x18\x05 \x03(\v2*.gocdnext.v1.ServiceSpec.NodeSelectorEntryR\fnodeSelector\x129\n" +
+	"\vtolerations\x18\x06 \x03(\v2\x17.gocdnext.v1.TolerationR\vtolerations\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a?\n" +
+	"\x11NodeSelectorEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb6\x01\n" +
 	"\x10ArtifactDownload\x12\x12\n" +
@@ -3680,7 +3707,7 @@ func file_gocdnext_v1_agent_proto_rawDescGZIP() []byte {
 	return file_gocdnext_v1_agent_proto_rawDescData
 }
 
-var file_gocdnext_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
+var file_gocdnext_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_gocdnext_v1_agent_proto_goTypes = []any{
 	(*RegisterRequest)(nil),               // 0: gocdnext.v1.RegisterRequest
 	(*RegisterResponse)(nil),              // 1: gocdnext.v1.RegisterResponse
@@ -3727,9 +3754,10 @@ var file_gocdnext_v1_agent_proto_goTypes = []any{
 	nil,                                   // 42: gocdnext.v1.JobAssignment.OutputsEntry
 	nil,                                   // 43: gocdnext.v1.JobAssignment.NodeSelectorEntry
 	nil,                                   // 44: gocdnext.v1.ServiceSpec.EnvEntry
-	nil,                                   // 45: gocdnext.v1.PluginSpec.SettingsEntry
-	(*timestamppb.Timestamp)(nil),         // 46: google.protobuf.Timestamp
-	(RunStatus)(0),                        // 47: gocdnext.v1.RunStatus
+	nil,                                   // 45: gocdnext.v1.ServiceSpec.NodeSelectorEntry
+	nil,                                   // 46: gocdnext.v1.PluginSpec.SettingsEntry
+	(*timestamppb.Timestamp)(nil),         // 47: google.protobuf.Timestamp
+	(RunStatus)(0),                        // 48: gocdnext.v1.RunStatus
 }
 var file_gocdnext_v1_agent_proto_depIdxs = []int32{
 	6,  // 0: gocdnext.v1.AgentMessage.heartbeat:type_name -> gocdnext.v1.Heartbeat
@@ -3741,19 +3769,19 @@ var file_gocdnext_v1_agent_proto_depIdxs = []int32{
 	4,  // 6: gocdnext.v1.AgentMessage.service_lifecycle:type_name -> gocdnext.v1.ServiceLifecycle
 	13, // 7: gocdnext.v1.AgentMessage.coverage:type_name -> gocdnext.v1.CoverageSummary
 	3,  // 8: gocdnext.v1.AgentMessage.draining:type_name -> gocdnext.v1.Draining
-	46, // 9: gocdnext.v1.ServiceLifecycle.at:type_name -> google.protobuf.Timestamp
-	46, // 10: gocdnext.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
-	47, // 11: gocdnext.v1.JobProgress.status:type_name -> gocdnext.v1.RunStatus
-	46, // 12: gocdnext.v1.LogLine.at:type_name -> google.protobuf.Timestamp
-	47, // 13: gocdnext.v1.JobResult.status:type_name -> gocdnext.v1.RunStatus
+	47, // 9: gocdnext.v1.ServiceLifecycle.at:type_name -> google.protobuf.Timestamp
+	47, // 10: gocdnext.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
+	48, // 11: gocdnext.v1.JobProgress.status:type_name -> gocdnext.v1.RunStatus
+	47, // 12: gocdnext.v1.LogLine.at:type_name -> google.protobuf.Timestamp
+	48, // 13: gocdnext.v1.JobResult.status:type_name -> gocdnext.v1.RunStatus
 	10, // 14: gocdnext.v1.JobResult.artifacts:type_name -> gocdnext.v1.ArtifactRef
 	40, // 15: gocdnext.v1.JobResult.outputs:type_name -> gocdnext.v1.JobResult.OutputsEntry
 	14, // 16: gocdnext.v1.CoverageSummary.packages:type_name -> gocdnext.v1.PackageCoverage
 	11, // 17: gocdnext.v1.TestResultBatch.results:type_name -> gocdnext.v1.TestResult
-	46, // 18: gocdnext.v1.RequestCacheGetResponse.expires_at:type_name -> google.protobuf.Timestamp
-	46, // 19: gocdnext.v1.RequestCachePutResponse.expires_at:type_name -> google.protobuf.Timestamp
+	47, // 18: gocdnext.v1.RequestCacheGetResponse.expires_at:type_name -> google.protobuf.Timestamp
+	47, // 19: gocdnext.v1.RequestCachePutResponse.expires_at:type_name -> google.protobuf.Timestamp
 	24, // 20: gocdnext.v1.RequestArtifactUploadResponse.tickets:type_name -> gocdnext.v1.ArtifactUploadTicket
-	46, // 21: gocdnext.v1.ArtifactUploadTicket.expires_at:type_name -> google.protobuf.Timestamp
+	47, // 21: gocdnext.v1.ArtifactUploadTicket.expires_at:type_name -> google.protobuf.Timestamp
 	27, // 22: gocdnext.v1.ServerMessage.assign:type_name -> gocdnext.v1.JobAssignment
 	38, // 23: gocdnext.v1.ServerMessage.cancel:type_name -> gocdnext.v1.CancelJob
 	39, // 24: gocdnext.v1.ServerMessage.pong:type_name -> gocdnext.v1.Pong
@@ -3772,26 +3800,28 @@ var file_gocdnext_v1_agent_proto_depIdxs = []int32{
 	30, // 37: gocdnext.v1.JobAssignment.preferred_node_affinity:type_name -> gocdnext.v1.PreferredNodeAffinityTerm
 	29, // 38: gocdnext.v1.PreferredNodeAffinityTerm.match_expressions:type_name -> gocdnext.v1.NodeAffinityMatchExpression
 	44, // 39: gocdnext.v1.ServiceSpec.env:type_name -> gocdnext.v1.ServiceSpec.EnvEntry
-	36, // 40: gocdnext.v1.TaskSpec.plugin:type_name -> gocdnext.v1.PluginSpec
-	45, // 41: gocdnext.v1.PluginSpec.settings:type_name -> gocdnext.v1.PluginSpec.SettingsEntry
-	46, // 42: gocdnext.v1.Pong.at:type_name -> google.protobuf.Timestamp
-	0,  // 43: gocdnext.v1.AgentService.Register:input_type -> gocdnext.v1.RegisterRequest
-	2,  // 44: gocdnext.v1.AgentService.Connect:input_type -> gocdnext.v1.AgentMessage
-	16, // 45: gocdnext.v1.AgentService.RequestCacheGet:input_type -> gocdnext.v1.RequestCacheGetRequest
-	18, // 46: gocdnext.v1.AgentService.RequestCachePut:input_type -> gocdnext.v1.RequestCachePutRequest
-	20, // 47: gocdnext.v1.AgentService.MarkCacheReady:input_type -> gocdnext.v1.MarkCacheReadyRequest
-	22, // 48: gocdnext.v1.AgentService.RequestArtifactUpload:input_type -> gocdnext.v1.RequestArtifactUploadRequest
-	1,  // 49: gocdnext.v1.AgentService.Register:output_type -> gocdnext.v1.RegisterResponse
-	25, // 50: gocdnext.v1.AgentService.Connect:output_type -> gocdnext.v1.ServerMessage
-	17, // 51: gocdnext.v1.AgentService.RequestCacheGet:output_type -> gocdnext.v1.RequestCacheGetResponse
-	19, // 52: gocdnext.v1.AgentService.RequestCachePut:output_type -> gocdnext.v1.RequestCachePutResponse
-	21, // 53: gocdnext.v1.AgentService.MarkCacheReady:output_type -> gocdnext.v1.MarkCacheReadyResponse
-	23, // 54: gocdnext.v1.AgentService.RequestArtifactUpload:output_type -> gocdnext.v1.RequestArtifactUploadResponse
-	49, // [49:55] is the sub-list for method output_type
-	43, // [43:49] is the sub-list for method input_type
-	43, // [43:43] is the sub-list for extension type_name
-	43, // [43:43] is the sub-list for extension extendee
-	0,  // [0:43] is the sub-list for field type_name
+	45, // 40: gocdnext.v1.ServiceSpec.node_selector:type_name -> gocdnext.v1.ServiceSpec.NodeSelectorEntry
+	28, // 41: gocdnext.v1.ServiceSpec.tolerations:type_name -> gocdnext.v1.Toleration
+	36, // 42: gocdnext.v1.TaskSpec.plugin:type_name -> gocdnext.v1.PluginSpec
+	46, // 43: gocdnext.v1.PluginSpec.settings:type_name -> gocdnext.v1.PluginSpec.SettingsEntry
+	47, // 44: gocdnext.v1.Pong.at:type_name -> google.protobuf.Timestamp
+	0,  // 45: gocdnext.v1.AgentService.Register:input_type -> gocdnext.v1.RegisterRequest
+	2,  // 46: gocdnext.v1.AgentService.Connect:input_type -> gocdnext.v1.AgentMessage
+	16, // 47: gocdnext.v1.AgentService.RequestCacheGet:input_type -> gocdnext.v1.RequestCacheGetRequest
+	18, // 48: gocdnext.v1.AgentService.RequestCachePut:input_type -> gocdnext.v1.RequestCachePutRequest
+	20, // 49: gocdnext.v1.AgentService.MarkCacheReady:input_type -> gocdnext.v1.MarkCacheReadyRequest
+	22, // 50: gocdnext.v1.AgentService.RequestArtifactUpload:input_type -> gocdnext.v1.RequestArtifactUploadRequest
+	1,  // 51: gocdnext.v1.AgentService.Register:output_type -> gocdnext.v1.RegisterResponse
+	25, // 52: gocdnext.v1.AgentService.Connect:output_type -> gocdnext.v1.ServerMessage
+	17, // 53: gocdnext.v1.AgentService.RequestCacheGet:output_type -> gocdnext.v1.RequestCacheGetResponse
+	19, // 54: gocdnext.v1.AgentService.RequestCachePut:output_type -> gocdnext.v1.RequestCachePutResponse
+	21, // 55: gocdnext.v1.AgentService.MarkCacheReady:output_type -> gocdnext.v1.MarkCacheReadyResponse
+	23, // 56: gocdnext.v1.AgentService.RequestArtifactUpload:output_type -> gocdnext.v1.RequestArtifactUploadResponse
+	51, // [51:57] is the sub-list for method output_type
+	45, // [45:51] is the sub-list for method input_type
+	45, // [45:45] is the sub-list for extension type_name
+	45, // [45:45] is the sub-list for extension extendee
+	0,  // [0:45] is the sub-list for field type_name
 }
 
 func init() { file_gocdnext_v1_agent_proto_init() }
@@ -3828,7 +3858,7 @@ func file_gocdnext_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gocdnext_v1_agent_proto_rawDesc), len(file_gocdnext_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   46,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
