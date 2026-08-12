@@ -43,6 +43,32 @@ func tolerationsToProto(in []store.Toleration) []*gocdnextv1.Toleration {
 	return out
 }
 
+// serviceTolerationsToProto is the domain-typed twin of tolerationsToProto, for
+// the per-service scheduling override carried on the pipeline definition (the
+// runner-profile path above uses the store type). Same field-for-field copy,
+// with a fresh TolerationSeconds pointer so the proto never aliases the domain.
+func serviceTolerationsToProto(in []domain.Toleration) []*gocdnextv1.Toleration {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*gocdnextv1.Toleration, len(in))
+	for i, t := range in {
+		var seconds *int64
+		if t.TolerationSeconds != nil {
+			v := *t.TolerationSeconds
+			seconds = &v
+		}
+		out[i] = &gocdnextv1.Toleration{
+			Key:               t.Key,
+			Operator:          t.Operator,
+			Value:             t.Value,
+			Effect:            t.Effect,
+			TolerationSeconds: seconds,
+		}
+	}
+	return out
+}
+
 // preferredNodeAffinityToProto maps the store-side preferred node-affinity
 // terms (validated + normalised at write time) to the proto wire shape. nil on
 // empty input so the wire stays minimal. Values are copied into fresh slices so

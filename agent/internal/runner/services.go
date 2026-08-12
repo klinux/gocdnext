@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync/atomic"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
@@ -87,8 +89,8 @@ func toEngineServiceSpecs(a *gocdnextv1.JobAssignment) []engine.ServiceSpec {
 	if len(services) == 0 {
 		return nil
 	}
-	nodeSelector := assignmentNodeSelector(a)
-	tolerations := assignmentTolerations(a)
+	jobNodeSelector := assignmentNodeSelector(a)
+	jobTolerations := assignmentTolerations(a)
 	preferredAffinity := assignmentPreferredNodeAffinity(a)
 	out := make([]engine.ServiceSpec, 0, len(services))
 	for _, svc := range services {
@@ -97,14 +99,47 @@ func toEngineServiceSpecs(a *gocdnextv1.JobAssignment) []engine.ServiceSpec {
 			env[k] = v
 		}
 		out = append(out, engine.ServiceSpec{
-			Name:                  svc.GetName(),
-			Image:                 svc.GetImage(),
-			Env:                   env,
-			Command:               append([]string(nil), svc.GetCommand()...),
-			NodeSelector:          nodeSelector,
-			Tolerations:           tolerations,
+			Name:    svc.GetName(),
+			Image:   svc.GetImage(),
+			Env:     env,
+			Command: append([]string(nil), svc.GetCommand()...),
+			// Per-service override WINS over the inherited job scheduling:
+			// node_selector keys override, tolerations are appended. Affinity is
+			// inherited-only (no per-service affinity override).
+			NodeSelector:          overrideNodeSelector(jobNodeSelector, svc.GetNodeSelector()),
+			Tolerations:           appendTolerations(jobTolerations, protoTolerationsToCorev1(svc.GetTolerations())),
 			PreferredNodeAffinity: preferredAffinity,
 		})
 	}
+	return out
+}
+
+// overrideNodeSelector merges the per-service override onto the inherited job
+// node selector — override keys WIN on collision (the operator pinned the
+// service to a specific pool on purpose). Fresh map; nil when both are empty.
+func overrideNodeSelector(inherited, override map[string]string) map[string]string {
+	if len(inherited) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(inherited)+len(override))
+	for k, v := range inherited {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
+}
+
+// appendTolerations concatenates inherited job tolerations with the per-service
+// override — tolerations are additive (tolerating a taint the node doesn't carry
+// is harmless). Fresh slice; nil when both are empty.
+func appendTolerations(inherited, override []corev1.Toleration) []corev1.Toleration {
+	if len(inherited) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make([]corev1.Toleration, 0, len(inherited)+len(override))
+	out = append(out, inherited...)
+	out = append(out, override...)
 	return out
 }

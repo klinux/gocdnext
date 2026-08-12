@@ -507,6 +507,39 @@ if you want it available run-wide.
 `name:` defaults to the image's short name when omitted (`image:
 postgres:16` ⇒ `postgres`). `image:` is required.
 
+### Scheduling (Kubernetes engine)
+
+By default a service pod inherits the scheduling of the job that brings the
+run's services up (its runner profile's `node_selector` / `tolerations` /
+`preferred_node_affinity`), so it lands on the same pool as the jobs that use
+it. Set `node_selector` / `tolerations` on the service to **override** that —
+e.g. keep a database on a stable on-demand pool while the jobs run on spot:
+
+```yaml
+services:
+  - name: postgres
+    image: postgres:16
+    node_selector:                       # overrides the inherited pool
+      cloud.google.com/gke-nodepool: ondemand
+    tolerations:                         # appended to the inherited ones
+      - key: dedicated
+        operator: Equal                  # or Exists (empty value)
+        value: db
+        effect: NoSchedule               # "", NoSchedule, PreferNoSchedule, NoExecute
+```
+
+`node_selector` keys win over the inherited ones; `tolerations` are appended
+(up to 20 of each). Both are validated at parse time (same rules the apiserver
+applies) so a typo fails `gocdnext validate` rather than leaving the service
+`Pending`. Ignored by the Docker engine.
+
+The override is honoured only for pipelines applied through the normal
+(project-authorized) path. In a **same-repo PR-head** run — whose `.gocdnext/`
+is contributor-controlled and bypasses apply-time authorization — the override
+is **stripped**: the service still runs but inherits the job's profile
+scheduling. Node placement stays admin-managed (runner profiles); a PR can't
+pin a service to an arbitrary pool or tolerate arbitrary taints.
+
 ### Lifecycle
 
 The control plane tracks one `service_run` row per service per run

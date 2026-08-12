@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
+
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
@@ -170,12 +172,113 @@ func toService(s ServiceSpec) (domain.Service, error) {
 	if name == "" {
 		return domain.Service{}, fmt.Errorf("service: couldn't derive name from image %q; set `name:` explicitly", s.Image)
 	}
+	if err := validateServiceNodeSelector(s.NodeSelector); err != nil {
+		return domain.Service{}, fmt.Errorf("service %q: %w", name, err)
+	}
+	tols, err := toServiceTolerations(s.Tolerations)
+	if err != nil {
+		return domain.Service{}, fmt.Errorf("service %q: %w", name, err)
+	}
 	return domain.Service{
-		Name:    name,
-		Image:   s.Image,
-		Env:     s.Env,
-		Command: append([]string(nil), s.Command...),
+		Name:         name,
+		Image:        s.Image,
+		Env:          s.Env,
+		Command:      append([]string(nil), s.Command...),
+		NodeSelector: s.NodeSelector,
+		Tolerations:  tols,
 	}, nil
+}
+
+// validServiceTolerationOperator / Effect mirror the runner-profile rules in
+// internal/store/scheduling_validation.go. The parser is a public package that
+// can't import internal/, so the shape is kept in sync deliberately — both
+// delegate the actual key/value checks to the SAME k8s apiserver validators.
+var validServiceTolerationOperator = map[string]struct{}{"": {}, "Equal": {}, "Exists": {}}
+var validServiceTolerationEffect = map[string]struct{}{"": {}, "NoSchedule": {}, "PreferNoSchedule": {}, "NoExecute": {}}
+
+// Per-service scheduling override caps. Bounded so the override (which rides the
+// JobAssignment over gRPC + into a Secret) stays small and a definition — even a
+// contributor-controlled PR-head one — can't bloat the assignment. Realistic
+// overrides need a handful of each; these are generous.
+const (
+	maxServiceNodeSelectorEntries = 20
+	maxServiceTolerations         = 20
+)
+
+// validateServiceNodeSelector rejects a node_selector whose keys/values the
+// apiserver would refuse — a typo fails at parse (or `gocdnext validate`) time
+// instead of leaving the service Pending on the cluster.
+func validateServiceNodeSelector(ns map[string]string) error {
+	if len(ns) > maxServiceNodeSelectorEntries {
+		return fmt.Errorf("node_selector has %d entries, max %d", len(ns), maxServiceNodeSelectorEntries)
+	}
+	for k, v := range ns {
+		if errs := k8svalidation.IsQualifiedName(k); len(errs) > 0 {
+			return fmt.Errorf("node_selector key %q: %s", k, strings.Join(errs, "; "))
+		}
+		if errs := k8svalidation.IsValidLabelValue(v); len(errs) > 0 {
+			return fmt.Errorf("node_selector[%q]: %s", k, strings.Join(errs, "; "))
+		}
+	}
+	return nil
+}
+
+// toServiceTolerations validates + normalises the YAML tolerations into domain
+// tolerations, applying the SAME apiserver rules the runner profile enforces
+// (operator ∈ {Equal,Exists}, effect set, Exists⇒empty value, key qualified,
+// Equal value label-valid, toleration_seconds ≥ 0 and only with NoExecute).
+func toServiceTolerations(in []TolerationSpec) ([]domain.Toleration, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	if len(in) > maxServiceTolerations {
+		return nil, fmt.Errorf("tolerations has %d entries, max %d", len(in), maxServiceTolerations)
+	}
+	out := make([]domain.Toleration, len(in))
+	for i, t := range in {
+		if _, ok := validServiceTolerationOperator[t.Operator]; !ok {
+			return nil, fmt.Errorf("tolerations[%d].operator %q: must be Equal or Exists", i, t.Operator)
+		}
+		if _, ok := validServiceTolerationEffect[t.Effect]; !ok {
+			return nil, fmt.Errorf("tolerations[%d].effect %q: must be \"\", NoSchedule, PreferNoSchedule, or NoExecute", i, t.Effect)
+		}
+		op := t.Operator
+		if op == "" {
+			op = "Equal" // normalise, same as the wire contract
+		}
+		if op == "Exists" && t.Value != "" {
+			return nil, fmt.Errorf("tolerations[%d]: operator=Exists requires empty value (got %q)", i, t.Value)
+		}
+		if t.Key == "" && op != "Exists" {
+			return nil, fmt.Errorf("tolerations[%d]: key required unless operator=Exists", i)
+		}
+		if t.Key != "" {
+			if errs := k8svalidation.IsQualifiedName(t.Key); len(errs) > 0 {
+				return nil, fmt.Errorf("tolerations[%d].key %q: %s", i, t.Key, strings.Join(errs, "; "))
+			}
+		}
+		if op == "Equal" {
+			if errs := k8svalidation.IsValidLabelValue(t.Value); len(errs) > 0 {
+				return nil, fmt.Errorf("tolerations[%d].value %q: %s", i, t.Value, strings.Join(errs, "; "))
+			}
+		}
+		if t.TolerationSeconds != nil {
+			if *t.TolerationSeconds < 0 {
+				return nil, fmt.Errorf("tolerations[%d].toleration_seconds: must be >= 0 (got %d)", i, *t.TolerationSeconds)
+			}
+			if t.Effect != "NoExecute" {
+				return nil, fmt.Errorf("tolerations[%d]: toleration_seconds only valid with effect=NoExecute (got %q)", i, t.Effect)
+			}
+		}
+		out[i] = domain.Toleration{
+			Key:               t.Key,
+			Operator:          op,
+			Value:             t.Value,
+			Effect:            t.Effect,
+			TolerationSeconds: t.TolerationSeconds,
+		}
+	}
+	return out, nil
 }
 
 // defaultServiceNameFromImage picks a dns-label-friendly name from
