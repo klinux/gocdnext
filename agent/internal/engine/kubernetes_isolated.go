@@ -3,6 +3,7 @@ package engine
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strconv"
@@ -571,29 +572,75 @@ func (k *Kubernetes) CreateIsolatedJobPod(ctx context.Context, spec IsolatedJobS
 	if err != nil {
 		return nil, "", err
 	}
-	if _, err := k.client.CoreV1().Secrets(k.cfg.Namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+	// One startup budget shared by BOTH creates below (secret, then pod) so an
+	// isolated job's create PHASE is bounded to a single StartupTimeout rather
+	// than one-per-create. The startup WAITS downstream get their own budget —
+	// distinct phase, and the happy-path create cost here is ~0. (Each
+	// createWithBackoff re-derives a StartupTimeout child from cctx; since cctx's
+	// deadline is already sooner, they share it.)
+	cctx := ctx
+	if k.cfg.StartupTimeout > 0 {
+		var cancel context.CancelFunc
+		cctx, cancel = context.WithTimeout(ctx, k.cfg.StartupTimeout)
+		defer cancel()
+	}
+
+	if err := k.createWithBackoff(cctx, "create_assignment_secret", func(ctx context.Context) error {
+		_, e := k.client.CoreV1().Secrets(k.cfg.Namespace).Create(ctx, secret, metav1.CreateOptions{})
+		return e
+	}); err != nil {
+		if errors.Is(err, errCreateAmbiguous) {
+			// Ambiguous: the secret may have committed with no ownerRef yet, so
+			// nothing would GC it. Best-effort delete (fresh ctx when the caller's
+			// is already dead) to prevent the leak the reviewer flagged.
+			k.bestEffortDeleteSecret(ctx, secretName)
+		}
 		return nil, "", fmt.Errorf("create assignment secret: %w", err)
 	}
 
 	pod, err := k.BuildIsolatedJobPodSpec(spec)
 	if err != nil {
-		_ = k.client.CoreV1().Secrets(k.cfg.Namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+		k.bestEffortDeleteSecret(ctx, secretName)
 		return nil, "", err
 	}
 	pod.Name = podName
 
-	created, err := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
-		_ = k.client.CoreV1().Secrets(k.cfg.Namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+	var created *corev1.Pod
+	if err := k.createWithBackoff(cctx, "create_isolated_job_pod", func(ctx context.Context) error {
+		p, e := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+		if e == nil {
+			created = p
+		}
+		return e
+	}); err != nil {
+		// The secret committed; the pod failed — clean the secret unconditionally
+		// (fresh ctx if the caller's is dead, else it would leak on an external
+		// cancel). On an ambiguous pod create, the pod itself may have committed
+		// too — best-effort delete that as well.
+		k.bestEffortDeleteSecret(ctx, secretName)
+		if errors.Is(err, errCreateAmbiguous) {
+			k.bestEffortDeletePod(ctx, podName)
+		}
 		return nil, "", fmt.Errorf("create isolated pod: %w", err)
+	}
+	if created == nil {
+		// AlreadyExists adopted on a retry — recover our own committed pod.
+		got, gerr := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		if gerr != nil {
+			k.bestEffortDeleteSecret(ctx, secretName)
+			return nil, "", fmt.Errorf("recover isolated pod %s: %w", podName, gerr)
+		}
+		created = got
 	}
 
 	if err := k.PatchAssignmentSecretOwner(ctx, secretName, created); err != nil {
-		// OwnerRef didn't take — delete the secret eagerly instead
-		// of relying on Pod GC (which wouldn't cascade without the
-		// ref). Caller still gets the pod so it can decide whether
-		// to also clean it up.
-		_ = k.client.CoreV1().Secrets(k.cfg.Namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+		// OwnerRef didn't take — delete the secret eagerly instead of relying on
+		// Pod GC (which wouldn't cascade without the ref). Fresh ctx when the
+		// caller's is dead: if the patch failed because of an external cancel, the
+		// secret still holds the sensitive assignment payload with no ownerRef, and
+		// this branch returns secretName="" so the runner won't retry the cleanup —
+		// a ctx-bound delete here would leak it. Caller still gets the pod.
+		k.bestEffortDeleteSecret(ctx, secretName)
 		return created, "", fmt.Errorf("patch assignment secret owner: %w", err)
 	}
 	return created, secretName, nil

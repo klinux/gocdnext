@@ -355,9 +355,32 @@ func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error
 	// reactor. See BuildPodSpec for the workDir-anchored fix.
 	pod := k.BuildPodSpec(spec)
 
-	created, err := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
+	var created *corev1.Pod
+	if err := k.createWithBackoff(ctx, "create_job_pod", func(ctx context.Context) error {
+		p, e := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+		if e == nil {
+			created = p
+		}
+		return e
+	}); err != nil {
+		if errors.Is(err, errCreateAmbiguous) {
+			// The create may have committed before the budget expired — best-effort
+			// delete so an unknown-state pod doesn't outlive the failed job. Uses a
+			// fresh ctx when the caller's is already dead (e.g. external cancel),
+			// so the cleanup still reaches the apiserver. Orphan reaper backstops.
+			k.bestEffortDeletePod(ctx, pod.Name)
+		}
 		return -1, fmt.Errorf("engine: kubernetes: create pod: %w", err)
+	}
+	if created == nil {
+		// createWithBackoff adopted an AlreadyExists on a retry: our prior
+		// attempt committed before the RST_STREAM ate the response. Recover the
+		// object we own (unique name) so the waiters have a pod to poll.
+		got, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+		if err != nil {
+			return -1, fmt.Errorf("engine: kubernetes: recover created pod %s: %w", pod.Name, err)
+		}
+		created = got
 	}
 	name := created.Name
 
@@ -381,10 +404,14 @@ func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error
 	// DinD never self-terminates — when the task exits, the Pod
 	// phase would stay Running until the sidecar is killed. Force
 	// cleanup on Docker jobs so the daemon doesn't leak into the
-	// next scheduled Pod on the same node.
+	// next scheduled Pod on the same node. Unconditional (DinD must
+	// die regardless of CleanupOn* config) but via the cancel-override
+	// delete: a job canceled mid-run leaves ctx dead, and a ctx-bound
+	// delete here would no-op and leak the DinD pod — the same override
+	// maybeCleanup already applies on the sibling branch.
 	success := runErr == nil && finalExit == 0
 	if spec.Docker {
-		_ = k.client.CoreV1().Pods(k.cfg.Namespace).Delete(ctx, name, metav1.DeleteOptions{})
+		k.bestEffortDeletePod(ctx, name)
 	} else {
 		k.maybeCleanup(ctx, name, success)
 	}
@@ -755,6 +782,35 @@ func (k *Kubernetes) maybeCleanup(ctx context.Context, name string, success bool
 		defer cancel()
 	}
 	_ = k.client.CoreV1().Pods(k.cfg.Namespace).Delete(delCtx, name, metav1.DeleteOptions{})
+}
+
+// bestEffortDelete runs a cleanup/reconcile DELETE that must survive a caller ctx
+// which is itself already canceled/expired — the very condition (an external
+// cancel, or the exhausted budget behind an ambiguous create) that would
+// otherwise make the DELETE return the context error before it reaches the
+// apiserver, and leak the object. Mirrors maybeCleanup's cancel override: reuse
+// the caller ctx while it's live (honouring its deadline), else fall back to a
+// fresh bounded ctx. Errors are swallowed — K8s GC, the orphan reaper and the
+// run-terminal cleanup are the backstops.
+func (k *Kubernetes) bestEffortDelete(ctx context.Context, del func(context.Context) error) {
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), cleanupPodDeleteTimeout)
+		defer cancel()
+	}
+	_ = del(ctx)
+}
+
+func (k *Kubernetes) bestEffortDeletePod(ctx context.Context, name string) {
+	k.bestEffortDelete(ctx, func(c context.Context) error {
+		return k.client.CoreV1().Pods(k.cfg.Namespace).Delete(c, name, metav1.DeleteOptions{})
+	})
+}
+
+func (k *Kubernetes) bestEffortDeleteSecret(ctx context.Context, name string) {
+	k.bestEffortDelete(ctx, func(c context.Context) error {
+		return k.client.CoreV1().Secrets(k.cfg.Namespace).Delete(c, name, metav1.DeleteOptions{})
+	})
 }
 
 // loadRESTConfig picks in-cluster config when kubeconfig is empty,

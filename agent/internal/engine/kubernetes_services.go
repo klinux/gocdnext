@@ -143,15 +143,50 @@ func (k *Kubernetes) EnsureServices(
 	// keeps the server-side row's started_at anchored to the FIRST
 	// agent's create, not whichever sibling happened to call last.
 	created := make(map[string]bool, len(services))
+
+	// Bound the whole create phase by StartupTimeout so a sustained apiserver
+	// flood fails the job loudly instead of hanging its slot. Each Create is
+	// retried under the #229 transient-backpressure policy within that budget —
+	// the ENHANCE_YOUR_CALM that used to kill a service on the first blip.
+	createCtx := ctx
+	if k.cfg.StartupTimeout > 0 {
+		var cancel context.CancelFunc
+		createCtx, cancel = context.WithTimeout(ctx, k.cfg.StartupTimeout)
+		defer cancel()
+	}
 	for _, svc := range services {
 		name := prefix + svc.Name
 		pod := k.buildServicePod(name, svc, runID, jobID, generation)
 		if log != nil {
 			log("stdout", fmt.Sprintf("$ starting service %s (%s)", svc.Name, svc.Image))
 		}
-		_, err := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
-		switch {
-		case err == nil:
+		// Unlike the unique-name job pods, a run-shared service pod is legitimately
+		// REUSED when a sibling job already created it — AlreadyExists is a success
+		// on ANY attempt (not just after a retry), so it is handled here rather
+		// than swallowed by createWithBackoff. A transient backpressure error is
+		// retried; a non-transient one aborts.
+		didCreate := false
+		perr := pollWithBackoff(createCtx, "create_service_pod", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
+			_, e := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+			switch {
+			case e == nil:
+				didCreate = true
+				return true, nil
+			case kerrors.IsAlreadyExists(e):
+				didCreate = false
+				return true, nil
+			default:
+				return false, e
+			}
+		})
+		if perr != nil {
+			// No ambiguous-commit reconcile needed here (unlike the isolated
+			// Secret): a service pod that committed carries the run-scoped labels,
+			// so the run-terminal CleanupRunServices broadcast sweeps it by
+			// selector — it never leaks even if this create is reported failed.
+			return noop, fmt.Errorf("kubernetes engine: create service pod %s: %w", name, perr)
+		}
+		if didCreate {
 			// We created it. waitForPodIP below will block on its
 			// status; nothing else to do here.
 			created[svc.Name] = true
@@ -161,29 +196,26 @@ func (k *Kubernetes) EnsureServices(
 				PodName: name,
 				Status:  "starting",
 			})
-		case kerrors.IsAlreadyExists(err):
-			// Another job of THIS run got here first — ideally.
-			// Before trusting reuse, Get the existing pod and
-			// validate it carries OUR labels: same managed-by,
-			// component=service, run-id=our-run, service=our-svc.
-			// Without this check a stale pod from a previous
-			// gocdnext version, a name collision (12-hex prefix is
-			// ~10^14 space but not infinite), or an unrelated
-			// operator-deployed pod sharing the namespace could be
-			// silently adopted — and never cleaned up since our
-			// label-selector delete wouldn't match it back.
-			existing, getErr := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
-			if getErr != nil {
-				return noop, fmt.Errorf("kubernetes engine: pod %s exists but Get failed: %w", name, getErr)
-			}
-			if err := assertOurServicePod(existing, runID, svc.Name); err != nil {
-				return noop, fmt.Errorf("kubernetes engine: refusing to reuse pod %s: %w — delete it manually and retry", name, err)
-			}
-			if log != nil {
-				log("stdout", fmt.Sprintf("$ reusing service %s from sibling job (run-scoped)", svc.Name))
-			}
-		default:
-			return noop, fmt.Errorf("kubernetes engine: create service pod %s: %w", name, err)
+			continue
+		}
+		// Another job of THIS run got here first — ideally (or our own
+		// committed-but-lost create on a retry). Before trusting reuse, Get the
+		// existing pod and validate it carries OUR labels: same managed-by,
+		// component=service, run-id=our-run, service=our-svc. Without this check a
+		// stale pod from a previous gocdnext version, a name collision (12-hex
+		// prefix is ~10^14 space but not infinite), or an unrelated
+		// operator-deployed pod sharing the namespace could be silently adopted —
+		// and never cleaned up since our label-selector delete wouldn't match it
+		// back.
+		existing, getErr := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
+		if getErr != nil {
+			return noop, fmt.Errorf("kubernetes engine: pod %s exists but Get failed: %w", name, getErr)
+		}
+		if err := assertOurServicePod(existing, runID, svc.Name, generation); err != nil {
+			return noop, fmt.Errorf("kubernetes engine: refusing to reuse pod %s: %w — delete it manually and retry", name, err)
+		}
+		if log != nil {
+			log("stdout", fmt.Sprintf("$ reusing service %s from sibling job (run-scoped)", svc.Name))
 		}
 	}
 
@@ -358,9 +390,10 @@ func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, runID, jobID 
 //     include our run-id (unlikely but defensive).
 //
 // Requires the full label tuple: managed-by + component + run-id +
-// service. Returns nil when the pod is ours; an error otherwise so
-// the caller can surface a precise "refusing to reuse" message.
-func assertOurServicePod(pod *corev1.Pod, runID, svcName string) error {
+// service + service-generation. Returns nil when the pod is ours; an
+// error otherwise so the caller can surface a precise "refusing to
+// reuse" message.
+func assertOurServicePod(pod *corev1.Pod, runID, svcName string, generation int64) error {
 	if pod == nil {
 		return fmt.Errorf("nil pod")
 	}
@@ -383,6 +416,12 @@ func assertOurServicePod(pod *corev1.Pod, runID, svcName string) error {
 	}
 	if labels["gocdnext.io/run-id"] != wantRunID {
 		return fmt.Errorf("run-id label = %q, want %q", labels["gocdnext.io/run-id"], wantRunID)
+	}
+	// The generation is already in the pod NAME (…-g<gen>-…), so a
+	// wrong-generation pod normally can't reach here — but assert it too so a
+	// malformed/hand-crafted pod that reused the name can't be silently adopted.
+	if want := strconv.FormatInt(generation, 10); labels[serviceGenerationLabel] != want {
+		return fmt.Errorf("service-generation label = %q, want %q", labels[serviceGenerationLabel], want)
 	}
 	return nil
 }
