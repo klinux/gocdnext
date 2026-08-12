@@ -182,7 +182,13 @@ func assignmentNodeSelector(a *gocdnextv1.JobAssignment) map[string]string {
 // fresh *int64 so engine mutation can't leak back into the proto
 // (same aliasing discipline as scheduler.tolerationsToProto).
 func assignmentTolerations(a *gocdnextv1.JobAssignment) []corev1.Toleration {
-	in := a.GetTolerations()
+	return protoTolerationsToCorev1(a.GetTolerations())
+}
+
+// protoTolerationsToCorev1 converts a proto toleration slice (job-level or a
+// per-service override) into corev1 tolerations, copying TolerationSeconds into
+// a fresh pointer so the pod spec never aliases the proto message.
+func protoTolerationsToCorev1(in []*gocdnextv1.Toleration) []corev1.Toleration {
 	if len(in) == 0 {
 		return nil
 	}

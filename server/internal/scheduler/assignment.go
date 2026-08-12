@@ -361,10 +361,12 @@ func BuildAssignment(
 		services = make([]*gocdnextv1.ServiceSpec, 0, len(def.Services))
 		for _, s := range def.Services {
 			services = append(services, &gocdnextv1.ServiceSpec{
-				Name:    s.Name,
-				Image:   s.Image,
-				Env:     s.Env,
-				Command: append([]string(nil), s.Command...),
+				Name:         s.Name,
+				Image:        s.Image,
+				Env:          s.Env,
+				Command:      append([]string(nil), s.Command...),
+				NodeSelector: s.NodeSelector,
+				Tolerations:  serviceTolerationsToProto(s.Tolerations),
 			})
 		}
 	}

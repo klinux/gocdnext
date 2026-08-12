@@ -224,3 +224,58 @@ func TestStartServices_ServiceInheritsJobScheduling(t *testing.T) {
 		t.Errorf("service PreferredNodeAffinity = %v, want inherited weight 50", svc.PreferredNodeAffinity)
 	}
 }
+
+// A per-service scheduling override WINS over the inherited job scheduling:
+// node_selector keys override (inherited keys with no override are kept),
+// tolerations concatenate (inherited + override).
+func TestStartServices_ServiceSchedulingOverrideWins(t *testing.T) {
+	stub := &stubEngine{name: "kubernetes"}
+	r := New(Config{
+		WorkspaceRoot: t.TempDir(),
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Send:          func(*gocdnextv1.AgentMessage) {},
+		Engine:        stub,
+	})
+	a := &gocdnextv1.JobAssignment{
+		RunId: "r", JobId: "j",
+		// job (inherited) scheduling
+		NodeSelector: map[string]string{"cloud.google.com/gke-nodepool": "spot", "shared": "keep"},
+		Tolerations: []*gocdnextv1.Toleration{
+			{Key: "spot", Operator: "Exists", Effect: "NoSchedule"},
+		},
+		Services: []*gocdnextv1.ServiceSpec{{
+			Name:  "postgres",
+			Image: "postgres:16",
+			// per-service OVERRIDE
+			NodeSelector: map[string]string{"cloud.google.com/gke-nodepool": "ondemand"},
+			Tolerations: []*gocdnextv1.Toleration{
+				{Key: "dedicated", Operator: "Equal", Value: "db", Effect: "NoSchedule"},
+			},
+		}},
+	}
+	var seq atomic.Int64
+	if _, err := r.startServices(context.Background(), a, &seq); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	svc := stub.ensureSawSpecs[0]
+
+	// node_selector: override wins on the pool key; the inherited non-colliding
+	// key survives.
+	if svc.NodeSelector["cloud.google.com/gke-nodepool"] != "ondemand" {
+		t.Errorf("gke-nodepool = %q, want ondemand (override wins)", svc.NodeSelector["cloud.google.com/gke-nodepool"])
+	}
+	if svc.NodeSelector["shared"] != "keep" {
+		t.Errorf("inherited 'shared' key dropped: %v", svc.NodeSelector)
+	}
+	// tolerations: inherited spot + override dedicated (concatenated).
+	if len(svc.Tolerations) != 2 {
+		t.Fatalf("tolerations = %d, want 2 (inherited + override)", len(svc.Tolerations))
+	}
+	keys := map[string]bool{}
+	for _, tol := range svc.Tolerations {
+		keys[tol.Key] = true
+	}
+	if !keys["spot"] || !keys["dedicated"] {
+		t.Errorf("tolerations = %+v, want both spot (inherited) and dedicated (override)", svc.Tolerations)
+	}
+}

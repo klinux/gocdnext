@@ -510,9 +510,9 @@ message JobAssignment {
   // runner profile (k8s nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution).
   // It biases scheduling but NEVER overrides the hard node_selector (field 21):
   // a preference incompatible with the selector simply has no effect. Honoured
-  // by the Kubernetes engine for the TASK/JOB pod only — `services:` pods still
-  // get just the agent scheduling baseline (follow-up tracks propagating all
-  // profile hints to services). Shell + Docker ignore it.
+  // by the Kubernetes engine for the TASK/JOB pod AND inherited by `services:`
+  // pods (a service can override node_selector/tolerations per-service, but not
+  // this affinity). Shell + Docker ignore it.
   repeated PreferredNodeAffinityTerm preferred_node_affinity = 27;
 }
 
@@ -598,6 +598,15 @@ message ServiceSpec {
   string image               = 2;
   map<string, string> env    = 3;
   repeated string command    = 4;
+
+  // Per-service scheduling OVERRIDE (Kubernetes engine only). When set on a
+  // service in the pipeline YAML, it wins over the scheduling the service
+  // otherwise inherits from the job that brings the run's services up:
+  // node_selector keys override the inherited ones (so a service can be pinned
+  // to a different, e.g. more stable on-demand, pool than the jobs), tolerations
+  // are appended. Absent => inherit the job's scheduling (the default).
+  map<string, string> node_selector = 5;
+  repeated Toleration tolerations   = 6;
 }
 
 message ArtifactDownload {
