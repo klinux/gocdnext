@@ -344,18 +344,20 @@ func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, runID, jobID 
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
-			// Apply the SAME agent-level scheduling baseline as task
-			// pods. In a cluster with NoSchedule taints isolating CI,
-			// a service pod without these tolerations would land
-			// Pending even though the task pod on the same node
-			// schedules fine — pipelines with services break with
-			// no obvious cause. The mergeNodeSelector/concatTolerations
-			// helpers are used (not just the raw cfg values) so the
-			// service-pod path is symmetric with task-pod paths and a
-			// future refactor that introduces per-service overrides
-			// would have a single shared call site to extend.
-			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, nil),
-			Tolerations:      concatTolerations(k.cfg.Tolerations, nil),
+			// Scheduling is applied EXACTLY like the task pod
+			// (kubernetes.go BuildPodSpec): the agent-level baseline
+			// merged with the per-service hints the runner stamped from
+			// the job's runner profile (svc.NodeSelector/Tolerations/
+			// PreferredNodeAffinity). A run-shared service thus lands on
+			// the same pool as the jobs that use it — not wherever the
+			// default scheduler happens to place it (a cold/slow pool
+			// needing a node scale-up was a real source of startup
+			// latency + failures). Empty hints => baseline only, the
+			// prior behaviour. In a taint-isolated CI cluster the
+			// tolerations are also what keep the service off Pending.
+			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, svc.NodeSelector),
+			Tolerations:      concatTolerations(k.cfg.Tolerations, svc.Tolerations),
+			Affinity:         buildNodeAffinity(svc.PreferredNodeAffinity),
 			ImagePullSecrets: pullSecrets,
 			Containers: []corev1.Container{{
 				Name:  "service",
