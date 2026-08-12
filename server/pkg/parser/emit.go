@@ -53,10 +53,12 @@ func Emit(p *domain.Pipeline) ([]byte, error) {
 	}
 	for _, s := range p.Services {
 		f.Services = append(f.Services, ServiceSpec{
-			Name:    s.Name,
-			Image:   s.Image,
-			Env:     s.Env,
-			Command: append([]string(nil), s.Command...),
+			Name:         s.Name,
+			Image:        s.Image,
+			Env:          s.Env,
+			Command:      append([]string(nil), s.Command...),
+			NodeSelector: s.NodeSelector,
+			Tolerations:  toTolerationSpecs(s.Tolerations),
 		})
 	}
 	for _, m := range p.Materials {
@@ -106,6 +108,25 @@ func Emit(p *domain.Pipeline) ([]byte, error) {
 		return nil, fmt.Errorf("emit: close: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// toTolerationSpecs converts domain tolerations back to their YAML shape for
+// round-trip emit. Nil in → nil out (an empty services block stays empty).
+func toTolerationSpecs(in []domain.Toleration) []TolerationSpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]TolerationSpec, len(in))
+	for i, t := range in {
+		out[i] = TolerationSpec{
+			Key:               t.Key,
+			Operator:          t.Operator,
+			Value:             t.Value,
+			Effect:            t.Effect,
+			TolerationSeconds: t.TolerationSeconds,
+		}
+	}
+	return out
 }
 
 func materialToSpec(m domain.Material) MaterialSpec {

@@ -315,6 +315,26 @@ type Service struct {
 	Image   string
 	Env     map[string]string
 	Command []string
+
+	// NodeSelector + Tolerations are the OPTIONAL per-service scheduling
+	// override (Kubernetes engine). When set, they win over the scheduling the
+	// service otherwise inherits from the job that brings the run's services up:
+	// node_selector keys override the inherited ones (pin a service to a
+	// different, e.g. more stable, pool than the jobs), tolerations are appended.
+	// Empty => inherit the job's scheduling.
+	NodeSelector map[string]string `json:"node_selector,omitempty"`
+	Tolerations  []Toleration      `json:"tolerations,omitempty"`
+}
+
+// Toleration mirrors a Kubernetes pod toleration for the per-service scheduling
+// override. Same shape as the runner-profile toleration; validated by the
+// parser against the apiserver rules before it ever reaches a PodSpec.
+type Toleration struct {
+	Key               string `json:"key,omitempty"`
+	Operator          string `json:"operator,omitempty"`
+	Value             string `json:"value,omitempty"`
+	Effect            string `json:"effect,omitempty"`
+	TolerationSeconds *int64 `json:"toleration_seconds,omitempty"`
 }
 
 type MaterialType string

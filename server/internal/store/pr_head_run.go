@@ -23,6 +23,26 @@ import (
 // DoS; the default-branch (trusted) path is unbounded as before.
 const maxPRHeadJobRuns = 1000
 
+// stripHeadServiceScheduling removes the per-service scheduling override
+// (node_selector + tolerations) from a contributor-controlled PR-head service
+// list. Node placement is admin-managed via runner profiles; the head bypasses
+// ApplyProject, so honouring its override would let a PR pin a service to an
+// arbitrary node pool or tolerate arbitrary taints. Everything else about the
+// service (name/image/env/command) is kept; the pod falls back to the job's
+// inherited profile scheduling. Returns a copy — the caller's slice is untouched.
+func stripHeadServiceScheduling(in []domain.Service) []domain.Service {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]domain.Service, len(in))
+	for i, s := range in {
+		s.NodeSelector = nil
+		s.Tolerations = nil
+		out[i] = s
+	}
+	return out
+}
+
 var (
 	// ErrPRHeadMaterialNotFound: the material id resolves to no pipeline/project.
 	ErrPRHeadMaterialNotFound = errors.New("store: pr-head: material not found")
@@ -154,7 +174,14 @@ func (s *Store) CreatePRHeadRun(ctx context.Context, in CreatePRHeadRunInput) (R
 	candidate := baseDef
 	candidate.Stages = in.RawDef.Stages
 	candidate.Jobs = in.RawDef.Jobs
-	candidate.Services = in.RawDef.Services
+	// The head may declare its own services (postgres for its tests), but it must
+	// NOT pick node pools / taints: per-service node_selector + tolerations are
+	// stripped here. Node placement is admin-managed via runner profiles, and the
+	// head bypasses ApplyProject — otherwise a PR could pin a service to any pool
+	// or tolerate any taint (operator=Exists tolerates ALL). Stripped services
+	// fall back to the job's inherited profile scheduling. The trusted default-
+	// branch/apply path keeps the override.
+	candidate.Services = stripHeadServiceScheduling(in.RawDef.Services)
 	candidate.Variables = in.RawDef.Variables
 
 	// Apply the project's current policies to the CANDIDATE (base envelope + head

@@ -713,6 +713,29 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "node_selector": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "type": "object",
+          "description": "NodeSelector + Tolerations are the OPTIONAL per-service scheduling\noverride (Kubernetes engine). Set them to pin a service to a different\npool / taint set than the jobs that use it; otherwise the service inherits\nthe job's scheduling. Validated at parse time (same apiserver rules the\nrunner profile enforces) so a typo fails here, not as a Pending pod later."
+        },
+        "tolerations": {
+          "items": {
+            "$ref": "#/$defs/TolerationSpec"
+          },
+          "type": "array"
         }
       },
       "additionalProperties": false,
@@ -749,6 +772,28 @@
         "sync_mode"
       ],
       "description": "TargetDef is the YAML shape of `deploy.target` — the ArgoCD Application this environment deploys, declared in the pipeline."
+    },
+    "TolerationSpec": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "operator": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "effect": {
+          "type": "string"
+        },
+        "toleration_seconds": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "TolerationSpec is the YAML shape of a pod toleration for a service's scheduling override."
     },
     "UpstreamSpec": {
       "properties": {

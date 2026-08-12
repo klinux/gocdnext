@@ -72,6 +72,23 @@ type ServiceSpec struct {
 	Image   string            `yaml:"image"`
 	Env     map[string]string `yaml:"env,omitempty"`
 	Command []string          `yaml:"command,omitempty"`
+	// NodeSelector + Tolerations are the OPTIONAL per-service scheduling
+	// override (Kubernetes engine). Set them to pin a service to a different
+	// pool / taint set than the jobs that use it; otherwise the service inherits
+	// the job's scheduling. Validated at parse time (same apiserver rules the
+	// runner profile enforces) so a typo fails here, not as a Pending pod later.
+	NodeSelector map[string]string `yaml:"node_selector,omitempty"`
+	Tolerations  []TolerationSpec  `yaml:"tolerations,omitempty"`
+}
+
+// TolerationSpec is the YAML shape of a pod toleration for a service's
+// scheduling override. Mirrors the runner-profile toleration fields.
+type TolerationSpec struct {
+	Key               string `yaml:"key,omitempty"`
+	Operator          string `yaml:"operator,omitempty"`
+	Value             string `yaml:"value,omitempty"`
+	Effect            string `yaml:"effect,omitempty"`
+	TolerationSeconds *int64 `yaml:"toleration_seconds,omitempty"`
 }
 
 type Include struct {

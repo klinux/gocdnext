@@ -56,3 +56,59 @@ func TestBuildAssignment_CarriesServiceGeneration(t *testing.T) {
 		t.Errorf("JobAssignment.service_generation = %d, want 5 (threaded from the run)", asg.GetServiceGeneration())
 	}
 }
+
+// TestBuildAssignment_ServiceSchedulingOverride proves a service's per-service
+// node_selector + tolerations survive the definition → JobAssignment proto hop
+// (including toleration_seconds via the optional field).
+func TestBuildAssignment_ServiceSchedulingOverride(t *testing.T) {
+	secs := int64(30)
+	def := domain.Pipeline{
+		Stages: []string{"ci"},
+		Jobs:   []domain.Job{{Name: "build", Stage: "ci", Image: "alpine:3.19"}},
+		Services: []domain.Service{{
+			Name:         "postgres",
+			Image:        "postgres:16",
+			NodeSelector: map[string]string{"cloud.google.com/gke-nodepool": "ondemand"},
+			Tolerations: []domain.Toleration{
+				{Key: "dedicated", Operator: "Equal", Value: "db", Effect: "NoSchedule"},
+				{Key: "spot", Operator: "Exists", Effect: "NoExecute", TolerationSeconds: &secs},
+			},
+		}},
+	}
+	defJSON, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal def: %v", err)
+	}
+	asg, _, err := scheduler.BuildAssignment(
+		store.RunForDispatch{Definition: defJSON},
+		store.DispatchableJob{Name: "build"},
+		nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil,
+	)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	svcs := asg.GetServices()
+	if len(svcs) != 1 {
+		t.Fatalf("services = %d, want 1", len(svcs))
+	}
+	svc := svcs[0]
+	if svc.GetNodeSelector()["cloud.google.com/gke-nodepool"] != "ondemand" {
+		t.Errorf("ServiceSpec.node_selector = %v", svc.GetNodeSelector())
+	}
+	tols := svc.GetTolerations()
+	if len(tols) != 2 {
+		t.Fatalf("ServiceSpec.tolerations = %d, want 2", len(tols))
+	}
+	var spotFound bool
+	for _, tol := range tols {
+		if tol.GetKey() == "spot" {
+			spotFound = true
+			if tol.TolerationSeconds == nil || *tol.TolerationSeconds != 30 {
+				t.Errorf("spot toleration_seconds = %v, want 30", tol.TolerationSeconds)
+			}
+		}
+	}
+	if !spotFound {
+		t.Error("spot toleration missing on the wire")
+	}
+}
