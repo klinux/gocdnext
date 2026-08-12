@@ -8,6 +8,23 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.91.0 — 2026-08-11
+
+### Added
+
+- **Per-service scheduling override.** A `services:` sidecar already inherits the
+  job's runner-profile scheduling (v0.90.0); it can now **override** it from the
+  pipeline YAML with `node_selector` / `tolerations` — e.g. keep a database on a
+  stable on-demand pool while the jobs run on spot. Precedence is agent baseline
+  < job profile < service override: `node_selector` keys win on collision,
+  `tolerations` are appended (≤20 each), affinity stays inherited. Values are
+  validated at parse time against the apiserver rules (a typo fails `gocdnext
+  validate`, not a Pending pod). Security: the override is apply-gated — a
+  same-repo **PR-head** run (contributor-controlled, bypasses apply-time
+  authorization) has its per-service `node_selector`/`tolerations` **stripped**
+  so a PR can't pin a service to an arbitrary pool or tolerate arbitrary taints;
+  the service still runs, inheriting the job's scheduling. (#254)
+
 ## v0.90.0 — 2026-08-11
 
 ### Added
