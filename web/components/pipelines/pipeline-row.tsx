@@ -284,7 +284,7 @@ export function PipelineRow({
             boot before the jobs, so the violet cluster + connector sit before
             the first circle. Rows without services start at the track's left
             edge (no empty gap). */}
-        <div className="flex items-center overflow-x-auto py-3 pr-3">
+        <div className="flex items-start py-3 pr-3">
           {run?.has_services ? (
             <ServicesCluster names={run.service_names ?? []} tone={tone} />
           ) : null}
@@ -353,7 +353,10 @@ function RowStages({
     return <span className="font-mono text-[11px] text-muted-foreground">—</span>;
   }
   return (
-    <div className="flex items-start">
+    // flex-1 + min-w-0 bound the track to the (flexible) stage column so
+    // flex-wrap can break long pipelines onto multiple rows instead of
+    // overflowing into a horizontal scrollbar; gap-y-3 spaces the wrapped rows.
+    <div className="flex min-w-0 flex-1 flex-wrap items-start gap-y-3">
       {columns.map((col, i) => {
         // Soft per-stage signal — ≥1 run (not ≥3) so it shows on young
         // pipelines; the hard alert is the row C/A + attention strip.
