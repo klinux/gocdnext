@@ -82,6 +82,19 @@ if [ "${PLUGIN_SKIP_DB_UPDATE:-false}" = "true" ]; then
   args+=("--skip-db-update")
 fi
 
+# Misconfiguration checks (scan_type=config) ship as a rego bundle trivy fetches
+# from the registry at runtime. That bundle moves forward independently of the
+# pinned trivy binary, so a newer bundle can reference a schema the binary
+# doesn't know and fail to compile — the `[rego] undefined ref … requestedamis`
+# / "Failed to find embedded check, skipping" noise, with silent coverage loss.
+# Use the checks EMBEDDED in the binary instead: --skip-check-update makes the
+# scan deterministic (same plugin version => same checks), offline, and
+# skew-free. Move the check set by bumping the trivy binary in the Dockerfile,
+# not by whatever the registry served today.
+if [ "${SCAN_TYPE}" = "config" ]; then
+  args+=("--skip-check-update")
+fi
+
 # --ignore-unfixed only makes sense on CVE scans; it has no
 # effect on config/secret rules but trivy doesn't reject it
 # either — always forwarding keeps the flag list simple.
@@ -104,4 +117,35 @@ fi
 args+=("${TARGET}")
 
 echo "==> trivy ${args[*]}"
-exec trivy "${args[@]}"
+
+# Run the scan. Capture the exit code instead of exec'ing so we can add a
+# human-readable summary on failure (below) before propagating it.
+set +e
+trivy "${args[@]}"
+rc=$?
+set -e
+
+# When the report was written to a FILE in a machine format (sarif/json/
+# cyclonedx), nothing about the findings reached the job log — a failing gate
+# then shows only the exit code plus any unrelated check-loading noise, so
+# operators mistake the noise for the cause. On a non-zero exit under those
+# conditions, re-run the SAME scan as a human table (to stdout, --exit-code 0)
+# so the findings that ACTUALLY failed the gate are visible in the log. Best-
+# effort: it never changes the real exit code.
+if [ "${rc}" -ne 0 ] && [ -n "${PLUGIN_OUTPUT:-}" ] && [ "${FORMAT}" != "table" ]; then
+  echo "── trivy: findings that failed the gate (severity ${SEVERITY}) ──"
+  summary=("${SCAN_TYPE}" "--severity" "${SEVERITY}" "--format" "table" "--exit-code" "0")
+  if [ "${SCAN_TYPE}" = "config" ]; then
+    summary+=("--skip-check-update")
+  fi
+  if [ "${IGNORE_UNFIXED}" = "true" ]; then
+    summary+=("--ignore-unfixed")
+  fi
+  if [ -n "${PLUGIN_SKIP_DIRS:-}" ]; then
+    summary+=("--skip-dirs" "${PLUGIN_SKIP_DIRS}")
+  fi
+  summary+=("${TARGET}")
+  trivy "${summary[@]}" || true
+fi
+
+exit "${rc}"
