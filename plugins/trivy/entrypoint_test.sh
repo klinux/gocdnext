@@ -65,4 +65,14 @@ rc=$?
 [ "$rc" -eq 1 ] || fail "table-format gate failure should still exit 1 (got $rc)"
 [ "$(grep -cx -- config "$TMP/args")" -eq 1 ] || fail "no summary re-run when the primary is already a table"
 
+# ── 8. offline runner: --skip-db-update rides BOTH the primary and the summary
+#       re-run, so the failure table doesn't try to touch the network ──
+rm -f "$TMP/args"
+PLUGIN_SCAN_TYPE=config PLUGIN_FORMAT=sarif PLUGIN_OUTPUT=out.sarif \
+  PLUGIN_SKIP_DB_UPDATE=true TRIVY_MOCK_EXIT=1 run
+rc=$?
+[ "$rc" -eq 1 ] || fail "offline gate failure should still exit 1 (got $rc)"
+[ "$(grep -cx -- "--skip-db-update" "$TMP/args")" -eq 2 ] \
+  || fail "--skip-db-update must ride both the primary AND the summary re-run"
+
 echo "PASS: trivy entrypoint"

@@ -135,6 +135,12 @@ set -e
 if [ "${rc}" -ne 0 ] && [ -n "${PLUGIN_OUTPUT:-}" ] && [ "${FORMAT}" != "table" ]; then
   echo "── trivy: findings that failed the gate (severity ${SEVERITY}) ──"
   summary=("${SCAN_TYPE}" "--severity" "${SEVERITY}" "--format" "table" "--exit-code" "0")
+  # Mirror the primary run's update-skipping flags so the summary works on the
+  # same (possibly offline/air-gapped) runner — otherwise it would try to touch
+  # the network for DB/check freshness and fail exactly when we need the table.
+  if [ "${PLUGIN_SKIP_DB_UPDATE:-false}" = "true" ]; then
+    summary+=("--skip-db-update")
+  fi
   if [ "${SCAN_TYPE}" = "config" ]; then
     summary+=("--skip-check-update")
   fi
