@@ -8,6 +8,28 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.91.1 — 2026-08-13
+
+### Fixed
+
+- **Trivy plugin: stop the rego check-skew noise and show findings on a failing
+  gate.** A `scan-type: config` gate fetches the misconfig rego bundle from the
+  registry at runtime; that bundle can outpace the pinned trivy binary's schema
+  and fail to compile (`[rego] undefined ref … requestedamis` / "Failed to find
+  embedded check, skipping"), which reads like the cause of the failure but is
+  just noise. Config scans now pass `--skip-check-update` to use the checks
+  embedded in the binary — deterministic (same plugin version ⇒ same checks),
+  offline, skew-free. And when the report is written to a file in a machine
+  format (sarif/json/cyclonedx), a failing gate now re-runs the scan as a human
+  table so the findings that actually failed it are visible in the log instead
+  of only an exit code plus the noise (best-effort, never changes the exit code;
+  `--skip-db-update` rides both runs so an offline runner still gets the table).
+  (#256)
+- **Pipeline stage track wraps instead of overflowing.** A pipeline with many
+  stages pushed the stage column into a horizontal scrollbar in the Flow/List
+  view; the track now wraps onto multiple rows within its (bounded) column.
+  (#257)
+
 ## v0.91.0 — 2026-08-11
 
 ### Added
