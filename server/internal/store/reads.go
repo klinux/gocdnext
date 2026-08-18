@@ -164,7 +164,7 @@ type RunMeta struct {
 // PipelineMetrics feeds the card's footer strip: lead time (wall
 // clock), process time (summed busy stages), success rate across
 // recent terminal runs. StageStats drives the per-stage duration
-// badge + bottleneck call-out.
+// percentile badges + bottleneck call-out.
 type PipelineMetrics struct {
 	WindowDays        int         `json:"window_days"`
 	RunsConsidered    int         `json:"runs_considered"`
@@ -179,6 +179,7 @@ type StageStat struct {
 	RunsConsidered int     `json:"runs_considered"`
 	SuccessRate    float64 `json:"success_rate"`
 	DurationP50Sec float64 `json:"duration_p50_seconds"`
+	DurationP95Sec float64 `json:"duration_p95_seconds"`
 }
 
 // StageRunSummary is the thin shape the pipeline card needs to

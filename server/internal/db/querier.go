@@ -1764,7 +1764,7 @@ type Querier interface {
 	// distinct from `lead_time_p50_seconds` (wall-clock run duration).
 	PipelineMetricsByProjectSlug(ctx context.Context, arg PipelineMetricsByProjectSlugParams) ([]PipelineMetricsByProjectSlugRow, error)
 	// Per-stage aggregates over the same window. Feeds the card's
-	// per-stage duration badge (p50) and bottleneck call-out (success
+	// per-stage duration percentiles and bottleneck call-out (success
 	// rate under threshold). Only terminal stage_runs count — a
 	// running/cancelled stage without finished_at would poison the
 	// median.

@@ -78,3 +78,59 @@ describe("PipelineRow — frozen APPROVE node (#227)", () => {
     expect(container.querySelector(".lucide-snowflake")).toBeNull();
   });
 });
+
+describe("PipelineRow — stage p95", () => {
+  it("shows the p95 duration next to the stage", () => {
+    const pipeline = pipelineWith(false);
+    pipeline.latest_run_stages = [
+      ...(pipeline.latest_run_stages ?? []),
+      {
+        id: "s2",
+        name: "publish",
+        ordinal: 1,
+        status: "success",
+        jobs: [],
+      },
+    ];
+    pipeline.metrics = {
+      window_days: 7,
+      runs_considered: 42,
+      success_rate: 0.96,
+      lead_time_p50_seconds: 1080,
+      process_time_p50_seconds: 780,
+      stage_stats: [
+        {
+          name: "approve",
+          runs_considered: 42,
+          success_rate: 0.96,
+          duration_p50_seconds: 360,
+          duration_p95_seconds: 521,
+        },
+        {
+          name: "publish",
+          runs_considered: 42,
+          success_rate: 0.98,
+          duration_p50_seconds: 90,
+          duration_p95_seconds: 120,
+        },
+      ],
+    };
+
+    const view = render(
+      <TooltipProvider>
+        <PipelineRow
+          projectSlug="acme"
+          pipeline={pipeline}
+          edges={[]}
+          runs={[]}
+          showRail={false}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(view.getAllByText("p95")).toHaveLength(2);
+    const slowest = view.getByText("8m 41s").parentElement;
+    expect(slowest).toBeTruthy();
+    expect(slowest?.className).toContain("bg-amber-500/10");
+  });
+});
