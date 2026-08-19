@@ -158,6 +158,7 @@ export type StageRunSummary = {
 export type DefinitionJob = {
   name: string;
   stage: string;
+  approval_gate?: boolean;
 };
 
 export type PipelineSummary = {

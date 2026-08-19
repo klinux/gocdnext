@@ -352,10 +352,12 @@ function RowStages({
   if (columns.length === 0) {
     return <span className="font-mono text-[11px] text-muted-foreground">—</span>;
   }
-  const p95Values = columns
+  const comparableP95Values = columns
+    .filter((col) => !isApprovalStage(col))
     .map((col) => col.stat?.duration_p95_seconds ?? 0)
     .filter((seconds) => seconds > 0);
-  const slowestP95 = p95Values.length > 1 ? Math.max(...p95Values) : null;
+  const slowestP95 =
+    comparableP95Values.length > 1 ? Math.max(...comparableP95Values) : null;
   return (
     // flex-1 + min-w-0 bound the track to the (flexible) stage column so
     // flex-wrap can break long pipelines onto multiple rows instead of
@@ -368,8 +370,11 @@ function RowStages({
           col.stat != null &&
           col.stat.runs_considered >= 1 &&
           col.stat.success_rate < 0.7;
+        const approvalStage = isApprovalStage(col);
         const p95Slowest =
-          slowestP95 != null && col.stat?.duration_p95_seconds === slowestP95;
+          !approvalStage &&
+          slowestP95 != null &&
+          col.stat?.duration_p95_seconds === slowestP95;
         return (
           <div key={col.name} className="flex items-start">
             <div className="flex flex-col items-center gap-1.5">
@@ -426,6 +431,7 @@ function RowStages({
                   <TooltipContent>
                     95th percentile duration over the last {col.stat.runs_considered}{" "}
                     terminal runs
+                    {approvalStage ? " (includes human approval wait time)" : ""}
                   </TooltipContent>
                 </Tooltip>
               ) : null}
@@ -438,6 +444,10 @@ function RowStages({
       })}
     </div>
   );
+}
+
+function isApprovalStage(col: StageColumn): boolean {
+  return col.jobs.some((job) => job.approvalGate);
 }
 
 // StageBoxTone is the render tone: the shared StatusTone plus a LOCAL "frozen"

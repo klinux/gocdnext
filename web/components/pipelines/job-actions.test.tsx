@@ -25,6 +25,7 @@ function gate(overrides: Partial<MergedJob["run"]> = {}): MergedJob {
   return {
     key: "gate",
     name: "gate",
+    approvalGate: true,
     run: { id: "jr1", name: "gate", status: "awaiting_approval", ...overrides },
   };
 }
