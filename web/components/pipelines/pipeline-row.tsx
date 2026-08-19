@@ -384,7 +384,9 @@ function RowStages({
                     <StageBox
                       key={job.key}
                       tone={boxTone(job)}
-                      tooltip={`${col.name}:${job.name} · ${job.run?.status ?? "not run"}`}
+                      tooltip={`${col.name}:${job.name} · ${
+                        job.run?.held_by_freeze ? "freezing" : job.run?.status ?? "not run"
+                      }`}
                       job={runId != null && job.run ? job : undefined}
                       runId={runId}
                     />
@@ -404,7 +406,7 @@ function RowStages({
               <span className="max-w-[80px] truncate font-mono text-[8.5px] font-semibold uppercase text-muted-foreground">
                 {col.name}
               </span>
-              {col.stat && col.stat.duration_p95_seconds > 0 ? (
+              {!approvalStage && col.stat && col.stat.duration_p95_seconds > 0 ? (
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -431,7 +433,6 @@ function RowStages({
                   <TooltipContent>
                     Stage p95 duration over the last {col.stat.runs_considered}{" "}
                     builds. Lead / Proc / C/A above use a 7-day window instead.
-                    {approvalStage ? " Includes human approval wait time." : ""}
                   </TooltipContent>
                 </Tooltip>
               ) : null}

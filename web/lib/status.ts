@@ -16,6 +16,7 @@ export function statusVariant(status: string): StatusVariant {
       return "default";
     case "queued":
     case "awaiting_approval":
+    case "freezing":
       return "secondary";
     case "success":
       return "success";
@@ -35,6 +36,7 @@ export function statusLabel(status: string): string {
   // `awaiting_approval` reads badly capitalised as-is; give the
   // operator a space-separated form that fits the pill width.
   if (status === "awaiting_approval") return "Awaiting approval";
+  if (status === "freezing") return "Freezing";
   // Deployment status (#39): underscore form reads badly title-cased.
   if (status === "in_progress") return "In progress";
   return status.charAt(0).toUpperCase() + status.slice(1);
@@ -82,6 +84,7 @@ export function statusTone(status: string): StatusTone {
     case "in_progress":
       return "running";
     case "awaiting_approval":
+    case "freezing":
       return "awaiting";
     default:
       return "neutral";

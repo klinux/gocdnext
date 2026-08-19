@@ -4,12 +4,14 @@ import {
   ChevronsRight,
   Loader2,
   Minus,
+  Snowflake,
   TriangleAlert,
   X,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
+import { stageDisplayStatus } from "@/lib/freeze";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
@@ -44,7 +46,8 @@ const NOTIFICATION_STAGE = "_notifications";
 // it reads as "post-run plumbing" rather than another gate on
 // the critical path.
 export function StageSection({ stage, runID, apiBaseURL }: Props) {
-  const tone: StatusTone = statusTone(stage.status);
+  const displayStatus = stageDisplayStatus(stage);
+  const tone: StatusTone = statusTone(displayStatus);
   const isNotification = stage.name === NOTIFICATION_STAGE;
 
   return (
@@ -62,14 +65,18 @@ export function StageSection({ stage, runID, apiBaseURL }: Props) {
           className={cn(
             "inline-flex size-5 shrink-0 items-center justify-center rounded-full border-[1.5px]",
             stageGlyphClasses[tone],
-            stage.status === "running" && "animate-pulse",
+            displayStatus === "running" && "animate-pulse",
           )}
           aria-hidden
         >
           {isNotification ? (
             <Bell className="size-2.5" aria-hidden strokeWidth={2.5} />
           ) : (
-            <StageGlyph tone={tone} />
+            displayStatus === "freezing" ? (
+              <Snowflake className="size-2.5" aria-hidden />
+            ) : (
+              <StageGlyph tone={tone} />
+            )
           )}
         </span>
         <span className="text-[10px] text-muted-foreground/70">
@@ -86,13 +93,17 @@ export function StageSection({ stage, runID, apiBaseURL }: Props) {
             synthetic
           </span>
         ) : null}
-        <StatusBadge status={stage.status} className="text-[10px]" />
+        <StatusBadge status={displayStatus} className="text-[10px]" />
         <div className="ml-auto flex items-center gap-3 text-[11px] text-muted-foreground">
-          <LiveDuration
-            startedAt={stage.started_at}
-            finishedAt={stage.finished_at}
-            className="font-mono tabular-nums"
-          />
+          {displayStatus === "freezing" ? (
+            <span className="font-mono text-amber-700 dark:text-amber-300">paused</span>
+          ) : (
+            <LiveDuration
+              startedAt={stage.started_at}
+              finishedAt={stage.finished_at}
+              className="font-mono tabular-nums"
+            />
+          )}
           <span>·</span>
           <span>
             started{" "}

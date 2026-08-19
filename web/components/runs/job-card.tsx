@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { isComplianceEntry } from "@/lib/compliance";
 import { logWindowCounts } from "@/lib/log-window";
+import { jobDisplayStatus } from "@/lib/freeze";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { LogPane } from "@/components/runs/log-pane.client";
@@ -47,7 +48,8 @@ type Props = {
 // their label + a trigger pill ("on failure" / "on success" / …)
 // so the user never sees the raw index-encoded slug.
 export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
-  const tone: StatusTone = statusTone(job.status);
+  const displayStatus = jobDisplayStatus(job);
+  const tone: StatusTone = statusTone(displayStatus);
   // Open the details when EITHER head or tail carries lines. With
   // the v0.14.7 default `?head=500`, a short job whose head+tail
   // overlap could land entirely in `logs_head` (head dedupe pushes
@@ -95,10 +97,10 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
           className={cn(
             "inline-flex size-5 shrink-0 items-center justify-center rounded-full border-[1.5px]",
             jobGlyphClasses[tone],
-            job.status === "running" && "animate-pulse",
+            displayStatus === "running" && "animate-pulse",
           )}
           aria-hidden
-          title={job.status}
+          title={displayStatus}
         >
           {isNotify ? (
             <Bell className="size-2.5" aria-hidden strokeWidth={2.5} />
@@ -166,11 +168,15 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
             label="started"
             value={<RelativeTime at={job.started_at ?? null} fallback="—" />}
           />
-          <LiveDuration
-            startedAt={job.started_at}
-            finishedAt={job.finished_at}
-            className="font-mono tabular-nums text-foreground"
-          />
+          {displayStatus === "freezing" ? (
+            <span className="font-mono text-amber-700 dark:text-amber-300">paused</span>
+          ) : (
+            <LiveDuration
+              startedAt={job.started_at}
+              finishedAt={job.finished_at}
+              className="font-mono tabular-nums text-foreground"
+            />
+          )}
         </div>
       </div>
 
@@ -185,7 +191,7 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
           <div className="flex flex-wrap items-center gap-2">
             <Gavel className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden />
             <span className="font-medium text-amber-700 dark:text-amber-300">
-              Awaiting approval
+              {displayStatus === "freezing" ? "Freezing" : "Awaiting approval"}
             </span>
             {job.awaiting_since ? (
               <span className="text-xs text-muted-foreground">
