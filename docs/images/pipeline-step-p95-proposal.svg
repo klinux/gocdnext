@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-labelledby="title desc">
+  <title id="title">Pipeline step p95 proposal</title>
+  <desc id="desc">GoCDNext pipeline row showing a compact p95 duration badge below every step, alongside Lead, Proc and C/A metrics.</desc>
+  <rect width="1280" height="400" rx="18" fill="#09090b"/>
+  <rect x="1" y="1" width="1278" height="398" rx="17" fill="none" stroke="#27272a" stroke-width="2"/>
+
+  <text x="30" y="43" fill="#fafafa" font-family="Inter,Arial,sans-serif" font-size="19" font-weight="700">gocdnext</text>
+  <text x="136" y="43" fill="#a1a1aa" font-family="Inter,Arial,sans-serif" font-size="15">card / limit-reservation</text>
+  <rect x="1071" y="21" width="178" height="32" rx="8" fill="#18181b" stroke="#27272a"/>
+  <text x="1090" y="42" fill="#a1a1aa" font-family="Menlo,monospace" font-size="12">últimos 7d · 42 runs</text>
+  <line x1="0" y1="72" x2="1280" y2="72" stroke="#27272a"/>
+
+  <circle cx="32" cy="105" r="6" fill="#2dd4bf"/>
+  <text x="48" y="110" fill="#fafafa" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="600">Flow</text>
+  <text x="91" y="110" fill="#a1a1aa" font-family="Menlo,monospace" font-size="12">build-pr → security → publish</text>
+  <circle cx="1187" cy="105" r="5" fill="#34d399"/>
+  <text x="1199" y="110" fill="#34d399" font-family="Inter,Arial,sans-serif" font-size="12">healthy</text>
+
+  <rect x="22" y="130" width="1236" height="207" rx="14" fill="#111113" stroke="#27272a"/>
+  <rect x="22" y="130" width="4" height="207" rx="2" fill="#34d399"/>
+
+  <text x="50" y="192" fill="#fafafa" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="700">build-pr</text>
+  <text x="50" y="219" fill="#a1a1aa" font-family="Menlo,monospace" font-size="12">#884 · PR #223</text>
+  <text x="50" y="240" fill="#a1a1aa" font-family="Menlo,monospace" font-size="12">12m 48s · 2m ago</text>
+
+  <g transform="translate(302 165)">
+    <line x1="38" y1="25" x2="411" y2="25" stroke="#3f3f46" stroke-width="2" stroke-dasharray="5 5"/>
+
+    <g transform="translate(0 0)">
+      <circle cx="25" cy="25" r="22" fill="#052e24" stroke="#34d399" stroke-width="2"/>
+      <path d="M15 25l7 7 14-16" fill="none" stroke="#34d399" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="25" y="66" text-anchor="middle" fill="#a1a1aa" font-family="Menlo,monospace" font-size="11" font-weight="700">CHECKOUT</text>
+      <rect x="-7" y="79" width="64" height="27" rx="6" fill="#27272a"/>
+      <text x="4" y="97" fill="#a1a1aa" font-family="Menlo,monospace" font-size="9">P95</text>
+      <text x="27" y="97" fill="#fafafa" font-family="Menlo,monospace" font-size="11" font-weight="700">38s</text>
+    </g>
+
+    <g transform="translate(132 0)">
+      <circle cx="25" cy="25" r="22" fill="#052e24" stroke="#34d399" stroke-width="2"/>
+      <path d="M15 25l7 7 14-16" fill="none" stroke="#34d399" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="25" y="66" text-anchor="middle" fill="#a1a1aa" font-family="Menlo,monospace" font-size="11" font-weight="700">COMPILE</text>
+      <rect x="-10" y="79" width="70" height="27" rx="6" fill="#27272a"/>
+      <text x="0" y="97" fill="#a1a1aa" font-family="Menlo,monospace" font-size="9">P95</text>
+      <text x="24" y="97" fill="#fafafa" font-family="Menlo,monospace" font-size="11" font-weight="700">3m12</text>
+    </g>
+
+    <g transform="translate(264 0)">
+      <circle cx="25" cy="25" r="22" fill="#052e24" stroke="#34d399" stroke-width="2"/>
+      <path d="M15 25l7 7 14-16" fill="none" stroke="#34d399" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="25" y="66" text-anchor="middle" fill="#a1a1aa" font-family="Menlo,monospace" font-size="11" font-weight="700">TESTS</text>
+      <rect x="-11" y="79" width="72" height="27" rx="6" fill="#422006"/>
+      <text x="-1" y="97" fill="#fbbf24" font-family="Menlo,monospace" font-size="9">P95</text>
+      <text x="23" y="97" fill="#fbbf24" font-family="Menlo,monospace" font-size="11" font-weight="700">8m41</text>
+    </g>
+
+    <g transform="translate(396 0)">
+      <circle cx="25" cy="25" r="22" fill="#052e24" stroke="#34d399" stroke-width="2"/>
+      <path d="M15 25l7 7 14-16" fill="none" stroke="#34d399" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="25" y="66" text-anchor="middle" fill="#a1a1aa" font-family="Menlo,monospace" font-size="11" font-weight="700">IMAGE</text>
+      <rect x="-10" y="79" width="70" height="27" rx="6" fill="#27272a"/>
+      <text x="0" y="97" fill="#a1a1aa" font-family="Menlo,monospace" font-size="9">P95</text>
+      <text x="24" y="97" fill="#fafafa" font-family="Menlo,monospace" font-size="11" font-weight="700">2m06</text>
+    </g>
+  </g>
+
+  <line x1="802" y1="152" x2="802" y2="315" stroke="#27272a"/>
+  <g transform="translate(842 190)">
+    <text x="0" y="0" fill="#a1a1aa" font-family="Menlo,monospace" font-size="10">LEAD</text>
+    <text x="0" y="25" fill="#fafafa" font-family="Menlo,monospace" font-size="16" font-weight="700">18m</text>
+    <text x="93" y="0" fill="#a1a1aa" font-family="Menlo,monospace" font-size="10">PROC</text>
+    <text x="93" y="25" fill="#fafafa" font-family="Menlo,monospace" font-size="16" font-weight="700">13m</text>
+    <text x="186" y="0" fill="#a1a1aa" font-family="Menlo,monospace" font-size="10">C/A</text>
+    <text x="186" y="25" fill="#fafafa" font-family="Menlo,monospace" font-size="16" font-weight="700">96%</text>
+  </g>
+
+  <text x="32" y="371" fill="#a1a1aa" font-family="Inter,Arial,sans-serif" font-size="13">O p95 fica visível junto ao step; Lead, Proc e C/A permanecem inalterados.</text>
+</svg>

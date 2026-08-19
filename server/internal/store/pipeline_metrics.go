@@ -71,6 +71,7 @@ func (s *Store) pipelineMetricsByID(
 			Name:           r.StageName,
 			RunsConsidered: int(r.RunsConsidered),
 			DurationP50Sec: r.DurationP50S,
+			DurationP95Sec: r.DurationP95S,
 		}
 		if r.RunsConsidered > 0 {
 			stat.SuccessRate = float64(r.Passed) / float64(r.RunsConsidered)

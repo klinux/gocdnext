@@ -29,6 +29,7 @@ export type StageColumn = {
 export type MergedJob = {
   key: string;
   name: string;
+  approvalGate: boolean;
   run?: JobRunSummaryLite;
 };
 
@@ -79,10 +80,17 @@ function mergeJobs(
     return def.map((j) => ({
       key: j.name,
       name: j.name,
+      approvalGate:
+        j.approval_gate === true || runtimeByName.get(j.name)?.status === "awaiting_approval",
       run: runtimeByName.get(j.name),
     }));
   }
-  return runtime.map((j) => ({ key: j.id, name: j.name, run: j }));
+  return runtime.map((j) => ({
+    key: j.id,
+    name: j.name,
+    approvalGate: j.status === "awaiting_approval",
+    run: j,
+  }));
 }
 
 function groupBy<T, K>(items: T[], keyFn: (t: T) => K): Map<K, T[]> {

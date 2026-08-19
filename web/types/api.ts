@@ -158,6 +158,7 @@ export type StageRunSummary = {
 export type DefinitionJob = {
   name: string;
   stage: string;
+  approval_gate?: boolean;
 };
 
 export type PipelineSummary = {
@@ -199,6 +200,7 @@ export type StageStat = {
   runs_considered: number;
   success_rate: number; // 0..1
   duration_p50_seconds: number;
+  duration_p95_seconds: number;
 };
 
 export type PipelineEdge = {
