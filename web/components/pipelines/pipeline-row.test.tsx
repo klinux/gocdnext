@@ -95,7 +95,7 @@ describe("PipelineRow — frozen APPROVE node (#227)", () => {
 });
 
 describe("PipelineRow — stage p95", () => {
-  it("shows gate wait time but highlights only the slowest comparable stage", () => {
+  it("omits gate wait time and highlights only the slowest comparable stage", () => {
     const pipeline = pipelineWith(false);
     pipeline.definition_jobs?.push(
       { name: "compile", stage: "build" },
@@ -151,10 +151,8 @@ describe("PipelineRow — stage p95", () => {
 
     const view = renderPipeline(pipeline);
 
-    expect(view.getAllByText("p95")).toHaveLength(3);
-    expect(view.getByText("8m 41s").parentElement?.className).not.toContain(
-      "bg-amber-500/10",
-    );
+    expect(view.getAllByText("p95")).toHaveLength(2);
+    expect(view.queryByText("8m 41s")).toBeNull();
     expect(view.getByText("3m 0s").parentElement?.className).toContain(
       "bg-amber-500/10",
     );

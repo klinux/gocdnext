@@ -394,7 +394,7 @@ func TestGetProjectDetail_MetricsAggregatesTerminalRuns(t *testing.T) {
 	}
 }
 
-func TestGetProjectDetail_StageMetricsUseLatestTen(t *testing.T) {
+func TestGetProjectDetail_StageMetricsUseLatestTenAndExcludeApprovalWait(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	ctx := context.Background()
@@ -437,7 +437,14 @@ func TestGetProjectDetail_StageMetricsUseLatestTen(t *testing.T) {
 			UPDATE stage_runs
 			SET started_at=$1
 			WHERE run_id=$2 AND ordinal=1`, mid, run.RunID); err != nil {
-			t.Fatalf("start test stage for run %d: %v", i+1, err)
+			t.Fatalf("start approval stage for run %d: %v", i+1, err)
+		}
+		if _, err := pool.Exec(ctx, `
+			UPDATE job_runs jr
+			SET approval_gate=true
+			FROM stage_runs sr
+			WHERE jr.stage_run_id=sr.id AND sr.run_id=$1 AND sr.ordinal=1`, run.RunID); err != nil {
+			t.Fatalf("mark approval gate for run %d: %v", i+1, err)
 		}
 	}
 
@@ -449,16 +456,29 @@ func TestGetProjectDetail_StageMetricsUseLatestTen(t *testing.T) {
 	if m == nil {
 		t.Fatal("Metrics nil after terminal runs")
 	}
-	if len(m.StageStats) != 2 {
-		t.Fatalf("StageStats = %+v, want build and test", m.StageStats)
+	if len(m.StageStats) != 1 {
+		t.Fatalf("StageStats = %+v, want only the build stage", m.StageStats)
 	}
-	for _, stat := range m.StageStats {
-		if stat.RunsConsidered != 10 {
-			t.Fatalf("%s RunsConsidered = %d, want 10", stat.Name, stat.RunsConsidered)
-		}
-		if stat.DurationP95Sec != 50 {
-			t.Fatalf("%s DurationP95Sec = %v, want 50 from latest ten builds", stat.Name, stat.DurationP95Sec)
-		}
+	stat := m.StageStats[0]
+	if stat.Name != "build" {
+		t.Fatalf("stage = %q, want build", stat.Name)
+	}
+	if stat.RunsConsidered != 10 {
+		t.Fatalf("RunsConsidered = %d, want 10", stat.RunsConsidered)
+	}
+	if stat.DurationP95Sec != 50 {
+		t.Fatalf("DurationP95Sec = %v, want 50 from the latest ten builds", stat.DurationP95Sec)
+	}
+	if m.ProcessTimeP50Sec != 50 {
+		t.Fatalf("ProcessTimeP50Sec = %v, want 50 without approval wait", m.ProcessTimeP50Sec)
+	}
+
+	projects, err := s.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if projects[0].Metrics == nil || projects[0].Metrics.ProcessTimeP50Sec != 50 {
+		t.Fatalf("project ProcessTimeP50Sec = %+v, want 50 without approval wait", projects[0].Metrics)
 	}
 }
 

@@ -10,6 +10,7 @@ import {
   MinusCircle,
   Server,
   ShieldCheck,
+  Snowflake,
   XCircle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -21,6 +22,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { fetchServices } from "@/components/runs/run-services.client";
 import { isTerminalStatus } from "@/lib/status";
 import { isComplianceEntry } from "@/lib/compliance";
+import { jobDisplayStatus, stageDisplayStatus } from "@/lib/freeze";
 import type { JobDetail, RunService, StageDetail } from "@/types/api";
 
 type Props = {
@@ -269,14 +271,15 @@ function fmtTs(iso: string | null | undefined): string | null {
 // --- column ---
 
 function StageColumn({ stage }: { stage: StageDetail }) {
-  const tone = statusTone(stage.status);
+  const displayStatus = stageDisplayStatus(stage);
+  const tone = statusTone(displayStatus);
   return (
     <div
       className={cn(
         "flex min-w-[220px] max-w-[260px] flex-col rounded-lg border bg-card",
         tone.border,
       )}
-      data-status={stage.status}
+      data-status={displayStatus}
     >
       <header
         className={cn(
@@ -284,18 +287,24 @@ function StageColumn({ stage }: { stage: StageDetail }) {
           tone.header,
         )}
       >
-        <StatusGlyph status={stage.status} className="size-3.5" />
+        <StatusGlyph status={displayStatus} className="size-3.5" />
         <span className="truncate">
           <span className="text-[10px] text-muted-foreground/80 mr-1">
             #{stage.ordinal + 1}
           </span>
           {stage.name}
         </span>
-        <LiveDuration
-          startedAt={stage.started_at}
-          finishedAt={stage.finished_at}
-          className="ml-auto font-mono text-[10px] text-muted-foreground"
-        />
+        {displayStatus === "freezing" ? (
+          <span className="ml-auto font-mono text-[10px] text-amber-700 dark:text-amber-300">
+            paused
+          </span>
+        ) : (
+          <LiveDuration
+            startedAt={stage.started_at}
+            finishedAt={stage.finished_at}
+            className="ml-auto font-mono text-[10px] text-muted-foreground"
+          />
+        )}
       </header>
       <div className="flex flex-col gap-1.5 p-2">
         {stage.jobs.length === 0 ? (
@@ -313,7 +322,8 @@ function StageColumn({ stage }: { stage: StageDetail }) {
 // --- job pill ---
 
 function JobPill({ job }: { job: JobDetail }) {
-  const tone = statusTone(job.status);
+  const displayStatus = jobDisplayStatus(job);
+  const tone = statusTone(displayStatus);
   const label = job.matrix_key
     ? `${job.name} [${job.matrix_key}]`
     : job.name;
@@ -341,7 +351,7 @@ function JobPill({ job }: { job: JobDetail }) {
       )}
       title={job.error || undefined}
     >
-      <StatusGlyph status={job.status} className={cn("size-3.5", tone.glyph)} />
+      <StatusGlyph status={displayStatus} className={cn("size-3.5", tone.glyph)} />
       {isComplianceEntry(job.name) ? (
         <ShieldCheck
           className="size-3 shrink-0 text-primary"
@@ -349,11 +359,15 @@ function JobPill({ job }: { job: JobDetail }) {
         />
       ) : null}
       <span className={cn("flex-1 truncate font-mono", tone.text)}>{label}</span>
-      <LiveDuration
-        startedAt={job.started_at}
-        finishedAt={job.finished_at}
-        className="font-mono text-[10px] text-muted-foreground/80"
-      />
+      {displayStatus === "freezing" ? (
+        <span className="font-mono text-[10px] text-amber-700 dark:text-amber-300">freezing</span>
+      ) : (
+        <LiveDuration
+          startedAt={job.started_at}
+          finishedAt={job.finished_at}
+          className="font-mono text-[10px] text-muted-foreground/80"
+        />
+      )}
     </button>
   );
 }
@@ -412,6 +426,8 @@ function iconFor(status: string): ComponentType<{ className?: string }> {
       return Loader2;
     case "queued":
       return Clock;
+    case "freezing":
+      return Snowflake;
     case "canceled":
       return Ban;
     case "skipped":
@@ -470,6 +486,18 @@ const TONE: Record<string, Tone> = {
     pillBg: "bg-background",
     pillBorder: "border-border",
     text: "text-foreground",
+  },
+  // Freezing gates render amber across the app (job-card,
+  // stage-section) via raw Tailwind amber-* classes; keep the
+  // same palette here so the same state doesn't render blue in
+  // the canvas and amber elsewhere.
+  freezing: {
+    border: "border-amber-500/40",
+    header: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    glyph: "text-amber-600 dark:text-amber-400",
+    pillBg: "bg-amber-500/10",
+    pillBorder: "border-amber-500/40",
+    text: "text-amber-700 dark:text-amber-300",
   },
   canceled: {
     border: "border-border border-dashed",
