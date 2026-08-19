@@ -8,6 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.92.0 — 2026-08-19
+
+### Added
+
+- **Per-stage p95 duration on the pipeline row.** Each stage in the compact
+  flow/list row now shows a `p95` badge (95th-percentile duration over the
+  rolling 7-day window), alongside the existing Lead / Proc / C·A metrics, so
+  long-tail build time is visible where operators already inspect each step. The
+  slowest *comparable* stage is highlighted amber — approval/gate stages are
+  excluded from that pick (their duration is human wait time, not compute) and
+  say so in the tooltip. Reuses the existing batched metrics query (one extra
+  `PERCENTILE_CONT(0.95)` over the same sorted group — no new request), and the
+  badge is hidden when a stage has no duration sample. (#258)
+
 ## v0.91.1 — 2026-08-13
 
 ### Fixed
