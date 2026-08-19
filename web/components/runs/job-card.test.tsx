@@ -130,6 +130,8 @@ describe("JobCard — freeze hold (#227)", () => {
 
   it("shows the On hold badge and disables Approve (Reject stays enabled) when a governed env is frozen", () => {
     renderCard(<JobCard job={heldGate()} runID="run-1" />);
+    expect(screen.getByText("Freezing")).toBeTruthy();
+    expect(screen.getByText("paused")).toBeTruthy();
     expect(screen.getByText(/On hold/i)).toBeTruthy();
     expect(screen.getByText(/production frozen/i)).toBeTruthy();
 
@@ -160,6 +162,8 @@ describe("JobCard — freeze hold (#227)", () => {
       </TooltipProvider>,
     );
     expect(screen.queryByText(/On hold/i)).toBeNull();
+    expect(screen.getByText("Awaiting approval")).toBeTruthy();
+    expect(screen.queryByText("paused")).toBeNull();
     const approve = screen.getByRole("button", { name: /Approve/i });
     expect((approve as HTMLButtonElement).disabled).toBe(false);
   });

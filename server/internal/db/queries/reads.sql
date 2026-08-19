@@ -273,6 +273,16 @@ WITH per_run AS (
                 FROM stage_runs sr
                 WHERE sr.run_id = r.id
                   AND sr.finished_at IS NOT NULL AND sr.started_at IS NOT NULL
+                  -- Approval stages are human wait, not compute. The run_id
+                  -- predicate lets idx_job_runs_run_id bound the anti-join to
+                  -- the handful of jobs in this run before matching stage_id.
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM job_runs jr
+                      WHERE jr.run_id = r.id
+                        AND jr.stage_run_id = sr.id
+                        AND jr.approval_gate = true
+                  )
            ), 0)::double precision AS process_s
     FROM runs r
     JOIN pipelines pl ON pl.id = r.pipeline_id
@@ -429,6 +439,15 @@ WITH per_run AS (
                 FROM stage_runs sr
                 WHERE sr.run_id = r.id
                   AND sr.finished_at IS NOT NULL AND sr.started_at IS NOT NULL
+                  -- Keep process time aligned with ProjectMetricsAggregated:
+                  -- approval gates measure human/QA wait, not compute.
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM job_runs jr
+                      WHERE jr.run_id = r.id
+                        AND jr.stage_run_id = sr.id
+                        AND jr.approval_gate = true
+                  )
            ), 0)::double precision AS process_s
     FROM runs r
     JOIN pipelines pl ON pl.id = r.pipeline_id
@@ -449,7 +468,9 @@ GROUP BY pipeline_id;
 
 -- name: PipelineStageMetricsByProjectSlug :many
 -- Per-stage aggregates over the latest N terminal builds for each pipeline.
--- A conditional stage may therefore have fewer than N samples.
+-- A conditional stage may therefore have fewer than N samples. Approval stages
+-- are excluded: their wall time is human/QA wait, not compute, and cannot be
+-- split reliably from the stage timestamps after the fact.
 WITH recent_runs AS (
     SELECT pl.id AS pipeline_id, recent.id AS run_id
     FROM pipelines pl
@@ -473,6 +494,16 @@ WITH recent_runs AS (
     WHERE sr.started_at IS NOT NULL
       AND sr.finished_at IS NOT NULL
       AND sr.status IN ('success','failed','canceled','skipped')
+      -- idx_job_runs_run_id makes this anti-join proportional to jobs in the
+      -- candidate run (normally O(1), bounded by its pipeline definition)
+      -- rather than cumulative job history.
+      AND NOT EXISTS (
+          SELECT 1
+          FROM job_runs jr
+          WHERE jr.run_id = recent.run_id
+            AND jr.stage_run_id = sr.id
+            AND jr.approval_gate = true
+      )
 )
 SELECT pipeline_id,
        stage_name,

@@ -1764,7 +1764,9 @@ type Querier interface {
 	// distinct from `lead_time_p50_seconds` (wall-clock run duration).
 	PipelineMetricsByProjectSlug(ctx context.Context, arg PipelineMetricsByProjectSlugParams) ([]PipelineMetricsByProjectSlugRow, error)
 	// Per-stage aggregates over the latest N terminal builds for each pipeline.
-	// A conditional stage may therefore have fewer than N samples.
+	// A conditional stage may therefore have fewer than N samples. Approval stages
+	// are excluded: their wall time is human/QA wait, not compute, and cannot be
+	// split reliably from the stage timestamps after the fact.
 	PipelineStageMetricsByProjectSlug(ctx context.Context, arg PipelineStageMetricsByProjectSlugParams) ([]PipelineStageMetricsByProjectSlugRow, error)
 	// Per-project roll-up of terminal runs over the last $1 interval.
 	// Same math as PipelineMetricsByProjectSlug but grouped by project
