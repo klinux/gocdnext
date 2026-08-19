@@ -10,15 +10,20 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
 
-// MetricsWindowDays is the default rolling window for aggregate
-// stats on the pipeline card. Seven days keeps the medians
-// responsive to recent regressions without getting whipsawed by
-// single bad runs (which one day of data would do).
+// MetricsWindowDays is the rolling window for pipeline-level lead time,
+// process time, and success rate. Stage percentiles use the sample-count limit
+// below instead, so old runner/pipeline shapes age out deterministically.
 const MetricsWindowDays = 7
 
+// StageMetricsSampleLimit keeps stage percentiles tied to the current build
+// shape. Older runs often predate cache, runner, or pipeline-definition changes
+// and would otherwise keep a resolved regression visible indefinitely.
+const StageMetricsSampleLimit = 10
+
 // pipelineMetricsByID returns a pipeline_id → *PipelineMetrics map
-// for every pipeline in the project with aggregate stats over the
-// rolling window. Both the project-detail card footer and the VSM
+// for every pipeline in the project. Pipeline-level stats use the rolling
+// window; stage stats use the latest StageMetricsSampleLimit builds. Both the
+// project-detail card footer and the VSM
 // node overlay consume the same shape, so the lookup is hoisted
 // here — two batched queries regardless of pipeline count.
 func (s *Store) pipelineMetricsByID(
@@ -51,7 +56,7 @@ func (s *Store) pipelineMetricsByID(
 
 	stageRows, err := s.q.PipelineStageMetricsByProjectSlug(ctx, db.PipelineStageMetricsByProjectSlugParams{
 		Slug:        slug,
-		SinceWindow: window,
+		SampleLimit: StageMetricsSampleLimit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("pipeline stage metrics: %w", err)
