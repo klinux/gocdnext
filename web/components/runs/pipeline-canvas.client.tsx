@@ -295,7 +295,7 @@ function StageColumn({ stage }: { stage: StageDetail }) {
           {stage.name}
         </span>
         {displayStatus === "freezing" ? (
-          <span className="ml-auto font-mono text-[10px] text-status-queued-fg">
+          <span className="ml-auto font-mono text-[10px] text-amber-700 dark:text-amber-300">
             paused
           </span>
         ) : (
@@ -360,7 +360,7 @@ function JobPill({ job }: { job: JobDetail }) {
       ) : null}
       <span className={cn("flex-1 truncate font-mono", tone.text)}>{label}</span>
       {displayStatus === "freezing" ? (
-        <span className="font-mono text-[10px] text-status-queued-fg">freezing</span>
+        <span className="font-mono text-[10px] text-amber-700 dark:text-amber-300">freezing</span>
       ) : (
         <LiveDuration
           startedAt={job.started_at}
@@ -487,13 +487,17 @@ const TONE: Record<string, Tone> = {
     pillBorder: "border-border",
     text: "text-foreground",
   },
+  // Freezing gates render amber across the app (job-card,
+  // stage-section) via raw Tailwind amber-* classes; keep the
+  // same palette here so the same state doesn't render blue in
+  // the canvas and amber elsewhere.
   freezing: {
-    border: "border-status-queued/40",
-    header: "bg-status-queued-bg text-status-queued-fg",
-    glyph: "text-status-queued",
-    pillBg: "bg-status-queued-bg",
-    pillBorder: "border-status-queued/30",
-    text: "text-status-queued-fg",
+    border: "border-amber-500/40",
+    header: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    glyph: "text-amber-600 dark:text-amber-400",
+    pillBg: "bg-amber-500/10",
+    pillBorder: "border-amber-500/40",
+    text: "text-amber-700 dark:text-amber-300",
   },
   canceled: {
     border: "border-border border-dashed",
