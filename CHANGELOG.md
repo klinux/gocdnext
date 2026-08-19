@@ -8,6 +8,34 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.93.0 — 2026-08-19
+
+### Changed
+
+- **Stage p95 now reflects each pipeline's latest 10 builds, not a 7-day
+  window.** The per-stage `p95` badge on the pipeline row is computed over the
+  latest 10 terminal builds instead of the rolling 7-day window, so a resolved
+  regression tied to an old cache / runner / pipeline-definition shape ages out
+  deterministically instead of lingering for a week. Pipeline-level Lead / Proc /
+  C·A stay on the 7-day window, and the badge tooltip now names both windows so
+  the side-by-side numbers can't be misread. Bounded by the existing
+  `runs(pipeline_id, counter DESC)` index — ~10 index entries per pipeline, not a
+  history scan. (#259)
+
+### Fixed
+
+- **Freeze-held approvals no longer count human wait time.** When an approval
+  gate is held by an environment freeze, the gate and its stage now render a
+  distinct **Freezing** state (amber + snowflake) across the run canvas, stage
+  sections, and the pipeline row, with the live duration paused while the hold is
+  active — the DB status stays authoritative (`awaiting_approval`), this is a
+  presentation-only derivation. Approval-gate stages are also excluded from stage
+  p95 and from the pipeline/project process-time aggregates: their wall time is
+  human/QA wait, not compute, so it no longer inflates process time or paints a
+  gate as the "slowest" stage. The exclusion is index-backed
+  (`idx_job_runs_run_id`) and applies consistently to the project card, the VSM
+  overlay, and the stage badges. (#260)
+
 ## v0.92.0 — 2026-08-19
 
 ### Added
