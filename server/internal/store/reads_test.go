@@ -386,6 +386,12 @@ func TestGetProjectDetail_MetricsAggregatesTerminalRuns(t *testing.T) {
 	if len(m.StageStats) != 2 {
 		t.Fatalf("StageStats = %d, want 2", len(m.StageStats))
 	}
+	// p95 of each stage's {30, 60} second durations = 58.5.
+	for _, stat := range m.StageStats {
+		if stat.DurationP95Sec < 58 || stat.DurationP95Sec > 59 {
+			t.Fatalf("%s DurationP95Sec = %v, want ~58.5", stat.Name, stat.DurationP95Sec)
+		}
+	}
 }
 
 func TestGetRunDetail_NotFound(t *testing.T) {

@@ -164,7 +164,7 @@ type RunMeta struct {
 // PipelineMetrics feeds the card's footer strip: lead time (wall
 // clock), process time (summed busy stages), success rate across
 // recent terminal runs. StageStats drives the per-stage duration
-// badge + bottleneck call-out.
+// percentile badges + bottleneck call-out.
 type PipelineMetrics struct {
 	WindowDays        int         `json:"window_days"`
 	RunsConsidered    int         `json:"runs_considered"`
@@ -179,6 +179,7 @@ type StageStat struct {
 	RunsConsidered int     `json:"runs_considered"`
 	SuccessRate    float64 `json:"success_rate"`
 	DurationP50Sec float64 `json:"duration_p50_seconds"`
+	DurationP95Sec float64 `json:"duration_p95_seconds"`
 }
 
 // StageRunSummary is the thin shape the pipeline card needs to
@@ -214,13 +215,14 @@ type JobRunSummaryLite struct {
 	FrozenEnvs   []string `json:"frozen_envs,omitempty"`
 }
 
-// DefinitionJob pairs a job name with its stage — extracted from
-// the pipeline YAML snapshot. Used to draw greyed-out job rows
-// inside each stage box when the pipeline has never run (so the
-// card still shows the shape operators can expect on first run).
+// DefinitionJob pairs a job name with its stage and marks manual
+// approval gates — extracted from the pipeline YAML snapshot. Used
+// to draw greyed-out job rows inside each stage box when the pipeline
+// has never run and to keep gate wait time out of compute comparisons.
 type DefinitionJob struct {
-	Name  string `json:"name"`
-	Stage string `json:"stage"`
+	Name         string `json:"name"`
+	Stage        string `json:"stage"`
+	ApprovalGate bool   `json:"approval_gate,omitempty"`
 }
 
 type RunSummary struct {
@@ -694,16 +696,18 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 		var def struct {
 			Stages []string `json:"Stages"`
 			Jobs   []struct {
-				Name  string `json:"Name"`
-				Stage string `json:"Stage"`
+				Name     string    `json:"Name"`
+				Stage    string    `json:"Stage"`
+				Approval *struct{} `json:"Approval"`
 			} `json:"Jobs"`
 		}
 		if err := json.Unmarshal(pl.Definition, &def); err == nil {
 			card.DefinitionStages = def.Stages
 			for _, j := range def.Jobs {
 				card.DefinitionJobs = append(card.DefinitionJobs, DefinitionJob{
-					Name:  j.Name,
-					Stage: j.Stage,
+					Name:         j.Name,
+					Stage:        j.Stage,
+					ApprovalGate: j.Approval != nil,
 				})
 			}
 		}

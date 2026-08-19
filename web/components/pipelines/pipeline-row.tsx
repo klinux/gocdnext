@@ -340,8 +340,8 @@ export function PipelineRow({
 
 // RowStages is the compact horizontal stage track: one status box per JOB
 // (so multi-job stages keep per-job action menus), grouped under the stage
-// name, dashed connectors between stages, and a small C/A badge on stages
-// whose recent pass rate is low.
+// name, dashed connectors between stages, compact p95 duration, and a small
+// C/A badge on stages whose recent pass rate is low.
 function RowStages({
   columns,
   runId,
@@ -352,6 +352,12 @@ function RowStages({
   if (columns.length === 0) {
     return <span className="font-mono text-[11px] text-muted-foreground">—</span>;
   }
+  const comparableP95Values = columns
+    .filter((col) => !isApprovalStage(col))
+    .map((col) => col.stat?.duration_p95_seconds ?? 0)
+    .filter((seconds) => seconds > 0);
+  const slowestP95 =
+    comparableP95Values.length > 1 ? Math.max(...comparableP95Values) : null;
   return (
     // flex-1 + min-w-0 bound the track to the (flexible) stage column so
     // flex-wrap can break long pipelines onto multiple rows instead of
@@ -364,6 +370,11 @@ function RowStages({
           col.stat != null &&
           col.stat.runs_considered >= 1 &&
           col.stat.success_rate < 0.7;
+        const approvalStage = isApprovalStage(col);
+        const p95Slowest =
+          !approvalStage &&
+          slowestP95 != null &&
+          col.stat?.duration_p95_seconds === slowestP95;
         return (
           <div key={col.name} className="flex items-start">
             <div className="flex flex-col items-center gap-1.5">
@@ -393,6 +404,37 @@ function RowStages({
               <span className="max-w-[80px] truncate font-mono text-[8.5px] font-semibold uppercase text-muted-foreground">
                 {col.name}
               </span>
+              {col.stat && col.stat.duration_p95_seconds > 0 ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span
+                        className={cn(
+                          "inline-flex cursor-help items-baseline gap-1 rounded px-1.5 py-0.5 font-mono text-[9px] font-semibold tabular-nums",
+                          p95Slowest
+                            ? "bg-amber-500/10 text-amber-500"
+                            : "bg-muted",
+                        )}
+                      />
+                    }
+                  >
+                    <span
+                      className={cn(
+                        "text-[8px] uppercase",
+                        p95Slowest ? "text-amber-500" : "text-muted-foreground",
+                      )}
+                    >
+                      p95
+                    </span>
+                    <span>{formatDurationSeconds(col.stat.duration_p95_seconds)}</span>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    95th percentile duration over the last {col.stat.runs_considered}{" "}
+                    terminal runs
+                    {approvalStage ? " (includes human approval wait time)" : ""}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
             </div>
             {i < columns.length - 1 ? (
               <span className="mx-1 mt-[14px] w-5 border-t-[1.5px] border-dashed border-border" aria-hidden />
@@ -402,6 +444,10 @@ function RowStages({
       })}
     </div>
   );
+}
+
+function isApprovalStage(col: StageColumn): boolean {
+  return col.jobs.some((job) => job.approvalGate);
 }
 
 // StageBoxTone is the render tone: the shared StatusTone plus a LOCAL "frozen"
@@ -536,6 +582,9 @@ function stageTooltip(col: StageColumn): string {
   if (col.durationSec != null) parts.push(formatDurationSeconds(col.durationSec));
   if (col.stat && col.stat.runs_considered > 0) {
     parts.push(`${Math.round(col.stat.success_rate * 100)}% C/A`);
+    if (col.stat.duration_p95_seconds > 0) {
+      parts.push(`p95 ${formatDurationSeconds(col.stat.duration_p95_seconds)}`);
+    }
   }
   return parts.join(" · ");
 }

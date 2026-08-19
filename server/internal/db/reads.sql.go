@@ -1175,7 +1175,8 @@ SELECT pipeline_id,
        stage_name,
        COUNT(*)::bigint AS runs_considered,
        COUNT(*) FILTER (WHERE stage_status = 'success')::bigint AS passed,
-       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_s), 0)::double precision AS duration_p50_s
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_s), 0)::double precision AS duration_p50_s,
+       COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_s), 0)::double precision AS duration_p95_s
 FROM scope
 GROUP BY pipeline_id, stage_name
 ORDER BY pipeline_id, stage_name
@@ -1192,10 +1193,11 @@ type PipelineStageMetricsByProjectSlugRow struct {
 	RunsConsidered int64
 	Passed         int64
 	DurationP50S   float64
+	DurationP95S   float64
 }
 
 // Per-stage aggregates over the same window. Feeds the card's
-// per-stage duration badge (p50) and bottleneck call-out (success
+// per-stage duration percentiles and bottleneck call-out (success
 // rate under threshold). Only terminal stage_runs count — a
 // running/cancelled stage without finished_at would poison the
 // median.
@@ -1214,6 +1216,7 @@ func (q *Queries) PipelineStageMetricsByProjectSlug(ctx context.Context, arg Pip
 			&i.RunsConsidered,
 			&i.Passed,
 			&i.DurationP50S,
+			&i.DurationP95S,
 		); err != nil {
 			return nil, err
 		}
