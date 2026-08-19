@@ -429,9 +429,9 @@ function RowStages({
                     <span>{formatDurationSeconds(col.stat.duration_p95_seconds)}</span>
                   </TooltipTrigger>
                   <TooltipContent>
-                    95th percentile duration over the last {col.stat.runs_considered}{" "}
-                    terminal runs
-                    {approvalStage ? " (includes human approval wait time)" : ""}
+                    Stage p95 duration over the last {col.stat.runs_considered}{" "}
+                    builds. Lead / Proc / C/A above use a 7-day window instead.
+                    {approvalStage ? " Includes human approval wait time." : ""}
                   </TooltipContent>
                 </Tooltip>
               ) : null}
