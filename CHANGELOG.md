@@ -8,6 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.93.1 — 2026-08-28
+
+### Fixed
+
+- **Trivy plugin: `scan-type: config` no longer dies on `--ignore-unfixed`.**
+  `--ignore-unfixed` is a CVE-scan flag (image/fs/repo); `trivy config` is a
+  misconfiguration scan with no fixed/unfixed axis and rejects the flag with
+  `unknown flag: --ignore-unfixed` (FATAL). The plugin defaulted `ignore-unfixed`
+  on and forwarded it to *every* scan type, so a `config` scan that never set it
+  still inherited the flag and failed at runtime — invisible to `gocdnext
+  validate`, only surfacing on the first real config scan. The flag is now gated
+  out for `scan_type=config` in both the primary run and the failure-summary
+  re-run. (#262)
+
 ## v0.93.0 — 2026-08-19
 
 ### Changed
