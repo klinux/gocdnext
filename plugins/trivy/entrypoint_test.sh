@@ -43,6 +43,18 @@ rm -f "$TMP/args"
 PLUGIN_SCAN_TYPE=fs run || fail "entrypoint failed for scan_type=fs"
 grep -qx -- "--skip-check-update" "$TMP/args" && fail "spurious --skip-check-update on a non-config scan"
 
+# ── 4b. --ignore-unfixed is a CVE-scan flag (image/fs/repo); `trivy config`
+#        REJECTS it with `unknown flag` (FATAL). It defaults ON, so a config
+#        scan that never sets it must still NOT inherit the flag. ──
+rm -f "$TMP/args"
+PLUGIN_SCAN_TYPE=config run || fail "entrypoint failed for scan_type=config"
+grep -qx -- "--ignore-unfixed" "$TMP/args" && fail "config scan must NOT pass --ignore-unfixed (trivy config rejects it)"
+
+# ── 4c. a non-config (CVE) scan DOES get --ignore-unfixed by default ──
+rm -f "$TMP/args"
+PLUGIN_SCAN_TYPE=fs run || fail "entrypoint failed for scan_type=fs"
+grep -qx -- "--ignore-unfixed" "$TMP/args" || fail "fs scan should pass --ignore-unfixed by default"
+
 # ── 5. a machine-format gate FAILURE re-prints findings as a human table so the
 #       real cause is visible in the log (not just the exit code) ──
 rm -f "$TMP/args"

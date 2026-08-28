@@ -95,10 +95,12 @@ if [ "${SCAN_TYPE}" = "config" ]; then
   args+=("--skip-check-update")
 fi
 
-# --ignore-unfixed only makes sense on CVE scans; it has no
-# effect on config/secret rules but trivy doesn't reject it
-# either — always forwarding keeps the flag list simple.
-if [ "${IGNORE_UNFIXED}" = "true" ]; then
+# --ignore-unfixed applies only to CVE scans (image/fs/repo). `trivy config`
+# is a misconfig scan with no fixed/unfixed axis and REJECTS the flag with
+# `unknown flag: --ignore-unfixed` (FATAL), so gate it out for config. The
+# default is on (IGNORE_UNFIXED defaults to true), so a config scan that never
+# sets it would otherwise inherit the flag and die.
+if [ "${IGNORE_UNFIXED}" = "true" ] && [ "${SCAN_TYPE}" != "config" ]; then
   args+=("--ignore-unfixed")
 fi
 
@@ -144,7 +146,7 @@ if [ "${rc}" -ne 0 ] && [ -n "${PLUGIN_OUTPUT:-}" ] && [ "${FORMAT}" != "table" 
   if [ "${SCAN_TYPE}" = "config" ]; then
     summary+=("--skip-check-update")
   fi
-  if [ "${IGNORE_UNFIXED}" = "true" ]; then
+  if [ "${IGNORE_UNFIXED}" = "true" ] && [ "${SCAN_TYPE}" != "config" ]; then
     summary+=("--ignore-unfixed")
   fi
   if [ -n "${PLUGIN_SKIP_DIRS:-}" ]; then
