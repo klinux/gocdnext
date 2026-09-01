@@ -62,6 +62,10 @@ export default defineConfig({
             { label: "Quickstart", link: "/pipelines/quickstart/" },
             { label: "YAML reference", link: "/pipelines/yaml-reference/" },
             {
+              label: "Required checks for merge",
+              link: "/pipelines/required-checks/",
+            },
+            {
               label: "Recipes",
               items: [
                 { label: "Go monorepo", link: "/pipelines/recipes/go-monorepo/" },

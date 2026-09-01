@@ -76,6 +76,7 @@ App.
 | Webhooks | Read & write | auto-register the webhook (above) |
 | **Checks** | **Read & write** | post the `gocdnext / <pipeline>` **check run** — the rich, GitHub-hosted view (coverage + security summary, re-run button) |
 | **Commit statuses** | **Read & write** | post the `ci/gocdnext/<project>/<pipeline>` **commit status** — the check row whose link goes **straight to the run** (the UX Woodpecker/GoCD give). A SEPARATE permission from Checks. |
+| **Administration** | **Read & write** | *(optional)* write the repo's **required-checks ruleset** so gocdnext can manage "required pipelines for PR merge" from its UI. Only needed if you use that feature — omit it and everything else still works. |
 
 gocdnext posts **both** per pipeline: the **check run** (rich view; its run link
 is the "Details" button) and the **commit status** (plain row, links straight to
@@ -94,6 +95,13 @@ gocdnext posts these checks; whether GitHub **requires** one for merge is a
 **branch ruleset / branch-protection** setting on the repo or org (require the
 context `ci/gocdnext/<project>/<pipeline>` or the check `gocdnext / <pipeline>`). An
 **org-level ruleset** requires it across many repos by name — no per-repo config.
+
+gocdnext can **configure that ruleset for you** — *Project → Settings → Required
+checks* picks which pipelines must be green to merge, and gocdnext writes a
+dedicated per-project `gocdnext-required-checks-<project>` ruleset on the repo.
+That needs the
+**Administration: write** permission above. See
+[Required checks for merge](/pipelines/required-checks/).
 :::
 
 ### Manual setup

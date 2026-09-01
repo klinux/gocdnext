@@ -800,6 +800,15 @@ func statusContext(projectSlug, pipelineName string) string {
 	return "ci/gocdnext/" + projectSlug + "/" + pipelineName
 }
 
+// StatusContext exposes the commit-status context string for a (project,
+// pipeline) so other subsystems — notably the required-checks ruleset writer —
+// require the exact same context gocdnext posts. Single source of truth: a
+// required check whose name doesn't match this byte-for-byte would leave the PR
+// waiting on a check that never arrives.
+func StatusContext(projectSlug, pipelineName string) string {
+	return statusContext(projectSlug, pipelineName)
+}
+
 // statusStateFor maps a run status to a GitHub commit-status state
 // (pending|success|failure|error). Skipped → success (neutral/non-blocking,
 // mirroring the check run's conclusion); a non-terminal status → pending.
