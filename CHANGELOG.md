@@ -8,6 +8,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.94.0 — 2026-09-01
+
+### Added
+
+- **Required checks for merge — admin-configured GitHub ruleset.** A new
+  per-project surface (*Project → Settings → Required checks*, admin-only) picks
+  which pipelines must be green before a PR can merge. gocdnext writes a
+  dedicated, **per-project** repository ruleset `gocdnext-required-checks-<slug>`
+  requiring those pipelines' commit-status contexts; GitHub enforces the merge
+  block (gocdnext never merges). Only pipelines that reliably post a check for
+  every PR to the default branch are eligible — matched by the canonical
+  material fingerprint (same repo + default branch), firing on `pull_request`,
+  with no path filter — so a required check can never be a context that never
+  arrives. The ruleset is pinned to the gocdnext App via `integration_id` (only
+  gocdnext can satisfy it) and scoped to `~DEFAULT_BRANCH`. Config survives a
+  sync failure with an actionable state (e.g. the App missing
+  `Administration: write`), the ruleset is re-synced on the next project apply
+  (dropping a renamed/removed/re-scoped pipeline), and switching a project to
+  `check_run`-only reporting is refused while required checks are set. Requires
+  the GitHub App to have the **Administration: write** permission. (#263)
+
 ## v0.93.1 — 2026-08-28
 
 ### Fixed
