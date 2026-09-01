@@ -799,6 +799,10 @@ func main() {
 		// control jobs/images/profiles/OIDC/deploys for that run.
 		p.Get("/api/v1/projects/{slug}/pr-head-config", projectsHandler.GetPRHeadTrust)
 		p.Put("/api/v1/projects/{slug}/pr-head-config", projectsHandler.SetPRHeadTrust)
+		// Required pipelines for PR merge (#gate). GET is maintainer+ (read-only);
+		// the PUT enforces ADMIN in-handler — it writes the repo's GitHub ruleset.
+		p.Get("/api/v1/projects/{slug}/required-checks", projectsHandler.GetRequiredChecks)
+		p.Put("/api/v1/projects/{slug}/required-checks", projectsHandler.SetRequiredChecks)
 		p.Get("/api/v1/projects/{slug}/crons", projectsHandler.ListProjectCrons)
 		p.Post("/api/v1/projects/{slug}/crons", projectsHandler.CreateProjectCron)
 		p.Put("/api/v1/projects/{slug}/crons/{id}", projectsHandler.UpdateProjectCron)

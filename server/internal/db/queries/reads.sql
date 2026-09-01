@@ -128,6 +128,28 @@ JOIN projects p ON p.id = pl.project_id
 WHERE p.slug = $1
 ORDER BY pl.name;
 
+-- name: ListPRFiringPipelineNames :many
+-- Pipelines SAFELY eligible to be required-for-merge on the repo's default
+-- branch. A git material qualifies when it (a) has the SAME fingerprint as the
+-- project's SCM repo + default branch — the fingerprint is the canonical
+-- normalized(url)+branch key the webhook itself matches on, so this rejects a
+-- material pointing at another repo OR another branch in one comparison — (b)
+-- fires on pull_request, and (c) has no path filter (a path-scoped material is
+-- skipped for PRs that don't touch its paths, so its check never posts).
+-- Requiring anything outside this set would deadlock a PR on a context that
+-- never arrives. $2 = FingerprintFor(scm_source.url, scm_source.default_branch),
+-- computed by the caller.
+SELECT DISTINCT pl.name
+FROM pipelines pl
+JOIN materials m ON m.pipeline_id = pl.id
+JOIN projects p ON p.id = pl.project_id
+WHERE p.slug = $1
+  AND m.type = 'git'
+  AND m.fingerprint = $2
+  AND m.config -> 'events' @> '["pull_request"]'::jsonb
+  AND (m.config->'paths' IS NULL OR jsonb_array_length(m.config->'paths') = 0)
+ORDER BY pl.name;
+
 -- name: ListRunsByProjectSlug :many
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
        r.counter, r.cause, r.status, r.queue_reason,

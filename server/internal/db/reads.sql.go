@@ -627,6 +627,54 @@ func (q *Queries) ListMaterialsByProjectSlug(ctx context.Context, slug string) (
 	return items, nil
 }
 
+const listPRFiringPipelineNames = `-- name: ListPRFiringPipelineNames :many
+SELECT DISTINCT pl.name
+FROM pipelines pl
+JOIN materials m ON m.pipeline_id = pl.id
+JOIN projects p ON p.id = pl.project_id
+WHERE p.slug = $1
+  AND m.type = 'git'
+  AND m.fingerprint = $2
+  AND m.config -> 'events' @> '["pull_request"]'::jsonb
+  AND (m.config->'paths' IS NULL OR jsonb_array_length(m.config->'paths') = 0)
+ORDER BY pl.name
+`
+
+type ListPRFiringPipelineNamesParams struct {
+	Slug        string
+	Fingerprint string
+}
+
+// Pipelines SAFELY eligible to be required-for-merge on the repo's default
+// branch. A git material qualifies when it (a) has the SAME fingerprint as the
+// project's SCM repo + default branch — the fingerprint is the canonical
+// normalized(url)+branch key the webhook itself matches on, so this rejects a
+// material pointing at another repo OR another branch in one comparison — (b)
+// fires on pull_request, and (c) has no path filter (a path-scoped material is
+// skipped for PRs that don't touch its paths, so its check never posts).
+// Requiring anything outside this set would deadlock a PR on a context that
+// never arrives. $2 = FingerprintFor(scm_source.url, scm_source.default_branch),
+// computed by the caller.
+func (q *Queries) ListPRFiringPipelineNames(ctx context.Context, arg ListPRFiringPipelineNamesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listPRFiringPipelineNames, arg.Slug, arg.Fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPipelinesByProjectSlug = `-- name: ListPipelinesByProjectSlug :many
 SELECT pl.id, pl.name, pl.definition_version, pl.definition, pl.updated_at
 FROM pipelines pl
