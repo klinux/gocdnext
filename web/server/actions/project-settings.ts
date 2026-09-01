@@ -163,6 +163,55 @@ export async function setProjectCheckReporting(
   }
 }
 
+// Required pipelines for PR merge. The server writes a dedicated GitHub ruleset
+// requiring these pipelines' checks; it re-validates that each pipeline fires on
+// PRs and that the project emits commit statuses (a client-friendly cap here).
+const setRequiredChecksSchema = z.object({
+  slug: z.string().min(1),
+  pipelines: z.array(z.string().min(1)).max(50),
+});
+
+export async function setProjectRequiredChecks(
+  input: z.infer<typeof setRequiredChecksSchema>,
+): Promise<ActionResult> {
+  const parsed = setRequiredChecksSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/required-checks`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "PUT",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+      body: JSON.stringify({ pipelines: parsed.data.pipelines }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        error: `server ${res.status}: ${body.trim().slice(0, 300) || "save failed"}`,
+      };
+    }
+    revalidatePath(`/projects/${parsed.data.slug}/settings`);
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 // Project labels — free-form key:value grouping tags (team:payments,
 // tier:critical). The server replaces the whole set on PUT and re-validates
 // (key required, bounds); this is a client-friendly pre-check.

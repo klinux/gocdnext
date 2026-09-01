@@ -7,11 +7,13 @@ import { ProjectGithubChecksSettings } from "@/components/projects/project-githu
 import { ProjectLabelsCard } from "@/components/projects/project-labels.client";
 import { ProjectComplianceCard } from "@/components/projects/project-compliance.client";
 import { ProjectCompliancePreview } from "@/components/projects/project-compliance-preview.client";
+import { ProjectRequiredChecks } from "@/components/projects/project-required-checks.client";
 import {
   GocdnextAPIError,
   getProjectDetail,
   getProjectLogArchive,
   getProjectCheckReporting,
+  getProjectRequiredChecks,
 } from "@/server/queries/projects";
 import {
   getEffectivePipelinePreview,
@@ -102,6 +104,21 @@ export default async function ProjectSettingsPage({
     }
   }
 
+  // Required pipelines for PR merge is admin-only (the PUT writes the repo's
+  // GitHub ruleset) and GitHub-only. Degrades to null (card hidden) on error or
+  // a non-GitHub project.
+  let requiredChecks: Awaited<
+    ReturnType<typeof getProjectRequiredChecks>
+  > | null = null;
+  if (isAdmin) {
+    try {
+      const rc = await getProjectRequiredChecks(slug);
+      requiredChecks = rc.provider === "github" ? rc : null;
+    } catch {
+      requiredChecks = null;
+    }
+  }
+
   return (
     <section className="space-y-6">
       <div className="space-y-1">
@@ -134,6 +151,10 @@ export default async function ProjectSettingsPage({
           slug={slug}
           initialMode={checkReporting.mode}
         />
+      ) : null}
+
+      {requiredChecks ? (
+        <ProjectRequiredChecks slug={slug} initial={requiredChecks} />
       ) : null}
 
       {isAdmin ? (
