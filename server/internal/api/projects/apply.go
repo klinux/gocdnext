@@ -338,6 +338,11 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The apply may have renamed/removed a required pipeline or changed its
+	// events/branch/path filter; re-sync the ruleset so GitHub never keeps
+	// requiring a context that can no longer be posted. Best-effort.
+	h.ReconcileRequiredChecksAfterApply(r.Context(), req.Slug)
+
 	resp := ApplyResponse{
 		ProjectID:        result.ProjectID.String(),
 		ProjectCreated:   result.ProjectCreated,

@@ -452,6 +452,7 @@ type Project struct {
 	LogArchiveEnabled     *bool
 	CheckReportingMode    string
 	TrustSameRepoPrConfig bool
+	RequiredChecks        []byte
 }
 
 type ProjectCron struct {

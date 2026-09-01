@@ -69,12 +69,17 @@ func (h *Handler) SetCheckReporting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.SetProjectCheckReportingBySlug(r.Context(), slug, req.Mode); err != nil {
-		if errors.Is(err, store.ErrProjectNotFound) {
+		switch {
+		case errors.Is(err, store.ErrProjectNotFound):
 			http.Error(w, "project not found", http.StatusNotFound)
-			return
+		case errors.Is(err, store.ErrRequiredChecksNeedCommitStatus):
+			http.Error(w,
+				"this project has required checks for merge, which need commit statuses; clear them before switching to check_run-only",
+				http.StatusConflict)
+		default:
+			h.log.Error("set check-reporting", "slug", slug, "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
-		h.log.Error("set check-reporting", "slug", slug, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	h.log.Info("project check-reporting updated", "slug", slug, "mode", req.Mode)

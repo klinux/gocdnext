@@ -194,6 +194,19 @@ func (s *Store) GetProjectCheckReportingBySlug(ctx context.Context, slug string)
 // ErrProjectNotFound (not an opaque 500) when the slug matches no project.
 // Raw Exec so RowsAffected distinguishes "not found" from "no-op update".
 func (s *Store) SetProjectCheckReportingBySlug(ctx context.Context, slug, mode string) error {
+	// Guard the required-checks invariant at the store (authoritative) layer, not
+	// just the HTTP edge: check_run-only stops posting the commit-status contexts
+	// the ruleset requires, which would strand every PR. Refuse while any required
+	// pipeline is configured.
+	if mode == CheckReportingCheckRun {
+		rc, err := s.GetProjectRequiredChecks(ctx, slug)
+		if err != nil && !errors.Is(err, ErrProjectNotFound) {
+			return err
+		}
+		if rc != nil && len(rc.Pipelines) > 0 {
+			return ErrRequiredChecksNeedCommitStatus
+		}
+	}
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE projects SET check_reporting_mode = $2 WHERE slug = $1`,
 		slug, mode)

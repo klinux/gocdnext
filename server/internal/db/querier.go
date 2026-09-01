@@ -1349,6 +1349,17 @@ type Querier interface {
 	// the URI update lands. The read path already serves from the
 	// archive, so the rows are pure cost — sweep them on a slow tick.
 	ListOrphanedArchivedJobs(ctx context.Context, lim int32) ([]pgtype.UUID, error)
+	// Pipelines SAFELY eligible to be required-for-merge on the repo's default
+	// branch. A git material qualifies when it (a) has the SAME fingerprint as the
+	// project's SCM repo + default branch — the fingerprint is the canonical
+	// normalized(url)+branch key the webhook itself matches on, so this rejects a
+	// material pointing at another repo OR another branch in one comparison — (b)
+	// fires on pull_request, and (c) has no path filter (a path-scoped material is
+	// skipped for PRs that don't touch its paths, so its check never posts).
+	// Requiring anything outside this set would deadlock a PR on a context that
+	// never arrives. $2 = FingerprintFor(scm_source.url, scm_source.default_branch),
+	// computed by the caller.
+	ListPRFiringPipelineNames(ctx context.Context, arg ListPRFiringPipelineNamesParams) ([]string, error)
 	// Candidate gates for the approval expirer: every gate still parked in
 	// `awaiting_approval` whose wait already exceeds the SHORTEST window that
 	// could possibly apply (domain.ApprovalTimeoutMin). The expirer then resolves

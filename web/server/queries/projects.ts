@@ -110,6 +110,37 @@ export async function getProjectCheckReporting(
   );
 }
 
+// Required pipelines for PR merge: the chosen set, the selectable (PR-firing)
+// set, the repo provider, the exact required contexts, and the last GitHub
+// ruleset sync state (so the card can surface synced / failed / drift).
+export type RequiredChecksSyncStatus =
+  | "not_configured"
+  | "pending"
+  | "synced"
+  | "failed"
+  | "skipped";
+export type RequiredChecksSync = {
+  status: RequiredChecksSyncStatus;
+  ruleset_id?: number;
+  synced_at?: string;
+  error?: string;
+  needs_admin?: boolean;
+};
+export type RequiredChecksSettings = {
+  pipelines: string[];
+  available_pipelines: string[];
+  provider: string;
+  status_contexts: string[];
+  sync: RequiredChecksSync;
+};
+export async function getProjectRequiredChecks(
+  slug: string,
+): Promise<RequiredChecksSettings> {
+  return readJSON<RequiredChecksSettings>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/required-checks`,
+  );
+}
+
 export async function getRunDetail(
   id: string,
   logsPerJob = 200,
