@@ -60,6 +60,7 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 //   - status (optional filter, any domain.RunStatus value)
 //   - cause (optional filter: webhook | pull_request | upstream | manual)
 //   - project (optional project slug filter)
+//   - pipeline (optional pipeline NAME filter, e.g. "deploy")
 //
 // Response includes `total` alongside the slice so the UI can
 // render "N of M" without a second call.
@@ -94,6 +95,7 @@ func (h *Handler) RunsGlobal(w http.ResponseWriter, r *http.Request) {
 		Status:      r.URL.Query().Get("status"),
 		Cause:       r.URL.Query().Get("cause"),
 		ProjectSlug: r.URL.Query().Get("project"),
+		Pipeline:    r.URL.Query().Get("pipeline"),
 	}
 
 	runs, err := h.store.ListRunsGlobal(r.Context(), limit, offset, filter)
@@ -115,6 +117,24 @@ func (h *Handler) RunsGlobal(w http.ResponseWriter, r *http.Request) {
 		"limit":  limit,
 		"offset": offset,
 	})
+}
+
+// PipelineNames handles GET /api/v1/pipelines/names — the distinct
+// pipeline names across projects, feeding the /runs filter dropdown.
+func (h *Handler) PipelineNames(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	names, err := h.store.ListPipelineNames(r.Context())
+	if err != nil {
+		h.log.Error("list pipeline names", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"names": names})
 }
 
 // Agents handles GET /api/v1/agents. Flat list for both the home

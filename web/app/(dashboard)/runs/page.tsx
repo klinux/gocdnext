@@ -5,8 +5,13 @@ import { Activity, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Pagination } from "@/components/shared/pagination";
+import { FilterSelect } from "@/components/runs/filter-select.client";
 import { RunsTable } from "@/components/runs/runs-table";
-import { listGlobalRuns } from "@/server/queries/projects";
+import {
+  listGlobalRuns,
+  listPipelineNames,
+  listProjects,
+} from "@/server/queries/projects";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
@@ -21,6 +26,7 @@ type SearchParams = {
   status?: string;
   cause?: string;
   project?: string;
+  pipeline?: string;
   offset?: string;
 };
 
@@ -54,16 +60,25 @@ export default async function RunsListPage({
   const status = typeof sp.status === "string" ? sp.status : undefined;
   const cause = typeof sp.cause === "string" ? sp.cause : undefined;
   const project = typeof sp.project === "string" ? sp.project : undefined;
+  const pipeline = typeof sp.pipeline === "string" ? sp.pipeline : undefined;
 
-  const data = await listGlobalRuns({
-    limit: PAGE_SIZE,
-    offset,
-    status,
-    cause,
-    project,
-  });
+  // Option lists ride along with the page fetch: the /runs page is
+  // force-dynamic already, and both lists are tiny (slugs + distinct
+  // pipeline names), so three parallel calls beat a client waterfall.
+  const [data, projects, pipelineNames] = await Promise.all([
+    listGlobalRuns({
+      limit: PAGE_SIZE,
+      offset,
+      status,
+      cause,
+      project,
+      pipeline,
+    }),
+    listProjects(),
+    listPipelineNames(),
+  ]);
 
-  const anyActive = Boolean(status || cause || project);
+  const anyActive = Boolean(status || cause || project || pipeline);
 
   return (
     <section className="space-y-5">
@@ -91,23 +106,51 @@ export default async function RunsListPage({
           param="status"
           value={status}
           options={STATUSES}
-          context={{ status, cause, project }}
+          context={{ status, cause, project, pipeline }}
         />
         <FilterRow
           label="Cause"
           param="cause"
           value={cause}
           options={CAUSES}
-          context={{ status, cause, project }}
+          context={{ status, cause, project, pipeline }}
         />
-        {project || anyActive ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 w-14 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Scope
+          </span>
+          <FilterSelect
+            param="project"
+            value={project}
+            placeholder="All projects"
+            options={projects.map((p) => ({ value: p.slug, label: p.name }))}
+            context={{ status, cause, pipeline }}
+          />
+          <FilterSelect
+            param="pipeline"
+            value={pipeline}
+            placeholder="All pipelines"
+            options={pipelineNames.map((n) => ({ value: n, label: n }))}
+            context={{ status, cause, project }}
+          />
+        </div>
+        {project || pipeline || anyActive ? (
           <div className="flex flex-wrap items-center gap-2 border-t pt-2.5">
             {project ? (
               <Link
-                href={qs({ status, cause })}
+                href={qs({ status, cause, pipeline })}
                 className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs hover:bg-muted"
               >
                 project: <span className="font-mono">{project}</span>
+                <X className="size-3 text-muted-foreground" aria-hidden />
+              </Link>
+            ) : null}
+            {pipeline ? (
+              <Link
+                href={qs({ status, cause, project })}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs hover:bg-muted"
+              >
+                pipeline: <span className="font-mono">{pipeline}</span>
                 <X className="size-3 text-muted-foreground" aria-hidden />
               </Link>
             ) : null}
@@ -139,7 +182,7 @@ export default async function RunsListPage({
         total={data.total}
         pageSize={PAGE_SIZE}
         basePath="/runs"
-        params={{ status, cause, project }}
+        params={{ status, cause, project, pipeline }}
       />
     </section>
   );
@@ -156,7 +199,7 @@ function FilterRow<T extends string>({
   param: "status" | "cause";
   value: string | undefined;
   options: readonly T[];
-  context: { status?: string; cause?: string; project?: string };
+  context: { status?: string; cause?: string; project?: string; pipeline?: string };
 }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">

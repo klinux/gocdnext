@@ -764,6 +764,7 @@ func main() {
 		p.Get("/api/v1/analytics/compliance", dashboardHandler.ComplianceCoverage)
 		p.Get("/api/v1/analytics/security", dashboardHandler.SecurityRollup)
 		p.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
+		p.Get("/api/v1/pipelines/names", dashboardHandler.PipelineNames)
 		p.Get("/api/v1/agents", dashboardHandler.Agents)
 		p.Get("/api/v1/agents/{id}", dashboardHandler.AgentDetail)
 		p.Get("/api/v1/account/preferences", accountHandler.GetPreferences)
