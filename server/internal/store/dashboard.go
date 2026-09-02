@@ -115,6 +115,11 @@ type RunsFilter struct {
 	Status      string
 	Cause       string
 	ProjectSlug string
+	// Pipeline filters by pipeline NAME (not id): names are the
+	// stable, human-facing axis ("build", "deploy", "quality") and
+	// repeat across projects — which is exactly what "show me every
+	// failed deploy" wants.
+	Pipeline string
 }
 
 // ListRunsGlobal returns a slice of GlobalRunSummary matching the
@@ -126,11 +131,12 @@ func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, offset int64, f
 		offset = 0
 	}
 	rows, err := s.q.ListRunsGlobal(ctx, db.ListRunsGlobalParams{
-		Limit:        limit,
-		StatusFilter: filter.Status,
-		CauseFilter:  filter.Cause,
-		ProjectSlug:  filter.ProjectSlug,
-		RowOffset:    offset,
+		Limit:          limit,
+		StatusFilter:   filter.Status,
+		CauseFilter:    filter.Cause,
+		ProjectSlug:    filter.ProjectSlug,
+		PipelineFilter: filter.Pipeline,
+		RowOffset:      offset,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: list runs global: %w", err)
@@ -169,14 +175,25 @@ func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, offset int64, f
 // paged "N of M" displays.
 func (s *Store) CountRunsGlobal(ctx context.Context, filter RunsFilter) (int64, error) {
 	n, err := s.q.CountRunsGlobal(ctx, db.CountRunsGlobalParams{
-		StatusFilter: filter.Status,
-		CauseFilter:  filter.Cause,
-		ProjectSlug:  filter.ProjectSlug,
+		StatusFilter:   filter.Status,
+		CauseFilter:    filter.Cause,
+		ProjectSlug:    filter.ProjectSlug,
+		PipelineFilter: filter.Pipeline,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("store: count runs global: %w", err)
 	}
 	return n, nil
+}
+
+// ListPipelineNames returns the distinct pipeline names across all
+// projects — the option list for the /runs pipeline filter.
+func (s *Store) ListPipelineNames(ctx context.Context) ([]string, error) {
+	names, err := s.q.ListPipelineNames(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: list pipeline names: %w", err)
+	}
+	return names, nil
 }
 
 // AgentSummary is what dashboards + the /agents page show. Derived

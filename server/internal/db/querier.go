@@ -1424,6 +1424,10 @@ type Querier interface {
 	// with system_managed = false. Ordered by name so the apply path's
 	// PipelinesRemoved list stays deterministic.
 	ListPipelineKindsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelineKindsByProjectRow, error)
+	// Distinct pipeline names across every project, for the /runs
+	// pipeline filter dropdown. Names repeat across projects by design
+	// (build, deploy, quality...), so DISTINCT keeps the list short.
+	ListPipelineNames(ctx context.Context) ([]string, error)
 	// Recompute support: the stored raw (pre-policy) definitions for a project,
 	// re-merged with current policies to refresh the effective definition.
 	ListPipelineRawByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelineRawByProjectRow, error)
