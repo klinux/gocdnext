@@ -211,9 +211,12 @@ func TestListPipelineNames_ExcludesSystemManaged(t *testing.T) {
 
 	// Synthesise a system_managed pipeline the way the server does
 	// for _compliance (bypassing ApplyProject which never marks it).
+	// definition_raw is NOT NULL — pre-policy definition the compliance
+	// engine keeps; hand-rolled inserts have to fill it (ApplyProject
+	// does it for the other tests).
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO pipelines (project_id, name, definition, system_managed)
-		VALUES ($1, '_compliance', '{}'::jsonb, true)`,
+		INSERT INTO pipelines (project_id, name, definition, definition_raw, system_managed)
+		VALUES ($1, '_compliance', '{}'::jsonb, '{}'::jsonb, true)`,
 		res.ProjectID,
 	); err != nil {
 		t.Fatalf("insert system_managed: %v", err)
