@@ -200,6 +200,7 @@ func (q *Queries) ListAgentsWithRunning(ctx context.Context) ([]ListAgentsWithRu
 const listPipelineNames = `-- name: ListPipelineNames :many
 SELECT DISTINCT pl.name
 FROM pipelines pl
+WHERE NOT pl.system_managed
 ORDER BY pl.name
 `
 

@@ -52,8 +52,11 @@ WHERE (@status_filter::text = '' OR r.status = @status_filter::text)
 -- Distinct pipeline names across every project, for the /runs
 -- pipeline filter dropdown. Names repeat across projects by design
 -- (build, deploy, quality...), so DISTINCT keeps the list short.
+-- system_managed pipelines (e.g. synthetic `_compliance`) are excluded
+-- so internal names don't leak into the user-facing dropdown.
 SELECT DISTINCT pl.name
 FROM pipelines pl
+WHERE NOT pl.system_managed
 ORDER BY pl.name;
 
 -- name: ListAgentsWithRunning :many

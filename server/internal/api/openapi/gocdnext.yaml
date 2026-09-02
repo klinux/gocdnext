@@ -923,6 +923,9 @@ paths:
             type: string
             enum: [queued, running, success, failed, canceled]
         - in: query
+          name: cause
+          schema: { type: string }
+        - in: query
           name: project
           schema: { type: string }
         - in: query
