@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.95.0 — 2026-09-02
+
+### Added
+
+- **Project + pipeline filters on the `/runs` page.** The cross-project runs
+  list gains a **Scope** row with two dropdowns — **Project** (from the project
+  list) and **Pipeline** (distinct pipeline names across projects) — so
+  "show me every failed *deploy* across projects" is one click instead of
+  drilling into each project. Active selections render as removable chips, and
+  pagination + every chip link carry all four filters (`status`, `cause`,
+  `project`, `pipeline`). The `/api/v1/runs` endpoint now honors `?pipeline=`
+  (closing a spec/implementation gap where it was already documented), backed by
+  a `pipeline_filter` on the runs query; a new `GET /api/v1/pipelines/names`
+  feeds the dropdown (synthetic `system_managed` pipelines excluded). (#264)
+
 ## v0.94.0 — 2026-09-01
 
 ### Added
