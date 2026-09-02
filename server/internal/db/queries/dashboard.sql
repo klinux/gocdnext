@@ -31,6 +31,7 @@ JOIN projects  p  ON p.id  = pl.project_id
 WHERE (@status_filter::text = '' OR r.status = @status_filter::text)
   AND (@cause_filter::text = '' OR r.cause = @cause_filter::text)
   AND (@project_slug::text = '' OR p.slug = @project_slug::text)
+  AND (@pipeline_filter::text = '' OR pl.name = @pipeline_filter::text)
 ORDER BY r.created_at DESC
 LIMIT $1 OFFSET @row_offset::bigint;
 
@@ -44,7 +45,19 @@ JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects  p  ON p.id  = pl.project_id
 WHERE (@status_filter::text = '' OR r.status = @status_filter::text)
   AND (@cause_filter::text = '' OR r.cause = @cause_filter::text)
-  AND (@project_slug::text = '' OR p.slug = @project_slug::text);
+  AND (@project_slug::text = '' OR p.slug = @project_slug::text)
+  AND (@pipeline_filter::text = '' OR pl.name = @pipeline_filter::text);
+
+-- name: ListPipelineNames :many
+-- Distinct pipeline names across every project, for the /runs
+-- pipeline filter dropdown. Names repeat across projects by design
+-- (build, deploy, quality...), so DISTINCT keeps the list short.
+-- system_managed pipelines (e.g. synthetic `_compliance`) are excluded
+-- so internal names don't leak into the user-facing dropdown.
+SELECT DISTINCT pl.name
+FROM pipelines pl
+WHERE NOT pl.system_managed
+ORDER BY pl.name;
 
 -- name: ListAgentsWithRunning :many
 -- Dashboard + /agents list: every agent with its declared metadata

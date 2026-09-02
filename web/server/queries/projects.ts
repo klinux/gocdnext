@@ -182,6 +182,7 @@ export type RunsQuery = {
   status?: string;
   cause?: string;
   project?: string;
+  pipeline?: string;
 };
 
 export async function listGlobalRuns(
@@ -192,7 +193,17 @@ export async function listGlobalRuns(
   if (opts.status) qs.set("status", opts.status);
   if (opts.cause) qs.set("cause", opts.cause);
   if (opts.project) qs.set("project", opts.project);
+  if (opts.pipeline) qs.set("pipeline", opts.pipeline);
   return readJSON<RunsListResponse>(`/api/v1/runs?${qs.toString()}`);
+}
+
+// listPipelineNames feeds the /runs pipeline filter dropdown —
+// distinct names across every project ("build", "deploy", ...).
+export async function listPipelineNames(): Promise<string[]> {
+  const { names } = await readJSON<{ names: string[] }>(
+    "/api/v1/pipelines/names",
+  );
+  return names;
 }
 
 // listGlobalRunsOnly is the legacy shape the dashboard widget used

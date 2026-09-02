@@ -897,6 +897,21 @@ paths:
         "400": { description: missing/invalid key }
 
   # -------------------- runs --------------------
+  /api/v1/pipelines/names:
+    get:
+      tags: [runs]
+      summary: Distinct pipeline names across all projects (filter options).
+      responses:
+        "200":
+          description: names
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  names:
+                    type: array
+                    items: { type: string }
   /api/v1/runs:
     get:
       tags: [runs]
@@ -907,6 +922,9 @@ paths:
           schema:
             type: string
             enum: [queued, running, success, failed, canceled]
+        - in: query
+          name: cause
+          schema: { type: string }
         - in: query
           name: project
           schema: { type: string }

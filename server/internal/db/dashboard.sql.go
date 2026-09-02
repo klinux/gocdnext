@@ -19,19 +19,26 @@ JOIN projects  p  ON p.id  = pl.project_id
 WHERE ($1::text = '' OR r.status = $1::text)
   AND ($2::text = '' OR r.cause = $2::text)
   AND ($3::text = '' OR p.slug = $3::text)
+  AND ($4::text = '' OR pl.name = $4::text)
 `
 
 type CountRunsGlobalParams struct {
-	StatusFilter string
-	CauseFilter  string
-	ProjectSlug  string
+	StatusFilter   string
+	CauseFilter    string
+	ProjectSlug    string
+	PipelineFilter string
 }
 
 // Paired with ListRunsGlobal so /runs can render "N of M" with the
 // same filter args. Returned as bigint to fit any table; UI only
 // needs int32 but this avoids cast noise.
 func (q *Queries) CountRunsGlobal(ctx context.Context, arg CountRunsGlobalParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countRunsGlobal, arg.StatusFilter, arg.CauseFilter, arg.ProjectSlug)
+	row := q.db.QueryRow(ctx, countRunsGlobal,
+		arg.StatusFilter,
+		arg.CauseFilter,
+		arg.ProjectSlug,
+		arg.PipelineFilter,
+	)
 	var total int64
 	err := row.Scan(&total)
 	return total, err
@@ -190,6 +197,36 @@ func (q *Queries) ListAgentsWithRunning(ctx context.Context) ([]ListAgentsWithRu
 	return items, nil
 }
 
+const listPipelineNames = `-- name: ListPipelineNames :many
+SELECT DISTINCT pl.name
+FROM pipelines pl
+WHERE NOT pl.system_managed
+ORDER BY pl.name
+`
+
+// Distinct pipeline names across every project, for the /runs
+// pipeline filter dropdown. Names repeat across projects by design
+// (build, deploy, quality...), so DISTINCT keeps the list short.
+func (q *Queries) ListPipelineNames(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listPipelineNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRunsGlobal = `-- name: ListRunsGlobal :many
 SELECT r.id,
        r.pipeline_id,
@@ -218,16 +255,18 @@ JOIN projects  p  ON p.id  = pl.project_id
 WHERE ($2::text = '' OR r.status = $2::text)
   AND ($3::text = '' OR r.cause = $3::text)
   AND ($4::text = '' OR p.slug = $4::text)
+  AND ($5::text = '' OR pl.name = $5::text)
 ORDER BY r.created_at DESC
-LIMIT $1 OFFSET $5::bigint
+LIMIT $1 OFFSET $6::bigint
 `
 
 type ListRunsGlobalParams struct {
-	Limit        int32
-	StatusFilter string
-	CauseFilter  string
-	ProjectSlug  string
-	RowOffset    int64
+	Limit          int32
+	StatusFilter   string
+	CauseFilter    string
+	ProjectSlug    string
+	PipelineFilter string
+	RowOffset      int64
 }
 
 type ListRunsGlobalRow struct {
@@ -262,6 +301,7 @@ func (q *Queries) ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) 
 		arg.StatusFilter,
 		arg.CauseFilter,
 		arg.ProjectSlug,
+		arg.PipelineFilter,
 		arg.RowOffset,
 	)
 	if err != nil {
