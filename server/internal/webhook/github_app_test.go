@@ -14,8 +14,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/internal/vcs"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
@@ -32,6 +34,14 @@ const (
 // seeds a github_app integration whose webhook secret is testSecret (so the
 // signBody signatures verify).
 func newAppServer(t *testing.T, s *store.Store) http.Handler {
+	return newAppServerWithReporter(t, s, true)
+}
+
+func newAppServerWithoutReporter(t *testing.T, s *store.Store) http.Handler {
+	return newAppServerWithReporter(t, s, false)
+}
+
+func newAppServerWithReporter(t *testing.T, s *store.Store, withReporter bool) http.Handler {
 	t.Helper()
 	s.SetAuthCipher(newTestCipher(t))
 	appID := testAppID
@@ -46,7 +56,12 @@ func newAppServer(t *testing.T, s *store.Store) http.Handler {
 		t.Fatalf("seed vcs integration: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return http.HandlerFunc(webhook.NewHandler(s, logger).HandleGitHubApp)
+	h := webhook.NewHandler(s, logger)
+	if withReporter {
+		reporter := checks.NewReporter(s, vcs.New(), "https://gocdnext.dev", logger)
+		h = h.WithChecksReporter(reporter)
+	}
+	return http.HandlerFunc(h.HandleGitHubApp)
 }
 
 // seedRerunnableRun creates a project/pipeline/material + a modification + a
@@ -316,5 +331,51 @@ func TestGitHubApp_CheckSuiteMultiAppAuthenticates(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("check_suite status = %d, want 204 (authenticated via check_suite.app.id, then ignored)", resp.StatusCode)
+	}
+}
+
+func TestGitHubApp_EventWithUnknownAppIDDoesNotTryOtherSecrets(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newAppServer(t, s)
+
+	body := checkSuiteBody("rerequested", testAppID+999, testInstID)
+	resp := postApp(t, srv, "check_suite", "cs-unknown", body, signBody(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for unknown app_id even with another valid configured secret; body=%s",
+			resp.StatusCode, readBody(t, resp))
+	}
+}
+
+func TestGitHubApp_MergeGroupMultiAppAuthenticatesWithoutAppID(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newAppServer(t, s) // seeds testAppID with testSecret
+	otherID := testAppID + 1
+	if _, err := s.UpsertVCSIntegration(context.Background(), store.UpsertVCSIntegrationInput{
+		Name: "other-app", Kind: "github_app", AppID: &otherID,
+		WebhookSecret: "other-secret", Enabled: true,
+	}); err != nil {
+		t.Fatalf("seed second app: %v", err)
+	}
+
+	body := []byte(`{
+		"action": "checks_requested",
+		"installation": {"id": 100},
+		"repository": {"full_name": "org/repo", "clone_url": "https://github.com/org/repo.git"},
+		"merge_group": {
+			"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"head_ref": "refs/heads/gh-readonly-queue/main/pr-1-aaaa",
+			"base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"base_ref": "refs/heads/main",
+			"head_commit": {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+		}
+	}`)
+	resp := postApp(t, srv, "merge_group", "mg-auth", body, signBody(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("merge_group status = %d, want 204 (authenticated by trying all App secrets, then no material); body=%s",
+			resp.StatusCode, readBody(t, resp))
 	}
 }

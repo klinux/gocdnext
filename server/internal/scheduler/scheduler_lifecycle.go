@@ -151,9 +151,14 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		_ = conn.Close(context.Background())
 		return fmt.Errorf("scheduler: LISTEN superseded: %w", err)
 	}
+	if _, err := conn.Exec(ctx, "LISTEN "+store.MergeGroupCanceledRunChannel); err != nil {
+		_ = conn.Close(context.Background())
+		return fmt.Errorf("scheduler: LISTEN merge_group canceled: %w", err)
+	}
 
 	runCh := make(chan uuid.UUID, 32)
 	supersededCh := make(chan uuid.UUID, 32)
+	mergeGroupCanceledCh := make(chan uuid.UUID, 32)
 	// drainCh is the single-producer signal: on an agent register,
 	// or a tick, we coalesce into one drain without blocking the
 	// signaller. Buffer of 1 because two back-to-back drains add
@@ -192,16 +197,20 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			target := runCh
 			if note.Channel == store.SupersededRunChannel {
 				target = supersededCh
+			} else if note.Channel == store.MergeGroupCanceledRunChannel {
+				target = mergeGroupCanceledCh
 			}
 			select {
 			case target <- id:
 			default:
 				// run_queued drops are recovered by the tick loop's re-scan.
-				// run_superseded drops only defer prompt frame push — the
-				// cancel_requested_at stamp + reconnect/reaper still finalize —
-				// but warn so a flood is visible to the operator.
+				// effect-channel drops only defer prompt frame push/cleanup — the
+				// durable cancel stamps + replay/reaper still finalize — but warn
+				// so a flood is visible to the operator.
 				if note.Channel == store.SupersededRunChannel {
 					s.log.Warn("scheduler: superseded channel full; frame push deferred to reconnect/reaper", "run_id", id)
+				} else if note.Channel == store.MergeGroupCanceledRunChannel {
+					s.log.Warn("scheduler: merge_group canceled channel full; effects deferred to replay/reaper", "run_id", id)
 				}
 			}
 		}
@@ -228,6 +237,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			s.dispatchRun(ctx, runID)
 		case runID := <-supersededCh:
 			s.fireSupersedeEffects(ctx, runID)
+		case runID := <-mergeGroupCanceledCh:
+			s.fireMergeGroupCancelEffects(ctx, runID)
 		case <-drainCh:
 			// Agent came online — re-try every queued run so jobs
 			// stop sitting around for up to a tick interval just
@@ -237,6 +248,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			s.drainQueued(ctx)
 			s.refreshQueueDepth(ctx)
 			s.replaySupersedeEffects(ctx)
+			s.replayMergeGroupCancelEffects(ctx)
 		}
 	}
 }

@@ -497,14 +497,16 @@ type Run struct {
 	// Snapshot of pipeline.definition->Services non-emptiness at run create. Drives CleanupRunServices dispatch; immutable post-insert.
 	HasServices bool
 	// Snapshot of pipeline.definition->Services names at run create. Mirrors has_services; immutable post-insert.
-	ServiceNames              []string
-	Ref                       string
-	SupersededBy              pgtype.UUID
-	CancelReason              *string
-	SupersedeEffectsClaimedAt pgtype.Timestamptz
-	SupersedeEffectsAt        pgtype.Timestamptz
-	Definition                []byte
-	ServiceGeneration         int64
+	ServiceNames                     []string
+	Ref                              string
+	SupersededBy                     pgtype.UUID
+	CancelReason                     *string
+	SupersedeEffectsClaimedAt        pgtype.Timestamptz
+	SupersedeEffectsAt               pgtype.Timestamptz
+	Definition                       []byte
+	ServiceGeneration                int64
+	MergeGroupCancelEffectsClaimedAt pgtype.Timestamptz
+	MergeGroupCancelEffectsAt        pgtype.Timestamptz
 }
 
 type RunGatePass struct {

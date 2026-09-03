@@ -82,6 +82,11 @@ Frontend-specific rules (Next.js 15, RSC, Server Actions, shadcn, Tailwind, Zod,
   - gRPC: latency, RPS, error rate per method.
 - **Correlated logs** with `trace_id` and `span_id` via an OTel-aware `slog` handler.
 
+## GitHub App webhooks
+
+- **Merge queue (`merge_group`) is App-delivered and check-critical.** Verify HMAC from the App secret before trusting the payload; when `app.id` is present, verify only that App's secret, and when absent let HMAC choose among enabled App secrets. A `merge_group` required check must be reported against GitHub's queue `head_sha` with the exact same context as PR runs.
+- **Partial `merge_group` fan-out must fail loud.** If any eligible pipeline fails to enqueue/report its pending check, return 5xx so GitHub redelivers. Successful pipelines dedupe on `(material_id, revision, branch)` during redelivery, while the failed pipeline gets another chance; returning 202 with one missing required check can eject the merge group from GitHub's queue.
+
 ## Directory conventions
 
 ```

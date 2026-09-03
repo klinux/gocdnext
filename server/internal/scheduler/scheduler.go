@@ -127,7 +127,8 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 	// path #2). The stamp is best-effort: if it fails, we still
 	// leave the run queued — the operator just loses the surface
 	// for THIS tick. The next tick will re-stamp.
-	if concurrency, _ := concurrencyFromDefinition(run.Definition); concurrency == domain.ConcurrencySerial {
+	if concurrency, _ := concurrencyFromDefinition(run.Definition); concurrency == domain.ConcurrencySerial &&
+		run.Cause != string(domain.CauseMergeGroup) {
 		predecessor, busy, err := s.store.OtherRunningRunForPipeline(ctx, run.PipelineID, runID)
 		if err != nil {
 			s.log.Warn("scheduler: concurrency check", "run_id", runID, "err", err)

@@ -344,6 +344,38 @@ func TestBuildCIVars(t *testing.T) {
 			},
 		},
 		{
+			name: "merge_group cause emits queue vars and no pull_request vars",
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions: json.RawMessage(`{"` + materialA + `":{"revision":"` + fullSHA + `","branch":"gh-readonly-queue/main/pr-42-deadbeef"}}`),
+				Cause:     "merge_group",
+				CauseDetail: json.RawMessage(`{
+					"mg_head_sha": "` + fullSHA + `",
+					"mg_head_ref": "gh-readonly-queue/main/pr-42-deadbeef",
+					"mg_base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"mg_base_ref": "main",
+					"pr_number": 42
+				}`),
+			},
+			jobName: "queue-check",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":               runID.String(),
+				"CI_RUN_COUNTER":          "1",
+				"CI_PIPELINE_ID":          pipelineID.String(),
+				"CI_PROJECT_ID":           projectID.String(),
+				"CI_JOB_NAME":             "queue-check",
+				"CI_COMMIT_SHA":           fullSHA,
+				"CI_COMMIT_SHORT_SHA":     fullSHA[:8],
+				"CI_BRANCH":               "gh-readonly-queue/main/pr-42-deadbeef",
+				"CI_CAUSE":                "merge_group",
+				"CI_MERGE_GROUP_HEAD_SHA": fullSHA,
+				"CI_MERGE_GROUP_HEAD_REF": "gh-readonly-queue/main/pr-42-deadbeef",
+				"CI_MERGE_GROUP_BASE_SHA": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"CI_MERGE_GROUP_BASE_REF": "main",
+			},
+		},
+		{
 			name: "legacy run with empty cause leaves CI_CAUSE unset",
 			// Pre-cause-column runs (or rows from a future bug that
 			// failed to stamp) should not radiate empty strings.

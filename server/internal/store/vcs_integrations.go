@@ -174,6 +174,28 @@ func (s *Store) AppWebhookSecretByAppID(ctx context.Context, appID int64) (strin
 	return found, nil
 }
 
+// AppWebhookSecrets returns every decrypted webhook secret for enabled GitHub
+// App integrations. The App-webhook handler uses this only when a payload lacks
+// a resolvable app_id (merge_group carries installation.id but no app.id in
+// GitHub's published payload). Trying all configured secrets is safe: the final
+// authorization decision is still HMAC verification over the raw body.
+func (s *Store) AppWebhookSecrets(ctx context.Context) ([]string, error) {
+	ints, err := s.ListBootstrapVCSIntegrations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(ints))
+	for _, in := range ints {
+		if in.Kind == VCSKindGitHubApp && in.WebhookSecret != "" {
+			out = append(out, in.WebhookSecret)
+		}
+	}
+	if len(out) == 0 {
+		return nil, ErrAppWebhookSecretNotResolved
+	}
+	return out, nil
+}
+
 // SoleAppWebhookSecret returns the decrypted webhook secret when EXACTLY ONE
 // enabled GitHub App integration has one — the fail-closed fallback for events
 // (ping) that don't carry a resolvable app_id. Zero or many → error.

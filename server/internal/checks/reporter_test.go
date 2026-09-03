@@ -128,13 +128,27 @@ func seedWebhookRun(t *testing.T, pool *pgxpool.Pool, repoURL string, cause stri
 			"pr_head_sha": "9f7c3d2e1b8a5f6c4e0d7a9b1c3d5e7f9a0b2c4d",
 		})
 	}
+	revision := "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1"
+	branch := "main"
+	if cause == string(domain.CauseMergeGroup) {
+		branch = "gh-readonly-queue/main/pr-42-d8f8c1e"
+		causeDetail, _ = json.Marshal(map[string]any{
+			"mg_head_sha": revision,
+			"mg_head_ref": branch,
+			"mg_base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"mg_base_ref": "main",
+			// Guard against accidentally reusing PR semantics for merge-group
+			// checks: this value must NOT override the queue head SHA.
+			"pr_head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+		})
+	}
 
 	res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
 		PipelineID:     applied.Pipelines[0].PipelineID,
 		MaterialID:     matID,
 		ModificationID: 1,
-		Revision:       "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1",
-		Branch:         "main", Provider: "github", Delivery: "t", TriggeredBy: "system:webhook",
+		Revision:       revision,
+		Branch:         branch, Provider: "github", Delivery: "t", TriggeredBy: "system:webhook",
 		Cause:       cause,
 		CauseDetail: causeDetail,
 	})
@@ -251,6 +265,79 @@ func TestCreateCheck_PullRequestPrefersPRHeadSHA(t *testing.T) {
 	// revision field.
 	if body["head_sha"] != "9f7c3d2e1b8a5f6c4e0d7a9b1c3d5e7f9a0b2c4d" {
 		t.Errorf("head_sha = %v", body["head_sha"])
+	}
+}
+
+func TestCreateCheck_MergeGroupUsesQueueHeadSHAAndStableContext(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseMergeGroup))
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("CreateCheck: %v", err)
+	}
+
+	body := *stub.createdBody.Load()
+	if body["head_sha"] != "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1" {
+		t.Errorf("head_sha = %v, want merge-group head SHA", body["head_sha"])
+	}
+	if body["head_sha"] == "ffffffffffffffffffffffffffffffffffffffff" {
+		t.Error("merge_group must not reuse pr_head_sha from cause_detail")
+	}
+	status := stub.statusBody.Load()
+	if status == nil {
+		t.Fatal("pending commit status was not posted")
+	}
+	if (*status)["context"] != "ci/gocdnext/chk-merge-group/ci" {
+		t.Errorf("status context = %v, want ci/gocdnext/chk-merge-group/ci", (*status)["context"])
+	}
+	link, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if link.HeadSHA != "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1" {
+		t.Errorf("persisted head_sha = %s, want merge-group SHA", link.HeadSHA)
+	}
+}
+
+func TestCompleteCheck_SuppressesMergeGroupDestroyedCancellation(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	s := store.New(pool)
+
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseMergeGroup))
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("CreateCheck: %v", err)
+	}
+	beforeStatuses := stub.statusCount.Load()
+	stub.updatedBody.Store(nil)
+
+	canceled, err := s.CancelMergeGroupRuns(ctx, "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1", "superseded by queue")
+	if err != nil {
+		t.Fatalf("cancel merge_group: %v", err)
+	}
+	if len(canceled) != 1 || canceled[0] != runID {
+		t.Fatalf("canceled = %v, want [%s]", canceled, runID)
+	}
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusCanceled)); err != nil {
+		t.Fatalf("CompleteCheck: %v", err)
+	}
+	if got := stub.updatedBody.Load(); got != nil {
+		t.Fatalf("destroyed merge_group cancellation must not PATCH GitHub, got %v", *got)
+	}
+	if got := stub.statusCount.Load(); got != beforeStatuses {
+		t.Fatalf("destroyed merge_group cancellation posted terminal status count %d -> %d", beforeStatuses, got)
+	}
+	link, err := s.GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if !link.Completed {
+		t.Error("suppressed merge_group check should still be marked completed internally")
 	}
 }
 

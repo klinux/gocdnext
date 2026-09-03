@@ -126,7 +126,7 @@ ORDER BY j.name, j.matrix_key NULLS FIRST;
 --     idx_job_runs_run_id + the partial idx_job_runs_status. Bounded by live
 --     runs, not total history.
 WITH active_runs AS (
-    SELECT r.id, r.pipeline_id, r.definition
+    SELECT r.id, r.pipeline_id, r.definition, r.cause
     FROM runs r
     WHERE r.status IN ('queued', 'running')
 ),
@@ -134,13 +134,15 @@ dispatchable_runs AS (
     -- Drop serial runs gated behind a running sibling: the dispatcher leaves
     -- them queued (scheduler.go serial gate), so their jobs can't reach an agent
     -- now and must not inflate the fleet. Mirrors the gate exactly — gated iff
-    -- THIS run is serial AND another run of the same pipeline is running. A
-    -- running run is never gated (it is the active one), so its own still-queued
-    -- stage jobs keep counting.
+    -- THIS run is serial, is NOT a GitHub merge-group run, AND another run of
+    -- the same pipeline is running. Merge-group runs are exempt because GitHub's
+    -- merge queue dispatches multiple group SHAs concurrently and waits on each
+    -- check independently.
     SELECT ar.id
     FROM active_runs ar
     WHERE NOT (
         ar.definition->>'Concurrency' = 'serial'
+        AND ar.cause IS DISTINCT FROM 'merge_group'
         AND EXISTS (
             SELECT 1 FROM runs sib
             WHERE sib.pipeline_id = ar.pipeline_id

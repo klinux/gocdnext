@@ -1,12 +1,11 @@
 // Package checks reports run state transitions back to GitHub as
 // Check Runs. Activated only when a GitHub App is configured AND the
-// run was triggered by a webhook (push or pull_request) on a repo
-// where the App is installed. Manual / upstream runs skip silently.
+// run was triggered by a webhook (push, pull_request, or merge_group)
+// on a repo where the App is installed. Manual / upstream runs skip silently.
 package checks
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -123,21 +122,22 @@ func (r *Reporter) ReportRunReopened(_ context.Context, runID uuid.UUID) {
 // the check was created. Returns nil when the run shouldn't produce
 // a check (manual/upstream cause, non-GitHub repo, App not
 // installed) so callers can't trivially tell "created" from
-// "skipped"; check logs for that.
+// "skipped"; check logs for that. merge_group declines are errors because
+// a missing check can strand GitHub's merge queue.
 func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
-	app := r.appClient()
-	if app == nil {
-		// Registry has no active github_app — admin deleted the
-		// row or env+DB both empty. Treated like "feature
-		// disabled": no work, no error.
-		return nil
-	}
 	ctxInfo, err := r.resolveRunContext(ctx, runID)
 	if err != nil {
 		return err
 	}
 	if ctxInfo == nil {
 		return nil // non-reportable cause, non-GitHub repo, etc.
+	}
+	app := r.appClient()
+	if app == nil {
+		if err := mergeGroupAppDisabledError(ctxInfo); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	// Effective mode: STICKY to the mode this run started in — a mid-run
@@ -156,6 +156,9 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 	// through the same App installation as the check run.
 	installationID, err := app.InstallationID(ctx, ctxInfo.owner, ctxInfo.repo)
 	if errors.Is(err, ghscm.ErrNoInstallation) {
+		if err := mergeGroupNoInstallationError(ctxInfo); err != nil {
+			return err
+		}
 		r.log.Info("checks: app not installed, skipping",
 			"run_id", runID, "repo", ctxInfo.owner+"/"+ctxInfo.repo)
 		return nil
@@ -280,6 +283,13 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 		return nil
 	}
 	status = current
+	suppress, err := r.suppressMergeGroupDestroyedCancellation(ctx, runID, status, link)
+	if err != nil {
+		return err
+	}
+	if suppress {
+		return nil
+	}
 
 	mode := normalizeMode(link.ReportingMode)
 	conclusion := conclusionFor(status)
@@ -617,119 +627,6 @@ func (r *Reporter) composeCheckOutput(ctx context.Context, runID uuid.UUID, stat
 	return title, summary
 }
 
-// runContext is the shape reporter needs: triggering material URL,
-// head SHA, pipeline name, counter, branch. Separated into a struct
-// so resolveRunContext can return nil cleanly when the run shouldn't
-// report.
-type runContext struct {
-	owner, repo   string
-	headSHA       string
-	projectSlug   string
-	pipelineName  string
-	branch        string
-	counter       int64
-	reportingMode string // project's current check_reporting_mode
-}
-
-func (r *Reporter) resolveRunContext(ctx context.Context, runID uuid.UUID) (*runContext, error) {
-	detail, err := r.store.GetRunDetail(ctx, runID, 0, nil)
-	if err != nil {
-		return nil, fmt.Errorf("get run detail: %w", err)
-	}
-	// Only report for webhook-driven runs. Manual/upstream runs
-	// don't have a specific head SHA to report against.
-	switch detail.Cause {
-	case string(domain.CauseWebhook), "pull_request":
-	default:
-		return nil, nil
-	}
-	if len(detail.Revisions) == 0 {
-		return nil, nil
-	}
-	var revisions map[string]struct {
-		Revision string `json:"revision"`
-		Branch   string `json:"branch"`
-	}
-	if err := json.Unmarshal(detail.Revisions, &revisions); err != nil {
-		return nil, fmt.Errorf("decode revisions: %w", err)
-	}
-	if len(revisions) == 0 {
-		return nil, nil
-	}
-
-	// Pick the first material that has a revision (usually the only
-	// one on a webhook-driven run). We also need its URL — query the
-	// store for the materials so we can resolve owner/repo.
-	mats, err := r.store.ListPipelineMaterials(ctx, detail.PipelineID)
-	if err != nil {
-		return nil, fmt.Errorf("list materials: %w", err)
-	}
-
-	var triggeringID uuid.UUID
-	var headSHA, branch string
-	for id, rev := range revisions {
-		if rev.Revision == "" {
-			continue
-		}
-		u, err := uuid.Parse(id)
-		if err != nil {
-			continue
-		}
-		triggeringID = u
-		headSHA = rev.Revision
-		branch = rev.Branch
-		break
-	}
-	if triggeringID == uuid.Nil {
-		return nil, nil
-	}
-
-	// For PR runs, head SHA from cause_detail is authoritative (the
-	// PR head commit, not the material's internal "revision" field).
-	if detail.Cause == "pull_request" && len(detail.CauseDetail) > 0 {
-		var cd map[string]any
-		if err := json.Unmarshal(detail.CauseDetail, &cd); err == nil {
-			if sha, ok := cd["pr_head_sha"].(string); ok && sha != "" {
-				headSHA = sha
-			}
-		}
-	}
-
-	var repoURL string
-	for _, m := range mats {
-		if m.ID == triggeringID {
-			var cfg domain.GitMaterial
-			if err := json.Unmarshal(m.Config, &cfg); err == nil {
-				repoURL = cfg.URL
-			}
-			break
-		}
-	}
-	if repoURL == "" {
-		return nil, nil
-	}
-	if !isGitHubHost(repoURL) {
-		// ParseRepoURL also accepts gitlab/bitbucket shaped URLs;
-		// Checks API is github-specific so skip anything else.
-		return nil, nil
-	}
-	owner, repo, err := ghscm.ParseRepoURL(repoURL)
-	if err != nil {
-		return nil, nil
-	}
-
-	return &runContext{
-		owner:         owner,
-		repo:          repo,
-		headSHA:       headSHA,
-		projectSlug:   detail.ProjectSlug,
-		pipelineName:  detail.PipelineName,
-		branch:        branch,
-		counter:       detail.Counter,
-		reportingMode: detail.CheckReportingMode,
-	}, nil
-}
-
 // Reporting-mode predicates. The effective mode is persisted per-run on the
 // github_check_runs row (never re-derived mid-run), so complete/reopen read it
 // back from the link. normalizeMode treats an empty value (a link pre-dating
@@ -753,21 +650,6 @@ func postsCommitStatus(mode string) bool {
 
 func (r *Reporter) detailsURL(runID uuid.UUID) string {
 	return r.publicBase + "/runs/" + runID.String()
-}
-
-// isGitHubHost returns true for URLs whose host is github.com. We
-// keep the check narrow — GitHub Enterprise host validation belongs
-// at a higher level where the operator configures the enterprise
-// APIBase, not here.
-func isGitHubHost(repoURL string) bool {
-	s := strings.ToLower(repoURL)
-	switch {
-	case strings.HasPrefix(s, "https://github.com/"),
-		strings.HasPrefix(s, "http://github.com/"),
-		strings.HasPrefix(s, "git@github.com:"):
-		return true
-	}
-	return false
 }
 
 // conclusionFor maps gocdnext's terminal states onto GitHub's

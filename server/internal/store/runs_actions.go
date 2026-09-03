@@ -42,9 +42,10 @@ var (
 // CancelOrigin records WHO/WHAT canceled a job_run (#207), persisted in
 // job_runs.cancel_origin. It is the discriminator RerunJob's revival uses: an
 // upstream rerun resurrects a downstream that a SYSTEM cancel stopped
-// (dependency / user_run / supersede / NULL) but NOT one the user deliberately
-// canceled ALONE (user_job). The full value set — user_job, user_run, supersede,
-// dependency, approval_expiry — mirrors the CHECK in migration 00079. Only the
+// (dependency / user_run / supersede / merge_group / NULL) but NOT one the user
+// deliberately canceled ALONE (user_job). The full value set — user_job,
+// user_run, supersede, dependency, approval_expiry, merge_group — mirrors the
+// CHECK in migrations 00079 + 00088. Only the
 // origins passed from Go (as query params) need constants; the rest are written
 // as literals in the cancel SQL where the row is stamped.
 type CancelOrigin string
@@ -52,6 +53,7 @@ type CancelOrigin string
 const (
 	cancelOriginSupersede  CancelOrigin = "supersede"
 	cancelOriginDependency CancelOrigin = "dependency"
+	CancelOriginMergeGroup CancelOrigin = "merge_group"
 	// cancelOriginApprovalExpiry stamps the run/jobs an approval-timeout sweep
 	// cancels (#208). It is a SYSTEM origin — an upstream rerun revives a job
 	// stopped this way (it is not the deliberate user_job single-job cancel).
@@ -968,10 +970,10 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 	}
 	// Reviving a run also clears any supersede state (#97): a run that was superseded
 	// (canceled + superseded_by) and then rerun is a live run again, not "superseded
-	// by #N". Resetting supersede_effects_{claimed,}_at too is load-bearing — without
-	// it a LATER re-supersede of this run could never claim its effects (the claim
-	// requires effects_at IS NULL), so its CancelJob frames / cleanup / audit would
-	// never fire.
+	// by #N". Resetting supersede/merge-group effect markers too is load-bearing —
+	// without it a LATER system-cancel of this revived run could never claim its
+	// effects (the claim requires effects_at IS NULL), so its CancelJob frames /
+	// cleanup / audit would never fire.
 	//
 	// Bumping service_generation here is what makes the generation-aware service
 	// cleanup work (#97): a still-pending supersede/terminal CleanupRunServices carries
@@ -985,6 +987,8 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 		SET status = 'running', finished_at = NULL,
 		    superseded_by = NULL, cancel_reason = NULL,
 		    supersede_effects_claimed_at = NULL, supersede_effects_at = NULL,
+		    merge_group_cancel_effects_claimed_at = NULL,
+		    merge_group_cancel_effects_at = NULL,
 		    service_generation = service_generation + 1
 		WHERE id = $1 AND status IN ('success', 'failed', 'canceled')
 	`, runID); err != nil {

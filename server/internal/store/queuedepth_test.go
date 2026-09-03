@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
@@ -164,5 +165,61 @@ func TestGetQueueDepth_DispatchableExcludesSerialGatedRuns(t *testing.T) {
 	}
 	if snap.DispatchableJobs != 1 {
 		t.Fatalf("dispatchable = %d with run2 serial-gated behind running run1, want 1", snap.DispatchableJobs)
+	}
+}
+
+// GitHub merge queue can send multiple merge_group SHAs for the same serial
+// pipeline. They must stay dispatchable independently so GitHub receives the
+// required check for each group instead of one queue SHA waiting behind another.
+func TestGetQueueDepth_DispatchableIncludesMergeGroupSerialRuns(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID := seedSerialPipeline(t, pool)
+	run1, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID:     pipelineID,
+		MaterialID:     materialID,
+		ModificationID: 1,
+		Revision:       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Branch:         "main",
+		Provider:       "github",
+		Delivery:       "d1",
+		TriggeredBy:    "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("create run1: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE runs SET status = 'running' WHERE id = $1`, run1.RunID); err != nil {
+		t.Fatalf("mark run1 running: %v", err)
+	}
+
+	detail, _ := json.Marshal(map[string]any{
+		"mg_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"mg_head_ref": "gh-readonly-queue/main/pr-2-bbbb",
+		"mg_base_sha": "1111111111111111111111111111111111111111",
+		"mg_base_ref": "main",
+	})
+	if _, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID:     pipelineID,
+		MaterialID:     materialID,
+		ModificationID: 2,
+		Revision:       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Branch:         "gh-readonly-queue/main/pr-2-bbbb",
+		Provider:       "github",
+		Delivery:       "d2",
+		TriggeredBy:    "system:webhook",
+		Cause:          string(domain.CauseMergeGroup),
+		CauseDetail:    detail,
+	}); err != nil {
+		t.Fatalf("create merge_group run: %v", err)
+	}
+
+	snap, err := s.GetQueueDepth(ctx)
+	if err != nil {
+		t.Fatalf("queue depth: %v", err)
+	}
+	if snap.DispatchableJobs != 2 {
+		t.Fatalf("dispatchable = %d with merge_group behind serial run, want 2", snap.DispatchableJobs)
 	}
 }

@@ -173,8 +173,9 @@ type Pipeline struct {
 	// `when.event:` field; empty means "push only". Ignored for
 	// pipelines that declare an explicit git material — those keep
 	// full control via the material's own events list. Accepted
-	// values: "push", "pull_request", "tag" (since v0.10.0 — tag
-	// pushes match URL-only, branch-agnostic).
+	// values: "push", "pull_request", "merge_group", "tag" (tag
+	// pushes match URL-only, branch-agnostic; merge_group runs match
+	// the GitHub merge queue base ref and report against the queue SHA).
 	TriggerEvents []string
 	// TriggerBranches whitelists branches that fire the pipeline's
 	// implicit project material. Sourced from YAML's top-level
@@ -372,10 +373,12 @@ type GitMaterial struct {
 	// Events enumerates the SCM events that fire this material.
 	// Accepted values: "push" (branch push — default when omitted),
 	// "pull_request" (PR open/sync/reopen, matched against the PR's
-	// base ref), "tag" (any tag push for the repo, branch-agnostic —
-	// the webhook handler matches by URL only and filters down to
-	// materials whose Events contains "tag"). Empty defaults to
-	// ["push"] in the parser.
+	// base ref), "merge_group" (GitHub merge queue checks_requested,
+	// matched against the merge group's base ref, reporting the same
+	// check context against the queue SHA), "tag" (any tag push for
+	// the repo, branch-agnostic — the webhook handler matches by URL
+	// only and filters down to materials whose Events contains "tag").
+	// Empty defaults to ["push"] in the parser.
 	Events              []string `json:"events,omitempty"`
 	AutoRegisterWebhook bool     `json:"auto_register_webhook,omitempty"`
 	SecretRef           string   `json:"secret_ref,omitempty"`
@@ -809,6 +812,7 @@ type BuildCause string
 const (
 	CauseWebhook     BuildCause = "webhook"
 	CausePullRequest BuildCause = "pull_request"
+	CauseMergeGroup  BuildCause = "merge_group"
 	CauseTag         BuildCause = "tag"
 	CauseUpstream    BuildCause = "upstream"
 	CauseManual      BuildCause = "manual"
