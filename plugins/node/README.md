@@ -1,9 +1,18 @@
-# `gocdnext/node` v2
+# `gocdnext/node` v3
 
-Node.js install + run runner. Auto-detects pnpm / npm / yarn (v3+)
-from the lockfile, sets up corepack + workspace-local store, runs
-the dependency install (skippable), then executes your shell command.
+Node.js install + run runner. Selects the **node major** from the
+project's own declaration (`engines.node` / `.nvmrc` / `.node-version`)
+across the baked 20/22/24, auto-detects the manager (**pnpm / npm /
+yarn v3+ / bun**) from the lockfile, sets up corepack (or the baked bun)
++ a workspace-local store, runs the dependency install (skippable), then
+executes your shell command.
 
+> **v3 vs v2**: adds **bun** + **node-version selection**; base moved
+> alpine → debian-slim (glibc) with `build-essential` + `python3` so
+> node-gyp native builds work. Node/bun are **baked** — selection is a
+> PATH switch with no runtime download. `@v2` stays available for
+> pipelines pinned to it.
+>
 > **Breaking change from v1**: see [migration](#migration-from-v1) below.
 
 ## Usage
@@ -12,7 +21,7 @@ the dependency install (skippable), then executes your shell command.
 jobs:
   deps:
     stage: install
-    uses: gocdnext/node@v2
+    uses: gocdnext/node@v3
     with:
       working-dir: web
       # install: true (default) + command: "" (default) →
@@ -26,7 +35,7 @@ jobs:
 
   typecheck:
     stage: lint
-    uses: gocdnext/node@v2
+    uses: gocdnext/node@v3
     needs: [deps]
     needs_artifacts:
       - from_job: deps
@@ -38,7 +47,7 @@ jobs:
 
   unit:
     stage: test
-    uses: gocdnext/node@v2
+    uses: gocdnext/node@v3
     needs: [deps]
     needs_artifacts:
       - from_job: deps
@@ -53,12 +62,13 @@ jobs:
 
 | Setting       | Env var              | Default | Notes                                              |
 |---------------|----------------------|---------|----------------------------------------------------|
-| `command`     | `PLUGIN_COMMAND`     | `""`    | Shell command via `bash -lc` — `&&` / pipes / env expansion all work. NOT prefixed with a manager. |
-| `working-dir` | `PLUGIN_WORKING_DIR` | `.`     | Path under `/workspace`. |
-| `manager`     | `PLUGIN_MANAGER`     | `auto`  | `pnpm` / `npm` / `yarn` (v3+) / `none` / `auto`. Auto detects via lockfile (priority `pnpm-lock.yaml` > `yarn.lock` + `.yarnrc.yml` > `package-lock.json`). `none` skips install entirely. |
-| `install`     | `PLUGIN_INSTALL`     | `true`  | Run the manager's frozen install before `command`. Set `false` to reuse a `node_modules/` artifact. |
-| `frozen`      | `PLUGIN_FROZEN`      | `true`  | pnpm → `--frozen-lockfile`; npm → `npm ci` vs `npm install`; yarn v3+ → `--immutable`. |
-| `prod`        | `PLUGIN_PROD`        | `false` | Skip dev deps. pnpm → `--prod`; npm → `--omit=dev`; yarn v3+ → `yarn workspaces focus --all --production` (requires the `workspace-tools` plugin: bundled in Yarn 4, opt-in via `yarn plugin import workspace-tools` in Yarn 3). |
+| `command`      | `PLUGIN_COMMAND`      | `""`    | Shell command via `bash -lc` — `&&` / pipes / env expansion all work. NOT prefixed with a manager. |
+| `working-dir`  | `PLUGIN_WORKING_DIR`  | `.`     | Path under `/workspace`. |
+| `node-version` | `PLUGIN_NODE_VERSION` | `auto`  | `20` / `22` / `24` / `auto`. `auto` reads `engines.node`, else `.node-version` / `.nvmrc`; defaults to 22. Explicit value overrides the declaration (printed). An unbaked major fails loud — no silent fallback. PATH switch, no download. |
+| `manager`      | `PLUGIN_MANAGER`      | `auto`  | `pnpm` / `npm` / `yarn` (v3+) / `bun` / `none` / `auto`. Auto detects via lockfile (priority `bun.lock`/`bun.lockb` > `pnpm-lock.yaml` > `yarn.lock` + `.yarnrc.yml` > `package-lock.json`; a `packageManager: "bun@x"` with no lockfile also picks bun). `none` skips install entirely. |
+| `install`      | `PLUGIN_INSTALL`      | `true`  | Run the manager's frozen install before `command`. Set `false` to reuse a `node_modules/` artifact. |
+| `frozen`       | `PLUGIN_FROZEN`       | `true`  | pnpm → `--frozen-lockfile`; npm → `npm ci` vs `npm install`; yarn v3+ → `--immutable`; bun → `--frozen-lockfile`. |
+| `prod`         | `PLUGIN_PROD`         | `false` | Skip dev deps. pnpm → `--prod`; npm → `--omit=dev`; bun → `--production`; yarn v3+ → `yarn workspaces focus --all --production` (requires the `workspace-tools` plugin: bundled in Yarn 4, opt-in via `yarn plugin import workspace-tools` in Yarn 3). |
 
 Boolean inputs accept `true`/`false`/`1`/`0`/`yes`/`no` (case-insensitive).
 Typos like `flase` are rejected at plugin start — silent intent-flips
@@ -77,6 +87,43 @@ listing the accepted set.
   upgrade to yarn v3+, or fall back to `manager: none` + a script.
 - Auto-detect with no lockfile fails with a clear "add a lockfile or
   set manager explicitly" message rather than guessing.
+- A `node-version` (or `engines.node`) major that isn't baked into the
+  image (only **20 / 22 / 24**) fails loud with the baked set — never a
+  silent fallback to the default node.
+
+## Node version
+
+The image bakes node **20**, **22**, and **24**; the entrypoint selects
+one per run and points `PATH` at it — a switch, not a download. Source
+of truth, in order:
+
+1. `node-version:` input (explicit override).
+2. `engines.node` in `package.json` — e.g. `"24.x"`, `"^24"`, `">=24"`.
+3. `.node-version` / `.nvmrc`.
+4. Default **22**.
+
+`engines.node` is evaluated with the **real `semver`** bundled in the
+image's npm (no download), against the baked versions — so minor/patch
+bounds, operator spaces and hyphen ranges are honored exactly, not
+approximated. The plugin picks the **smallest baked node version that
+satisfies the range**:
+
+- `">=18"` → node 20 (20 satisfies; not rejected just because 18 isn't baked);
+- `"18 - 22"`, `">= 18"` (spaces / hyphen ranges) → node 20;
+- `">=20.99.0"` → node 22 (baked 20 is 20.20.2 which does **not** satisfy →
+  skipped; the old major-only logic wrongly ran 20 here);
+- `">=18 <20"`, `"^18"`, `"18.x"`, `"<20"`, `">24"`, `">=24.99.0"` → **fail
+  loud** (no baked version satisfies) — never a version the range excludes;
+- an invalid range → fail loud;
+- a value with **no numeric major** (an `lts/*` alias, `*`) falls back to
+  the default — not a hard error.
+
+`.node-version` / `.nvmrc` and an explicit `node-version:` are treated as
+**exact** majors: an unbaked one fails loud. An explicit `node-version:`
+that disagrees with `engines.node` wins and is printed so the divergence
+is visible. Need a version that isn't baked? Pin a supported major, or run
+the job on a custom `image:` (bake your own CI image from your app's
+Dockerfile base stage).
 
 ## Cache paths per manager
 
@@ -88,6 +135,7 @@ path so the platform's `cache:` block can tar it:
 | pnpm     | `.pnpm-store/`    |
 | npm      | `.npm-cache/`     |
 | yarn v3+ | `.yarn/cache/`    |
+| bun      | `.bun-cache/`     |
 
 Combine with `cache: { key: <manager>-{{ hash "<lockfile>" }} }` for
 deterministic invalidation on lockfile change (gocdnext ≥ v0.4.37).

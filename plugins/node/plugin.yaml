@@ -3,6 +3,10 @@
 # image still reads the same PLUGIN_* env vars at runtime; this
 # file is metadata, not code.
 #
+# v3 adds multi-version node (20/22/24, auto-selected from engines.node)
+# and bun as a manager; see the description field below. The v2 notes
+# (still in force) follow.
+#
 # v2 BREAKING CHANGES vs v1:
 #   - `command:` is now a SHELL command (run via bash -lc), no longer
 #     auto-prefixed with `pnpm`. Operators upgrading from v1 must
@@ -11,8 +15,8 @@
 #     altogether and rely on the new `install:` flag.
 #   - New `install:` flag (default true) does dependency install
 #     automatically, separated from `command:`. v1 conflated the two.
-#   - Multi-manager: pnpm | npm | yarn (v3+) | none, auto-detected
-#     from lockfile.
+#   - Multi-manager: pnpm | npm | yarn (v3+) | bun | none, auto-detected
+#     from lockfile (bun added in v3).
 #   - Yarn v1 is REJECTED with a clear error — maintenance-only
 #     upstream, not worth the test matrix. Operators on v1 either
 #     migrate to v3+ or use `manager: none`.
@@ -20,17 +24,23 @@
 # See CHANGELOG entry for v0.4.39 for the side-by-side migration.
 name: node
 category: build
-image_tag: v2
+image_tag: v3
 description: >
   Node.js install + run with multi-manager support (pnpm, npm,
-  yarn v3+). Auto-detects the manager from the lockfile, sets up
-  corepack + workspace-local store, runs frozen-lockfile install
-  (skippable), then executes the user's shell command via
-  `bash -lc`. **v2 BREAKING vs v1:** `command:` is a shell command
-  (not a pnpm subcommand) and is no longer auto-prefixed; new
-  `install:` flag (default true) separates install from `command:`;
-  yarn v1 is rejected with a migration message (use v3+ or set
-  `manager: none`).
+  yarn v3+, bun) AND multi-version node. Bakes node 20/22/24 in one
+  image and selects the major from the project's own declaration
+  (`engines.node` / `.nvmrc` / `.node-version`) or the `node-version:`
+  input — a pure PATH switch, no runtime download (same convention as
+  jdk-base / dotnet). Auto-detects the manager from the lockfile, sets
+  up corepack (pnpm/yarn) or the baked bun, redirects the store to a
+  workspace-local cache, runs frozen-lockfile install (skippable), then
+  executes the user's shell command via `bash -lc`. **v3 vs v2:** adds
+  bun + node-version selection; base moves alpine → debian-slim (glibc)
+  with build-essential + python3 for node-gyp. `@v2` stays available
+  for pipelines pinned to it. **v2 BREAKING vs v1** (still applies):
+  `command:` is a shell command (not a pnpm subcommand); `install:`
+  flag separates install from `command:`; yarn v1 is rejected (use v3+
+  or `manager: none`).
 
 inputs:
   command:
@@ -49,17 +59,33 @@ inputs:
     description: >
       Directory under the workspace to cd into before running the
       install + command. Monorepos with a sub-app set this.
+  node-version:
+    required: false
+    default: auto
+    description: >
+      Node.js major to run on: `20` | `22` | `24` | `auto`. `auto`
+      (default) reads the project's own declaration — `engines.node`
+      in package.json, else `.node-version` / `.nvmrc` — the same way
+      the dotnet plugin reads global.json; falls back to 22 when the
+      project declares nothing. An explicit value here overrides the
+      declaration (printed so the divergence is visible). A major that
+      isn't baked into the image (only 20/22/24 are) fails LOUD rather
+      than silently running on the default — pin a supported major or
+      run the job on a custom `image:`. Selection is a PATH switch with
+      no runtime download.
   manager:
     required: false
     default: auto
     description: >
-      Package manager to use: `pnpm` | `npm` | `yarn` | `none` | `auto`.
-      `auto` detects from lockfile (priority: pnpm-lock.yaml >
-      yarn.lock > package-lock.json). `none` skips install + setup
-      entirely — useful for jobs that run plain `node script.js` or
-      pre-built tooling without touching the package manager. Yarn v1
-      is rejected with a migration message; use `none` + script if
-      you're stuck on it.
+      Package manager to use: `pnpm` | `npm` | `yarn` | `bun` | `none`
+      | `auto`. `auto` detects from lockfile (priority: bun.lock/
+      bun.lockb > pnpm-lock.yaml > yarn.lock > package-lock.json; a
+      `packageManager: "bun@x"` with no lockfile also selects bun).
+      corepack manages pnpm/yarn; bun is baked into the image (corepack
+      can't manage it). `none` skips install + setup entirely — useful
+      for jobs that run plain `node script.js` or pre-built tooling.
+      Yarn v1 is rejected with a migration message; use `none` + script
+      if you're stuck on it.
   install:
     required: false
     default: "true"
@@ -78,6 +104,7 @@ inputs:
         - pnpm → `--frozen-lockfile`
         - npm  → `npm ci` (vs `npm install`)
         - yarn v3+ → `--immutable`
+        - bun  → `--frozen-lockfile`
       Set `false` to allow the manager to update the lockfile during
       install. Almost always you want `true` in CI — a drifted
       lockfile should fail the build, not silently get rewritten.
@@ -88,6 +115,7 @@ inputs:
       Skip development dependencies for production builds. Per-manager:
         - pnpm → `--prod`
         - npm  → `--omit=dev`
+        - bun  → `--production`
         - yarn v3+ → `yarn workspaces focus --all --production`
           (NOT `yarn install --production` — Yarn deprecated that
           flag in v2 and silently maps it to focus anyway. The
@@ -118,7 +146,7 @@ examples:
     yaml: |
       install:
         stage: install
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
         cache:
           - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
             paths: [.pnpm-store]
@@ -131,7 +159,7 @@ examples:
 
       lint:
         stage: lint
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
         needs: [install]
         needs_artifacts:
           - from_job: install
@@ -153,7 +181,7 @@ examples:
     yaml: |
       lint:
         stage: lint
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
         cache:
           - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
             paths: [.pnpm-store]
@@ -162,6 +190,24 @@ examples:
           # --frozen-lockfile happens automatically before command.
           command: pnpm --filter @app/web lint
 
+  - name: bun on node 24 (both auto-detected)
+    description: >
+      A bun project that declares `engines.node: "24.x"` and
+      `packageManager: "bun@1.3.9"` needs zero plugin config: node 24
+      is selected from engines.node and bun from the lockfile /
+      packageManager field. `bun install --frozen-lockfile` runs
+      automatically, then the command. No runtime toolchain download —
+      node 24 + bun are baked into the image.
+    yaml: |
+      test:
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
+        cache:
+          - key: bun-cache-{{ hash "bun.lock" }}
+            paths: [.bun-cache]
+        with:
+          # node-version: auto → engines.node "24.x"; manager: auto → bun
+          command: bun run test
+
   - name: shell-chained command (codegen + build)
     description: >
       `command:` is shell-evaluated via `bash -lc`, so `&&`, pipes,
@@ -169,7 +215,7 @@ examples:
       separate jobs to chain commands" pattern.
     yaml: |
       build:
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
         cache:
           - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
             paths: [.pnpm-store]
@@ -189,7 +235,7 @@ examples:
       tsc which are devDependencies.
     yaml: |
       docker-build:
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
         with:
           prod: true
           command: pnpm --filter @app/web build
@@ -202,7 +248,7 @@ examples:
       separate flag on npm.
     yaml: |
       lint:
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
         cache:
           - key: npm-cache-{{ hash "package-lock.json" }}
             paths: [.npm-cache]
