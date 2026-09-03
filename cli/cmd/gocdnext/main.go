@@ -19,6 +19,7 @@ import (
 	"github.com/gocdnext/gocdnext/cli/internal/apply"
 	"github.com/gocdnext/gocdnext/cli/internal/cliconfig"
 	"github.com/gocdnext/gocdnext/cli/internal/runlocal"
+	"github.com/gocdnext/gocdnext/cli/internal/scaffold"
 	"github.com/gocdnext/gocdnext/cli/internal/secrets"
 	"github.com/gocdnext/gocdnext/cli/internal/validate"
 )
@@ -37,6 +38,7 @@ func main() {
 
 	root.AddCommand(
 		validateCmd(),
+		scaffoldCmd(),
 		runLocalCmd(),
 		applyCmd(),
 		secretCmd(),
@@ -65,6 +67,77 @@ func validateCmd() *cobra.Command {
 			return validate.Run(c.OutOrStdout(), path)
 		},
 	}
+}
+
+func scaffoldCmd() *cobra.Command {
+	var (
+		dryRun        bool
+		force         bool
+		defaultBranch string
+	)
+	cmd := &cobra.Command{
+		Use:   "scaffold [path]",
+		Short: "Detect a repo's stack and generate a starter .gocdnext/ set",
+		Long: strings.TrimSpace(`
+Statically detect the stack in a repo checkout (Node / Go, package
+manager, Dockerfile) and generate a starter set of pipelines —
+build-pr, build, security. Deploy is intentionally left to you.
+
+Detection only reads manifest files (package.json, go.mod, ...); it
+never runs the repo's code. Generated files are validated with the
+real parser before writing, and are a STARTING POINT — review, fill
+the TODO placeholders (image registry), and commit.
+`),
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			w := c.OutOrStdout()
+
+			stack, err := scaffold.Detect(path)
+			if err != nil {
+				return err
+			}
+			if defaultBranch != "" {
+				stack.DefaultBranch = defaultBranch
+			}
+			fmt.Fprintf(w, "detected: %s\n", stack.Summary())
+			for _, warn := range stack.Warnings {
+				fmt.Fprintf(w, "  warning: %s\n", warn)
+			}
+
+			files, err := scaffold.Generate(stack)
+			if err != nil {
+				return err
+			}
+
+			if dryRun {
+				for _, f := range files {
+					fmt.Fprintf(w, "\n--- .gocdnext/%s ---\n%s", f.Name, f.Content)
+				}
+				fmt.Fprintln(w, "\n(dry-run — nothing written)")
+				return nil
+			}
+
+			written, err := scaffold.Write(path, files, force)
+			if err != nil {
+				return err
+			}
+			for _, p := range written {
+				fmt.Fprintf(w, "wrote %s\n", p)
+			}
+			fmt.Fprintln(w, "\nnext: review the files (fill the image registry TODO), then")
+			fmt.Fprintln(w, "  gocdnext validate    # check them")
+			fmt.Fprintln(w, "  git add .gocdnext && commit    # open a PR to see the checks run")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the generated files without writing them")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing .gocdnext/ files")
+	cmd.Flags().StringVar(&defaultBranch, "default-branch", "main", "branch the build pipeline triggers on")
+	return cmd
 }
 
 func runLocalCmd() *cobra.Command {

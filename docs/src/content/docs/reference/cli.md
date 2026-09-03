@@ -27,6 +27,7 @@ Or download a prebuilt binary from the [release](https://github.com/klinux/gocdn
 gocdnext --version
 gocdnext login  --server <url>  [flags...]
 gocdnext logout --server <url>
+gocdnext scaffold [path]  [--dry-run] [--force] [--default-branch <b>]
 gocdnext validate [path]
 gocdnext run-local [file]
 gocdnext apply [path]   --slug <slug>     [flags...]
@@ -75,6 +76,31 @@ GOCDNEXT_TOKEN="$CI_API_TOKEN" gocdnext apply . --slug myapp --server https://ci
 **not** revoke the token — do that in the web UI.
 
 A `401` from any command prints a hint pointing back at `login`.
+
+## `scaffold` — generate a starter pipeline set
+
+Statically detects a repo's stack (Node / Go, package manager,
+Dockerfile) and writes a starter set of pipelines to `.gocdnext/` —
+**build-pr**, **build**, **security**. Deploy is intentionally left to
+you (targets, secrets and approval policy are too environment-specific
+to guess). Detection only reads manifest files (`package.json`,
+`go.mod`, lockfiles); it never runs the repo's code.
+
+```bash
+cd my-new-app
+gocdnext scaffold                        # detect + write .gocdnext/
+gocdnext scaffold --dry-run              # print the files without writing
+gocdnext scaffold --force                # overwrite existing .gocdnext/ files
+gocdnext scaffold --default-branch main  # branch the build pipeline triggers on
+```
+
+Every generated file is validated with the real parser before it's
+written, and each is a **starting point** — review it, fill the TODO
+placeholders (e.g. the image registry), then `gocdnext validate` and
+commit. Node uses the `node@v3` plugin (node version + manager come from
+`engines.node` / the lockfile); the image job appears only when a
+`Dockerfile` is present. Missing `test`/`build` scripts are reported as
+warnings, not guessed.
 
 ## `apply` — upload pipelines
 
