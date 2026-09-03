@@ -8,6 +8,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **`gocdnext scaffold` — generate a starter pipeline set from a repo.** Statically
+  detects a checkout's stack (Node / Go, package manager, Dockerfile — reads manifests
+  only, never runs repo code) and writes a starter `.gocdnext/` set — **build-pr, build,
+  security** (no deploy; that stays the dev's call). Node uses `node@v3` (version/manager
+  from `engines.node`/lockfile), the image job appears only with a Dockerfile, and image
+  registry is a commented TODO. Every generated file is validated with the real parser
+  before writing; `--dry-run` previews, `--force` overwrites, missing scripts are warned
+  (not guessed).
+
 ## v0.96.0 — 2026-09-02
 
 ### Changed
