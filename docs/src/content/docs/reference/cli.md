@@ -19,7 +19,30 @@ go install github.com/klinux/gocdnext/cli/cmd/gocdnext@latest
 gocdnext --version
 ```
 
-Or download a prebuilt binary from the [release](https://github.com/klinux/gocdnext/releases) page.
+No Go toolchain? Download a prebuilt binary from the
+[releases](https://github.com/klinux/gocdnext/releases) page — each release
+carries `gocdnext_<version>_<os>_<arch>` for linux/darwin/windows on
+amd64/arm64, plus a `checksums.txt` and its keyless Sigstore signature:
+
+```bash
+v=0.96.0   # the release you're installing
+base="https://github.com/klinux/gocdnext/releases/download/v${v}"
+curl -LO "${base}/gocdnext_${v}_linux_amd64"
+curl -LO "${base}/checksums.txt"
+
+# Optional but recommended: verify the checksums file was signed by the
+# release workflow, then verify your binary against it.
+curl -LO "${base}/checksums.txt.sig"
+curl -LO "${base}/checksums.txt.pem"
+cosign verify-blob checksums.txt \
+  --certificate checksums.txt.pem --signature checksums.txt.sig \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/klinux/gocdnext/.github/workflows/release.yml@refs/tags/v'
+sha256sum --ignore-missing -c checksums.txt
+
+install -m0755 "gocdnext_${v}_linux_amd64" /usr/local/bin/gocdnext
+gocdnext --version
+```
 
 ## Top-level shape
 

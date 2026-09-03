@@ -18,6 +18,11 @@ convention that minor bumps may carry breaking changes until 1.0).
   registry is a commented TODO. Every generated file is validated with the real parser
   before writing; `--dry-run` previews, `--force` overwrites, missing scripts are warned
   (not guessed).
+- **Prebuilt CLI binaries on every release.** The Release workflow now
+  cross-compiles `gocdnext` for linux/darwin/windows on amd64/arm64 and
+  attaches them to the GitHub Release alongside a `checksums.txt` and its
+  keyless Sigstore signature (`cosign verify-blob`). The docs' "download a
+  prebuilt binary" is now a real artefact — no Go toolchain required.
 
 ## v0.96.0 — 2026-09-02
 
