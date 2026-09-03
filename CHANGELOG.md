@@ -8,6 +8,29 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Changed
+
+- **`node` plugin v3 — multi-version node + bun.** The node plugin now
+  bakes node **20 / 22 / 24** in one image and selects the major from the
+  project's own declaration (`engines.node` → `.node-version`/`.nvmrc`, or
+  an explicit `node-version:` input) as a PATH switch with **no runtime
+  download** — the same "one image, select the version" convention as
+  `jdk-base` and `dotnet`. Adds **bun** as a first-class manager
+  (auto-detected from `bun.lock`/`bun.lockb` or `packageManager: "bun@x"`;
+  `install`/`frozen`/`prod` map to `bun install`/`--frozen-lockfile`/
+  `--production`; cache at `.bun-cache`), with the bun binary baked
+  (corepack can't manage bun). Base moves alpine → debian-slim (glibc)
+  with `build-essential` + `python3` so node-gyp native builds work out of
+  the box. `engines.node` is evaluated with the image's bundled `semver`
+  (minor/patch, operator spaces, hyphen ranges all honored) and resolved
+  to the smallest baked version that satisfies it (`">=18"` → 20,
+  `">=20.99.0"` → 22); a range no baked version satisfies (`"^18"`,
+  `">=18 <20"`, `"<20"`, `">=24.99.0"`), an unbaked exact `.nvmrc`, or
+  explicit `node-version:` garbage fails loud rather than silently running
+  a version the project didn't ask for (a non-numeric `lts/*` alias falls
+  back to the default). Published as `@v3`; `@v2` stays for pinned
+  pipelines.
+
 ## v0.95.0 — 2026-09-02
 
 ### Added

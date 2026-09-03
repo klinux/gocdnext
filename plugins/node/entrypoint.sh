@@ -1,7 +1,12 @@
 #!/bin/bash
-# gocdnext/node v2 — Node.js install + run runner.
+# gocdnext/node v3 — Node.js install + run runner. Selects the node major
+# (select-node.sh) from engines.node/.nvmrc across baked 20/22/24, and
+# supports pnpm/npm/yarn v3+/bun as managers.
 #
-# v2 is a BREAKING REWRITE of v1. v1 was a thin `pnpm <command>`
+# The v2 contract below still holds (command is a shell command, install
+# flag, yarn v1 rejected); v3 adds node-version selection + bun.
+#
+# v2 was a BREAKING REWRITE of v1. v1 was a thin `pnpm <command>`
 # prefixer; v2 mirrors the python plugin's "install + run via shell"
 # contract:
 #
@@ -13,7 +18,7 @@
 #                                   work — NOT prefixed with pnpm/npm.
 #   PLUGIN_WORKING_DIR  (optional)  directory under workspace to cd into.
 #                                   Default ".".
-#   PLUGIN_MANAGER      (optional)  pnpm | npm | yarn | none | auto.
+#   PLUGIN_MANAGER      (optional)  pnpm | npm | yarn | bun | none | auto.
 #                                   Default "auto" detects from lockfile
 #                                   (pnpm-lock.yaml > yarn.lock >
 #                                   package-lock.json). "none" skips
@@ -104,6 +109,13 @@ cd "${WORKING_DIR}"
 # and other plugins apply.
 git config --global --add safe.directory '*' 2>/dev/null || true
 
+# ─── node version selection ────────────────────────────────────────────
+# Pick the node major (engines.node / .nvmrc / node-version input) and
+# point PATH at the baked toolchain BEFORE any manager runs. select-node.sh
+# sits next to this entrypoint — same dir in the image (/usr/local/bin)
+# AND the test harness (the plugin dir).
+. "$(cd "$(dirname "$0")" && pwd)/select-node.sh"
+
 # ─── manager detection ─────────────────────────────────────────────────
 # Auto-detect priority: pnpm > yarn > npm > error. Lockfile presence
 # wins over `packageManager:` field in package.json — the lockfile is
@@ -113,6 +125,10 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 # Yarn v3+ vs v1 detection via `.yarnrc.yml` (v3+ uses YAML config,
 # v1 uses plain `.yarnrc`).
 detect_manager() {
+    # bun first: its lockfile is unambiguous (bun.lock text since 1.2,
+    # bun.lockb legacy binary). corepack does NOT manage bun, so it's
+    # detected here and skips the corepack path below.
+    if [ -f bun.lock ] || [ -f bun.lockb ]; then echo bun; return; fi
     if [ -f pnpm-lock.yaml ]; then echo pnpm; return; fi
     if [ -f yarn.lock ]; then
         if [ -f .yarnrc.yml ]; then echo yarn; return; fi
@@ -120,6 +136,13 @@ detect_manager() {
         return
     fi
     if [ -f package-lock.json ]; then echo npm; return; fi
+    # No lockfile, but package.json pins bun via packageManager (fresh
+    # repo before first install). corepack manages pnpm/yarn versions
+    # this way but rejects bun — so bun is picked up here instead.
+    if grep -qE '"packageManager"[[:space:]]*:[[:space:]]*"bun@' package.json 2>/dev/null; then
+        echo bun
+        return
+    fi
     echo unknown
 }
 
@@ -159,10 +182,10 @@ fi
 # ran with no deps and the run finished green. Closing the gate here
 # is the v0.4.39 HIGH fix.
 case "${MANAGER}" in
-    pnpm|npm|yarn|none) ;;
+    pnpm|npm|yarn|bun|none) ;;
     *)
         echo "gocdnext/node: invalid manager '${MANAGER_INPUT}'" >&2
-        echo "  accepted: pnpm | npm | yarn | none | auto" >&2
+        echo "  accepted: pnpm | npm | yarn | bun | none | auto" >&2
         exit 2
         ;;
 esac
@@ -190,6 +213,19 @@ if [ -z "${COMMAND}" ]; then
     fi
 fi
 
+# A `packageManager:` field for a DIFFERENT tool than the one detected
+# is a conflict: corepack would choke ("Unsupported package manager" for
+# bun) or prepare the wrong tool and then the real one fails. Catch it
+# loud. (Skip for manager:none — the operator opted out of manager logic.)
+if [ "${MANAGER}" != "none" ]; then
+    pkg_mgr="$(grep -oE '"packageManager"[[:space:]]*:[[:space:]]*"[a-zA-Z]+@' package.json 2>/dev/null | sed -E 's/.*"([a-zA-Z]+)@/\1/' || true)"
+    if [ -n "${pkg_mgr}" ] && [ "${pkg_mgr}" != "${MANAGER}" ]; then
+        echo "gocdnext/node: lockfile/packageManager conflict — detected manager '${MANAGER}' but package.json packageManager is '${pkg_mgr}'" >&2
+        echo "  make them agree (matching lockfile + packageManager), or set manager: explicitly" >&2
+        exit 2
+    fi
+fi
+
 echo "==> manager: ${MANAGER}"
 
 # ─── setup ─────────────────────────────────────────────────────────────
@@ -200,12 +236,22 @@ echo "==> manager: ${MANAGER}"
 case "${MANAGER}" in
     pnpm|yarn)
         corepack enable
-        # --activate forces the binary to be fetched now so the first
-        # invocation doesn't fail with a stale shim. Reads the
-        # `packageManager:` field from package.json to pick the version.
-        corepack prepare --activate
+        # `corepack prepare --activate` with NO argument reads the
+        # `packageManager:` field to pick the version — and ERRORS when
+        # the field is absent ("No version specified"). Many repos have a
+        # lockfile but no packageManager pin, so only activate when a pin
+        # exists (deterministic); otherwise the shims corepack just
+        # enabled run its built-in default. Warn so the operator knows to
+        # pin for cross-image reproducibility.
+        if grep -qE '"packageManager"[[:space:]]*:' package.json 2>/dev/null; then
+            corepack prepare --activate
+        else
+            echo "gocdnext/node: no packageManager in package.json — ${MANAGER} runs corepack's built-in default; pin \"packageManager\": \"${MANAGER}@<version>\" for reproducible CI" >&2
+        fi
         ;;
-    npm|none)
+    npm|bun|none)
+        # npm ships with node; bun is baked into the image (corepack
+        # does NOT manage bun); none is on its own.
         ;;
 esac
 
@@ -228,6 +274,23 @@ case "${MANAGER}" in
         # Yarn v3+ stores under .yarn/cache by default — already
         # workspace-relative. No override needed.
         :
+        ;;
+    bun)
+        # Redirect bun's global install cache into the workspace so the
+        # platform `cache:` block can tar it (default is ~/.bun/install/
+        # cache, unreachable by the agent's tar step). Mirrors pnpm's
+        # .pnpm-store redirect.
+        export BUN_INSTALL_CACHE_DIR="${BUN_INSTALL_CACHE_DIR:-.bun-cache}"
+        mkdir -p "${BUN_INSTALL_CACHE_DIR}"
+        # bun isn't corepack-version-managed — the baked binary runs
+        # regardless of a `packageManager: "bun@x"` pin. Warn on drift so
+        # the need for an exact version is visible (use a custom image:).
+        _bun_pin="$(grep -oE '"packageManager"[[:space:]]*:[[:space:]]*"bun@[^"]+"' package.json 2>/dev/null | sed -E 's/.*bun@([^"]+)".*/\1/' || true)"
+        _bun_run="$(bun --version 2>/dev/null || echo '?')"
+        if [ -n "${_bun_pin}" ] && [ "${_bun_pin}" != "${_bun_run}" ]; then
+            echo "gocdnext/node: package.json pins bun@${_bun_pin} but the image ships bun ${_bun_run} (bun isn't version-managed here) — run on a custom image: if you need that exact version" >&2
+        fi
+        unset _bun_pin _bun_run
         ;;
 esac
 
@@ -306,6 +369,15 @@ run_install() {
             fi
             echo "==> install: yarn ${args[*]}"
             yarn "${args[@]}"
+            ;;
+        bun)
+            # bun's own dialect: --frozen-lockfile (frozen) mirrors
+            # pnpm; --production skips devDependencies (bun's prod flag).
+            local args=(install)
+            if [ "${FROZEN}" = "true" ]; then args+=(--frozen-lockfile); fi
+            if [ "${PROD}" = "true" ]; then args+=(--production); fi
+            echo "==> install: bun ${args[*]}"
+            bun "${args[@]}"
             ;;
         none)
             echo "==> install: skipped (manager: none)"
