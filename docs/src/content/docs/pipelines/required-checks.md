@@ -20,6 +20,9 @@ Admin-only, per project: *Project → Settings → Required checks*.
    projects bound to the same repo each own a separate ruleset and never clobber
    each other.
 3. A PR to the default branch can't merge until every required pipeline is green.
+   If GitHub merge queue is enabled, the same required context is reported on
+   the queue SHA from `merge_group.checks_requested`, so GitHub can validate the
+   speculative merge before landing it.
 
 Because it is a **dedicated ruleset**, it stacks with any other rules you already
 have — gocdnext never touches your existing branch protection or other rulesets.
@@ -36,6 +39,9 @@ Clear all required pipelines and gocdnext tears its ruleset back down.
   the project's *check reporting* must be `both` or `commit_status` (the
   default is `both`). A project set to `check_run` only can't be gated this way —
   the UI blocks it and tells you to switch.
+- **For GitHub merge queue:** the GitHub App needs **Merge queues: read**, its
+  App webhook must be configured at `/api/webhooks/github/app`, and it must be
+  subscribed to **Merge group** events. See [webhook setup](/install/webhooks/#github).
 
 ## Which pipelines are eligible
 
@@ -53,6 +59,10 @@ material that:
 Anything outside this set would **deadlock the merge** (GitHub waits forever for a
 check that never arrives), so it isn't selectable. A path-scoped pipeline simply
 won't appear in the list — that's expected, not a bug.
+
+On merge queue deliveries, path-scoped PR pipelines run anyway. GitHub does not
+send a reliable changed-file set with `merge_group`, and a skipped required
+context would leave the queue SHA pending forever.
 
 If you later rename/remove a required pipeline, change its events/branch, or add a
 path filter, gocdnext re-syncs the ruleset on the next project apply, dropping any

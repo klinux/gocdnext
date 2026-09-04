@@ -126,6 +126,14 @@ func buildJobClaims(run store.RunForDispatch, job store.DispatchableJob) oidciss
 		if branch != "" {
 			jc.RefType, jc.Ref = "branch", branch
 		}
+	case "merge_group":
+		var mg mergeGroupDetail
+		if len(run.CauseDetail) > 0 {
+			_ = json.Unmarshal(run.CauseDetail, &mg)
+		}
+		if mg.BaseRef != "" {
+			jc.RefType, jc.Ref = "merge_group", mg.BaseRef
+		}
 	default:
 		if branch != "" {
 			jc.RefType, jc.Ref = "branch", branch

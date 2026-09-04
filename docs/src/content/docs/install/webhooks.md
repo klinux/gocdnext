@@ -76,6 +76,7 @@ App.
 | Webhooks | Read & write | auto-register the webhook (above) |
 | **Checks** | **Read & write** | post the `gocdnext / <pipeline>` **check run** — the rich, GitHub-hosted view (coverage + security summary, re-run button) |
 | **Commit statuses** | **Read & write** | post the `ci/gocdnext/<project>/<pipeline>` **commit status** — the check row whose link goes **straight to the run** (the UX Woodpecker/GoCD give). A SEPARATE permission from Checks. |
+| **Merge queues** | **Read** | receive GitHub App `merge_group` webhooks so required PR checks also run on merge-queue SHAs |
 | **Administration** | **Read & write** | *(optional)* write the repo's **required-checks ruleset** so gocdnext can manage "required pipelines for PR merge" from its UI. Only needed if you use that feature — omit it and everything else still works. |
 
 gocdnext posts **both** per pipeline: the **check run** (rich view; its run link
@@ -84,6 +85,18 @@ the run). If you grant only **Checks: write**, you still get the check run — t
 commit status **degrades gracefully** (a WARN in the server log on the `403`, the
 run never fails). Grant **Commit statuses: write** to get the straight-to-run
 entry too.
+
+Set the GitHub App's own **Webhook URL** to
+`https://ci.example.com/api/webhooks/github/app` and keep the App webhook secret
+in *Settings → SCM integrations*. That App webhook receives `check_run` /
+`check_suite` re-run requests and GitHub merge queue `merge_group` events. The
+per-repo webhook below still handles push / pull request / tag deliveries at
+`/api/webhooks/github`.
+
+For merge queue support, subscribe the GitHub App to **Merge group** events.
+`checks_requested` queues the PR-required pipelines against GitHub's queue SHA;
+`destroyed` cancels active runs for an abandoned queue SHA without reporting a
+red/canceled status back to GitHub.
 
 The commit-status context is `ci/gocdnext/<project>/<pipeline>`, project-qualified
 so two projects on the same repo don't overwrite each other's status. GitHub
@@ -116,6 +129,9 @@ Per-repo: *Settings → Webhooks → Add webhook*.
 | SSL verification | Enable |
 | Events | Push events, Pull requests, Tags created |
 | Active | ✓ |
+
+Do not send GitHub merge queue events to this per-repo endpoint; `merge_group`
+is handled by the GitHub App webhook at `/api/webhooks/github/app`.
 
 After the webhook is created, register the secret with gocdnext:
 

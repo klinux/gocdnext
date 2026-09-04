@@ -149,51 +149,67 @@ func (s *Store) ListBootstrapVCSIntegrations(ctx context.Context) ([]BootstrapVC
 // matches, or — defensively — more than one). Callers fail closed.
 var ErrAppWebhookSecretNotResolved = errors.New("store: github app webhook secret not resolved")
 
-// AppWebhookSecretByAppID returns the decrypted webhook secret for the enabled
-// GitHub App integration whose app_id matches — used to verify an App-delivered
-// webhook (e.g. check_run rerequested, whose payload carries check_run.app.id).
-// Fails closed: no match, no stored secret, or (defensively, should the partial
-// unique index be absent) more than one match. Reuses the decrypting bootstrap
-// loader; the App-webhook path is low volume, so the extra work is negligible.
-func (s *Store) AppWebhookSecretByAppID(ctx context.Context, appID int64) (string, error) {
-	ints, err := s.ListBootstrapVCSIntegrations(ctx)
+// AppWebhookIntegration is the authenticated-webhook candidate shape. It carries
+// decrypted secret material and must stay inside server-internal call paths.
+type AppWebhookIntegration struct {
+	ID            uuid.UUID
+	Name          string
+	AppID         int64
+	APIBase       string
+	WebhookSecret string
+	PrivateKeyPEM []byte
+}
+
+// AppWebhookIntegrationByAppID returns the full internal candidate for one App
+// id. The webhook handler uses the returned identity after HMAC verification so
+// app-less payloads cannot be authenticated by App A and executed as App B.
+func (s *Store) AppWebhookIntegrationByAppID(ctx context.Context, appID int64) (AppWebhookIntegration, error) {
+	ints, err := s.AppWebhookIntegrations(ctx)
 	if err != nil {
-		return "", err
+		return AppWebhookIntegration{}, err
 	}
-	var found string
+	var found AppWebhookIntegration
 	n := 0
 	for _, in := range ints {
-		if in.Kind == VCSKindGitHubApp && in.AppID != nil && *in.AppID == appID && in.WebhookSecret != "" {
-			found = in.WebhookSecret
+		if in.AppID == appID {
+			found = in
 			n++
 		}
 	}
 	if n != 1 {
-		return "", ErrAppWebhookSecretNotResolved
+		return AppWebhookIntegration{}, ErrAppWebhookSecretNotResolved
 	}
 	return found, nil
 }
 
-// SoleAppWebhookSecret returns the decrypted webhook secret when EXACTLY ONE
-// enabled GitHub App integration has one — the fail-closed fallback for events
-// (ping) that don't carry a resolvable app_id. Zero or many → error.
-func (s *Store) SoleAppWebhookSecret(ctx context.Context) (string, error) {
+// AppWebhookIntegrations returns every enabled GitHub App row with a webhook
+// secret and positive app id. It intentionally keeps rows whose private key is
+// missing/invalid-looking; HMAC auth can still succeed, and the webhook handler
+// will then fail loudly before creating merge-group runs when it cannot build
+// the App client needed to report checks.
+func (s *Store) AppWebhookIntegrations(ctx context.Context) ([]AppWebhookIntegration, error) {
 	ints, err := s.ListBootstrapVCSIntegrations(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var found string
-	n := 0
+	out := make([]AppWebhookIntegration, 0, len(ints))
 	for _, in := range ints {
-		if in.Kind == VCSKindGitHubApp && in.WebhookSecret != "" {
-			found = in.WebhookSecret
-			n++
+		if in.Kind != VCSKindGitHubApp || in.AppID == nil || *in.AppID <= 0 || in.WebhookSecret == "" {
+			continue
 		}
+		out = append(out, AppWebhookIntegration{
+			ID:            in.ID,
+			Name:          in.Name,
+			AppID:         *in.AppID,
+			APIBase:       in.APIBase,
+			WebhookSecret: in.WebhookSecret,
+			PrivateKeyPEM: in.PrivateKeyPEM,
+		})
 	}
-	if n != 1 {
-		return "", ErrAppWebhookSecretNotResolved
+	if len(out) == 0 {
+		return nil, ErrAppWebhookSecretNotResolved
 	}
-	return found, nil
+	return out, nil
 }
 
 // UpsertVCSIntegration creates or updates by name. Empty

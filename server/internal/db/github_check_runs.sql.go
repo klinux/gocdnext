@@ -12,7 +12,7 @@ import (
 )
 
 const getGithubCheckRun = `-- name: GetGithubCheckRun :one
-SELECT run_id, installation_id, check_run_id, owner, repo, head_sha,
+SELECT run_id, app_id, installation_id, check_run_id, owner, repo, head_sha,
        status_context, reporting_mode, completed, created_at, updated_at
 FROM github_check_runs
 WHERE run_id = $1
@@ -20,6 +20,7 @@ WHERE run_id = $1
 
 type GetGithubCheckRunRow struct {
 	RunID          pgtype.UUID
+	AppID          *int64
 	InstallationID int64
 	CheckRunID     *int64
 	Owner          string
@@ -40,6 +41,7 @@ func (q *Queries) GetGithubCheckRun(ctx context.Context, runID pgtype.UUID) (Get
 	var i GetGithubCheckRunRow
 	err := row.Scan(
 		&i.RunID,
+		&i.AppID,
 		&i.InstallationID,
 		&i.CheckRunID,
 		&i.Owner,
@@ -71,9 +73,10 @@ func (q *Queries) MarkGithubCheckRunCompleted(ctx context.Context, runID pgtype.
 
 const upsertGithubCheckRun = `-- name: UpsertGithubCheckRun :exec
 INSERT INTO github_check_runs (
-    run_id, installation_id, check_run_id, owner, repo, head_sha, status_context, reporting_mode, completed
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE)
+    run_id, app_id, installation_id, check_run_id, owner, repo, head_sha, status_context, reporting_mode, completed
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
 ON CONFLICT (run_id) DO UPDATE SET
+    app_id          = EXCLUDED.app_id,
     installation_id = EXCLUDED.installation_id,
     check_run_id    = EXCLUDED.check_run_id,
     owner           = EXCLUDED.owner,
@@ -87,6 +90,7 @@ ON CONFLICT (run_id) DO UPDATE SET
 
 type UpsertGithubCheckRunParams struct {
 	RunID          pgtype.UUID
+	AppID          *int64
 	InstallationID int64
 	CheckRunID     *int64
 	Owner          string
@@ -107,6 +111,7 @@ type UpsertGithubCheckRunParams struct {
 func (q *Queries) UpsertGithubCheckRun(ctx context.Context, arg UpsertGithubCheckRunParams) error {
 	_, err := q.db.Exec(ctx, upsertGithubCheckRun,
 		arg.RunID,
+		arg.AppID,
 		arg.InstallationID,
 		arg.CheckRunID,
 		arg.Owner,

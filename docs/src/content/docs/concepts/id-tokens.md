@@ -99,7 +99,7 @@ Consequences for deployments behind an IP allowlist:
 | `exp` | mint + TTL | TTL default 1h (`GOCDNEXT_OIDC_TOKEN_TTL`, clamp 5m–24h) |
 | `nbf` / `iat` / `jti` | standard | jti unique per mint; reruns mint fresh |
 | `project_slug` `project_id` `pipeline` `pipeline_id` `job` `run_id` `run_counter` `cause` | always present, all strings | |
-| `ref` / `ref_type` / `sha` | branch or tag context | omitted when no material; `ref_type` is always present (`"none"` when refless) |
+| `ref` / `ref_type` / `sha` | branch, tag, or merge-group context | omitted when no material; `ref_type` is always present (`"none"` when refless) |
 | `matrix_key` | only on matrix-expanded jobs | |
 | `pr_number` | only on `pull_request` runs | |
 
@@ -113,6 +113,7 @@ the TTL) so it hasn't expired by the time `gcloud`/`vault` runs.
 branch run:   project:{slug}:pipeline:{name}:ref_type:branch:ref:{branch}
 tag run:      project:{slug}:pipeline:{name}:ref_type:tag:ref:{tag}
 PR run:       project:{slug}:pipeline:{name}:pull_request
+merge queue:  project:{slug}:pipeline:{name}:merge_group:ref:{base_ref}
 no material:  project:{slug}:pipeline:{name}:ref_type:none:ref:none
 ```
 
@@ -124,6 +125,11 @@ branch-pinned policy excludes PRs *by construction*; you don't
 have to remember to exclude them. If you intentionally want PR
 runs to obtain (low-privilege) credentials, write a separate
 policy matching the `:pull_request` sub.
+
+Merge-queue runs also use their own `sub` shape. The token still carries the
+queue head SHA in `sha`, but the subject is scoped to `merge_group:ref:{base_ref}`
+so a queue ref like `gh-readonly-queue/main/...` never impersonates a normal
+branch subject.
 
 `:` is reserved as the grammar separator: pipeline names can't
 contain it (rejected at apply), and any residual `:`/`%` in

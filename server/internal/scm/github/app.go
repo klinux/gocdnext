@@ -272,6 +272,9 @@ func (c *AppClient) DoAsInstallation(ctx context.Context, installationID int64, 
 // APIBase exposes the configured base URL so callers can join paths.
 func (c *AppClient) APIBase() string { return c.apiBase }
 
+// AppID exposes the GitHub App id the client signs JWTs for.
+func (c *AppClient) AppID() int64 { return c.appID }
+
 // newAppRequest builds a request authenticated with a short-lived app
 // JWT (not an installation token). This is what the App-level
 // endpoints (/app/...) require.

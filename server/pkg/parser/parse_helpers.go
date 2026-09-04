@@ -25,14 +25,15 @@ func defaultEvents(ev []string) []string {
 }
 
 // pipelineEvents enumerates the values accepted in top-level
-// `when.event:` — webhook-driven (push, pull_request, tag), trigger-
-// based (manual, cron), and dependency-based (upstream). Adding to
-// this set is the explicit handshake operators trip when wiring a
-// new trigger type, vs. the silent-accept-and-never-fire bug a free-
-// text list lets through.
+// `when.event:` — webhook-driven (push, pull_request, merge_group, tag),
+// trigger-based (manual, cron), and dependency-based (upstream). Adding
+// to this set is the explicit handshake operators trip when wiring a
+// new trigger type, vs. the silent-accept-and-never-fire bug a free-text
+// list lets through.
 var pipelineEvents = map[string]struct{}{
 	"push":         {},
 	"pull_request": {},
+	"merge_group":  {},
 	"tag":          {},
 	"manual":       {},
 	"cron":         {},
@@ -46,13 +47,14 @@ var pipelineEvents = map[string]struct{}{
 var gitMaterialEvents = map[string]struct{}{
 	"push":         {},
 	"pull_request": {},
+	"merge_group":  {},
 	"tag":          {},
 }
 
 func validatePipelineEvents(ev []string) error {
 	for _, e := range ev {
 		if _, ok := pipelineEvents[e]; !ok {
-			return fmt.Errorf("unknown event %q (accepted: push, pull_request, tag, manual, cron, upstream)", e)
+			return fmt.Errorf("unknown event %q (accepted: push, pull_request, merge_group, tag, manual, cron, upstream)", e)
 		}
 	}
 	return nil
@@ -61,7 +63,7 @@ func validatePipelineEvents(ev []string) error {
 func validateGitMaterialEvents(on []string) error {
 	for _, e := range on {
 		if _, ok := gitMaterialEvents[e]; !ok {
-			return fmt.Errorf("unknown event %q in `on:` (accepted: push, pull_request, tag)", e)
+			return fmt.Errorf("unknown event %q in `on:` (accepted: push, pull_request, merge_group, tag)", e)
 		}
 	}
 	return nil

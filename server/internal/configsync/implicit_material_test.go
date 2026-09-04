@@ -45,13 +45,13 @@ func TestInjectImplicitProjectMaterial_AddsWhenAbsent(t *testing.T) {
 }
 
 func TestInjectImplicitProjectMaterial_HonoursTriggerEvents(t *testing.T) {
-	// Top-level YAML `when.event: [push, pull_request]` propagates to
+	// Top-level YAML `when.event: [push, pull_request, merge_group]` propagates to
 	// domain.Pipeline.TriggerEvents — the helper should feed that
 	// list straight into the implicit material so PRs trigger runs
 	// without the operator re-declaring the git material.
 	p := &domain.Pipeline{
 		Name:          "ci-server",
-		TriggerEvents: []string{"push", "pull_request"},
+		TriggerEvents: []string{"push", "pull_request", "merge_group"},
 	}
 	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
 		Provider: "github", URL: "https://github.com/klinux/gocdnext", DefaultBranch: "main",
@@ -60,8 +60,8 @@ func TestInjectImplicitProjectMaterial_HonoursTriggerEvents(t *testing.T) {
 		t.Fatalf("want 1 material, got %d", len(p.Materials))
 	}
 	ev := p.Materials[0].Git.Events
-	if len(ev) != 2 || ev[0] != "push" || ev[1] != "pull_request" {
-		t.Errorf("events = %v, want [push pull_request]", ev)
+	if len(ev) != 3 || ev[0] != "push" || ev[1] != "pull_request" || ev[2] != "merge_group" {
+		t.Errorf("events = %v, want [push pull_request merge_group]", ev)
 	}
 }
 

@@ -58,6 +58,7 @@ func (s *Store) WithRunCheckLock(ctx context.Context, runID uuid.UUID, fn func()
 // PATCH against GitHub's API on run completion.
 type GithubCheckRun struct {
 	RunID          uuid.UUID
+	AppID          *int64
 	InstallationID int64
 	// CheckRunID is nil in commit_status mode — the row exists as the run's
 	// GitHub-reporting identity, but no GitHub Check Run was created. A non-nil
@@ -88,6 +89,7 @@ type GithubCheckRun struct {
 // UpsertGithubCheckRunInput is the write-side input.
 type UpsertGithubCheckRunInput struct {
 	RunID          uuid.UUID
+	AppID          *int64
 	InstallationID int64
 	CheckRunID     *int64 // nil in commit_status mode (no GitHub Check Run)
 	Owner          string
@@ -102,6 +104,7 @@ type UpsertGithubCheckRunInput struct {
 func (s *Store) UpsertGithubCheckRun(ctx context.Context, in UpsertGithubCheckRunInput) error {
 	err := s.q.UpsertGithubCheckRun(ctx, db.UpsertGithubCheckRunParams{
 		RunID:          pgUUID(in.RunID),
+		AppID:          in.AppID,
 		InstallationID: in.InstallationID,
 		CheckRunID:     in.CheckRunID,
 		Owner:          in.Owner,
@@ -129,6 +132,7 @@ func (s *Store) GetGithubCheckRun(ctx context.Context, runID uuid.UUID) (GithubC
 	}
 	return GithubCheckRun{
 		RunID:          fromPgUUID(row.RunID),
+		AppID:          row.AppID,
 		InstallationID: row.InstallationID,
 		CheckRunID:     row.CheckRunID,
 		Owner:          row.Owner,

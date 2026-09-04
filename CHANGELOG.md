@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **GitHub merge queue support.** The GitHub App webhook now handles
+  `merge_group.checks_requested` by queuing the same PR-required pipelines
+  against the merge queue `head_sha` and reporting the same
+  `ci/gocdnext/<project>/<pipeline>` context there. Pipelines listening to
+  `pull_request` are eligible automatically; `when.paths` is ignored for
+  `merge_group` so GitHub never waits forever on a skipped required context.
+  `merge_group.destroyed` cancels active runs for the abandoned queue SHA,
+  sends agent cancel/service-cleanup effects, and suppresses the red/canceled
+  GitHub terminal report for that SHA. Requires the GitHub App webhook URL
+  `/api/webhooks/github/app` subscribed to **Merge group** events. (#261)
+
 ## v0.97.0 — 2026-09-02
 
 ### Added

@@ -19,8 +19,8 @@ type JobClaims struct {
 	MatrixKey   string // empty when the job isn't matrix-expanded
 	RunID       string
 	RunCounter  string
-	Ref         string // branch or tag name; empty when no material
-	RefType     string // "branch" | "tag" | "" (normalized to "none")
+	Ref         string // branch, tag, or merge-group base ref; empty when no material
+	RefType     string // "branch" | "tag" | "merge_group" | "" (normalized to "none")
 	SHA         string // empty when no material
 	Cause       string // webhook|pull_request|manual|upstream|schedule|poll|tag
 	PRNumber    string // only on pull_request cause
@@ -31,10 +31,11 @@ type JobClaims struct {
 // shape here is asserted by tests because changing one breaks every
 // WIF policy in the wild.
 //
-//	branch:  project:{slug}:pipeline:{name}:ref_type:branch:ref:{branch}
-//	tag:     project:{slug}:pipeline:{name}:ref_type:tag:ref:{tag}
-//	PR:      project:{slug}:pipeline:{name}:pull_request
-//	no ref:  project:{slug}:pipeline:{name}:ref_type:none:ref:none
+//	branch:      project:{slug}:pipeline:{name}:ref_type:branch:ref:{branch}
+//	tag:         project:{slug}:pipeline:{name}:ref_type:tag:ref:{tag}
+//	PR:          project:{slug}:pipeline:{name}:pull_request
+//	merge_group: project:{slug}:pipeline:{name}:merge_group:ref:{base_ref}
+//	no ref:      project:{slug}:pipeline:{name}:ref_type:none:ref:none
 //
 // PR runs carry NO ref segment: the head ref name is attacker-
 // controlled (a PR from a branch named "main" must never satisfy a
@@ -45,6 +46,13 @@ func (c JobClaims) Subject() string {
 	base := "project:" + escapeSub(c.ProjectSlug) + ":pipeline:" + escapeSub(c.Pipeline)
 	if c.Cause == "pull_request" {
 		return base + ":pull_request"
+	}
+	if c.Cause == "merge_group" {
+		ref := c.Ref
+		if ref == "" {
+			ref = "none"
+		}
+		return base + ":merge_group:ref:" + escapeSub(ref)
 	}
 	refType, ref := c.RefType, c.Ref
 	if refType == "" || ref == "" {

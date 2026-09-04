@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -242,6 +243,13 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	branch := ev.Branch
+	if strings.HasPrefix(branch, "gh-readonly-queue/") {
+		rec.status = store.WebhookStatusIgnored
+		h.log.Info("github webhook: ignoring merge-queue ref push; merge_group App event owns this check",
+			"delivery", delivery, "ref", ev.Ref, "branch", branch)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	// Config drift: if the repo matches a registered scm_source and the
 	// push is on its default branch, re-read `.gocdnext/` at this revision

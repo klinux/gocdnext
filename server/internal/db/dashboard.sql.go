@@ -207,6 +207,8 @@ ORDER BY pl.name
 // Distinct pipeline names across every project, for the /runs
 // pipeline filter dropdown. Names repeat across projects by design
 // (build, deploy, quality...), so DISTINCT keeps the list short.
+// system_managed pipelines (e.g. synthetic `_compliance`) are excluded
+// so internal names don't leak into the user-facing dropdown.
 func (q *Queries) ListPipelineNames(ctx context.Context) ([]string, error) {
 	rows, err := q.db.Query(ctx, listPipelineNames)
 	if err != nil {

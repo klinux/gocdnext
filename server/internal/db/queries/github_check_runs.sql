@@ -8,9 +8,10 @@
 -- reporting_mode is the per-run effective mode, persisted so complete/reopen
 -- read it back instead of re-deriving from the project's current setting.
 INSERT INTO github_check_runs (
-    run_id, installation_id, check_run_id, owner, repo, head_sha, status_context, reporting_mode, completed
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE)
+    run_id, app_id, installation_id, check_run_id, owner, repo, head_sha, status_context, reporting_mode, completed
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
 ON CONFLICT (run_id) DO UPDATE SET
+    app_id          = EXCLUDED.app_id,
     installation_id = EXCLUDED.installation_id,
     check_run_id    = EXCLUDED.check_run_id,
     owner           = EXCLUDED.owner,
@@ -34,7 +35,7 @@ WHERE run_id = $1;
 -- Reporter needs owner/repo/check_run_id to patch a check when the
 -- run finishes. Returns ErrNoRows when the run didn't produce a
 -- check (most common path: no App installed, or feature disabled).
-SELECT run_id, installation_id, check_run_id, owner, repo, head_sha,
+SELECT run_id, app_id, installation_id, check_run_id, owner, repo, head_sha,
        status_context, reporting_mode, completed, created_at, updated_at
 FROM github_check_runs
 WHERE run_id = $1;

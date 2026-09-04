@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/audit"
+	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 )
@@ -58,19 +59,8 @@ func (h *Handler) HandleGitHubApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the candidate App webhook secret from the UNVERIFIED payload's app
-	// id (or the sole configured App). Trusted for nothing until VerifySignature
-	// passes below — same posture as the scm path's clone_url selection.
-	secret, ok := h.resolveAppSecret(r.Context(), event, body, rec, w)
+	auth, ok := h.verifyAppSignature(r.Context(), event, delivery, body, signature, rec, w)
 	if !ok {
-		return // resolveAppSecret already set rec + wrote the response
-	}
-	if err := github.VerifySignature(secret, body, signature); err != nil {
-		rec.status = store.WebhookStatusRejected
-		rec.errText = "invalid signature: " + err.Error()
-		h.log.Warn("github app webhook: signature rejected",
-			"event", event, "delivery", delivery, "err", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
@@ -80,6 +70,8 @@ func (h *Handler) HandleGitHubApp(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case "check_run":
 		h.handleCheckRerun(w, r, body, delivery, rec)
+	case "merge_group":
+		h.handleMergeGroup(w, r, body, delivery, rec, auth)
 	default:
 		// check_suite (deferred) + check_run created/completed → nothing to do.
 		rec.status = store.WebhookStatusIgnored
@@ -88,16 +80,47 @@ func (h *Handler) HandleGitHubApp(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// resolveAppSecret picks the App webhook secret to verify against, from the
-// (unverified) payload's app id — by id when present, else the sole configured
-// App integration (the ping fallback). Fails closed: writes a 401 + returns
-// false when nothing resolves.
-func (h *Handler) resolveAppSecret(ctx context.Context, event string, body []byte, rec *deliveryRec, w http.ResponseWriter) (string, bool) {
+type appWebhookAuth struct {
+	integration store.AppWebhookIntegration
+	app         *ghscm.AppClient
+	appErr      error
+}
+
+func newAppWebhookAuth(in store.AppWebhookIntegration) *appWebhookAuth {
+	auth := &appWebhookAuth{integration: in}
+	if len(in.PrivateKeyPEM) == 0 {
+		auth.appErr = errors.New("github app private key not configured")
+		return auth
+	}
+	app, err := ghscm.NewAppClient(ghscm.AppConfig{
+		AppID:         in.AppID,
+		PrivateKeyPEM: in.PrivateKeyPEM,
+		APIBase:       in.APIBase,
+	})
+	if err != nil {
+		auth.appErr = err
+		return auth
+	}
+	auth.app = app
+	return auth
+}
+
+// verifyAppSignature verifies an App-delivered webhook. When the payload carries
+// an app id (ping/check_run/check_suite, and defensively any future merge_group
+// shape with app.id), it selects that candidate secret first. Some App events,
+// including GitHub's documented merge_group payload, only carry installation.id;
+// for those we try every enabled App webhook secret and let HMAC be the
+// authority. The body is still trusted for nothing until this returns true.
+func (h *Handler) verifyAppSignature(ctx context.Context, event, delivery string, body []byte, signature string, rec *deliveryRec, w http.ResponseWriter) (*appWebhookAuth, bool) {
 	var appID int64
 	switch event {
 	case "ping":
 		if ev, perr := github.ParsePingEvent(body); perr == nil {
 			appID = ev.HookAppID
+		}
+	case "merge_group":
+		if ev, perr := github.ParseMergeGroupEvent(body); perr == nil {
+			appID = ev.AppID
 		}
 	default: // check_run / check_suite
 		if ev, perr := github.ParseCheckRunEvent(body); perr == nil {
@@ -105,26 +128,47 @@ func (h *Handler) resolveAppSecret(ctx context.Context, event string, body []byt
 		}
 	}
 
-	var secret string
-	var err error
 	if appID != 0 {
-		secret, err = h.store.AppWebhookSecretByAppID(ctx, appID)
+		integration, err := h.store.AppWebhookIntegrationByAppID(ctx, appID)
+		if err == nil && integration.WebhookSecret != "" {
+			if err := github.VerifySignature(integration.WebhookSecret, body, signature); err != nil {
+				rec.status = store.WebhookStatusRejected
+				rec.errText = "invalid signature: " + err.Error()
+				h.log.Warn("github app webhook: signature rejected",
+					"event", event, "delivery", delivery, "app_id", appID, "err", err)
+				http.Error(w, "invalid signature", http.StatusUnauthorized)
+				return nil, false
+			}
+			return newAppWebhookAuth(integration), true
+		}
+		rec.status = store.WebhookStatusRejected
+		rec.errText = "app webhook secret not resolved"
+		h.log.Warn("github app webhook: app id secret not resolved",
+			"event", event, "delivery", delivery, "app_id", appID, "err", err)
+		http.Error(w, "unknown or unconfigured github app", http.StatusUnauthorized)
+		return nil, false
 	}
-	// Fall back to the sole configured App when the id is absent OR didn't
-	// resolve (e.g. the integration row has no app_id). SoleAppWebhookSecret is
-	// itself fail-closed (0 or many → error).
-	if appID == 0 || err != nil {
-		secret, err = h.store.SoleAppWebhookSecret(ctx)
-	}
-	if err != nil || secret == "" {
+
+	integrations, err := h.store.AppWebhookIntegrations(ctx)
+	if err != nil || len(integrations) == 0 {
 		rec.status = store.WebhookStatusRejected
 		rec.errText = "app webhook secret not resolved"
 		h.log.Warn("github app webhook: secret not resolved",
 			"event", event, "app_id", appID, "err", err)
 		http.Error(w, "unknown or unconfigured github app", http.StatusUnauthorized)
-		return "", false
+		return nil, false
 	}
-	return secret, true
+	for _, integration := range integrations {
+		if github.VerifySignature(integration.WebhookSecret, body, signature) == nil {
+			return newAppWebhookAuth(integration), true
+		}
+	}
+	rec.status = store.WebhookStatusRejected
+	rec.errText = "invalid signature"
+	h.log.Warn("github app webhook: signature rejected",
+		"event", event, "delivery", delivery, "app_id", appID)
+	http.Error(w, "invalid signature", http.StatusUnauthorized)
+	return nil, false
 }
 
 // handleCheckRerun processes a verified `check_run` event. Only `rerequested`

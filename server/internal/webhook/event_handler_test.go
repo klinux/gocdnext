@@ -108,6 +108,45 @@ func TestGitHubWebhook_PushDefaultEventFires(t *testing.T) {
 	}
 }
 
+func TestGitHubWebhook_IgnoresMergeQueueRefPush(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newServer(t, s)
+	url := "https://github.com/gocdnext/gocdnext.git"
+	seedEventPipelines(t, pool, url, map[string][]string{
+		"ci-push": {"push"},
+	})
+
+	payload, err := json.Marshal(map[string]any{
+		"ref":     "refs/heads/gh-readonly-queue/main/pr-1-aaaa",
+		"before":  "0000000000000000000000000000000000000001",
+		"after":   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"size":    1,
+		"deleted": false,
+		"repository": map[string]any{
+			"full_name": "gocdnext/gocdnext",
+			"clone_url": url,
+		},
+		"head_commit": map[string]any{
+			"id":        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"message":   "merge queue",
+			"timestamp": "2026-08-30T10:00:00Z",
+			"author":    map[string]any{"name": "queue"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp := postSigned(t, srv, "push", payload)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if n := countRuns(t, pool); n != 0 {
+		t.Fatalf("runs = %d, want 0 — merge queue push must not double-build", n)
+	}
+}
+
 // The GitLab/Bitbucket branch push rides the shared persistPush path —
 // it gets the same when.event guard. A tag-only pipeline must not fire
 // on a GitLab push to its branch.
