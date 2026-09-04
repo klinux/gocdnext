@@ -166,13 +166,28 @@ App.</p>
 
 
 
-<table><thead><tr><th>Permission</th><th>Access</th><th>Why</th></tr></thead><tbody><tr><td>Metadata</td><td>Read</td><td>mandatory baseline</td></tr><tr><td>Contents</td><td>Read</td><td>clone the repo for a run</td></tr><tr><td>Pull requests</td><td>Read</td><td>PR head SHA + PR events</td></tr><tr><td>Webhooks</td><td>Read &#x26; write</td><td>auto-register the webhook (above)</td></tr><tr><td><strong>Checks</strong></td><td><strong>Read &#x26; write</strong></td><td>post the <code dir="auto">gocdnext / &#x3C;pipeline></code> <strong>check run</strong> — the rich, GitHub-hosted view (coverage + security summary, re-run button)</td></tr><tr><td><strong>Commit statuses</strong></td><td><strong>Read &#x26; write</strong></td><td>post the <code dir="auto">ci/gocdnext/&#x3C;project>/&#x3C;pipeline></code> <strong>commit status</strong> — the check row whose link goes <strong>straight to the run</strong> (the UX Woodpecker/GoCD give). A SEPARATE permission from Checks.</td></tr><tr><td><strong>Administration</strong></td><td><strong>Read &#x26; write</strong></td><td><em>(optional)</em> write the repo’s <strong>required-checks ruleset</strong> so gocdnext can manage “required pipelines for PR merge” from its UI. Only needed if you use that feature — omit it and everything else still works.</td></tr></tbody></table>
+
+
+
+
+
+<table><thead><tr><th>Permission</th><th>Access</th><th>Why</th></tr></thead><tbody><tr><td>Metadata</td><td>Read</td><td>mandatory baseline</td></tr><tr><td>Contents</td><td>Read</td><td>clone the repo for a run</td></tr><tr><td>Pull requests</td><td>Read</td><td>PR head SHA + PR events</td></tr><tr><td>Webhooks</td><td>Read &#x26; write</td><td>auto-register the webhook (above)</td></tr><tr><td><strong>Checks</strong></td><td><strong>Read &#x26; write</strong></td><td>post the <code dir="auto">gocdnext / &#x3C;pipeline></code> <strong>check run</strong> — the rich, GitHub-hosted view (coverage + security summary, re-run button)</td></tr><tr><td><strong>Commit statuses</strong></td><td><strong>Read &#x26; write</strong></td><td>post the <code dir="auto">ci/gocdnext/&#x3C;project>/&#x3C;pipeline></code> <strong>commit status</strong> — the check row whose link goes <strong>straight to the run</strong> (the UX Woodpecker/GoCD give). A SEPARATE permission from Checks.</td></tr><tr><td><strong>Merge queues</strong></td><td><strong>Read</strong></td><td>receive GitHub App <code dir="auto">merge_group</code> webhooks so required PR checks also run on merge-queue SHAs</td></tr><tr><td><strong>Administration</strong></td><td><strong>Read &#x26; write</strong></td><td><em>(optional)</em> write the repo’s <strong>required-checks ruleset</strong> so gocdnext can manage “required pipelines for PR merge” from its UI. Only needed if you use that feature — omit it and everything else still works.</td></tr></tbody></table>
 <p>gocdnext posts <strong>both</strong> per pipeline: the <strong>check run</strong> (rich view; its run link
 is the “Details” button) and the <strong>commit status</strong> (plain row, links straight to
 the run). If you grant only <strong>Checks: write</strong>, you still get the check run — the
 commit status <strong>degrades gracefully</strong> (a WARN in the server log on the <code dir="auto">403</code>, the
 run never fails). Grant <strong>Commit statuses: write</strong> to get the straight-to-run
 entry too.</p>
+<p>Set the GitHub App’s own <strong>Webhook URL</strong> to
+<code dir="auto">https://ci.example.com/api/webhooks/github/app</code> and keep the App webhook secret
+in <em>Settings → SCM integrations</em>. That App webhook receives <code dir="auto">check_run</code> /
+<code dir="auto">check_suite</code> re-run requests and GitHub merge queue <code dir="auto">merge_group</code> events. The
+per-repo webhook below still handles push / pull request / tag deliveries at
+<code dir="auto">/api/webhooks/github</code>.</p>
+<p>For merge queue support, subscribe the GitHub App to <strong>Merge group</strong> events.
+<code dir="auto">checks_requested</code> queues the PR-required pipelines against GitHub’s queue SHA;
+<code dir="auto">destroyed</code> cancels active runs for an abandoned queue SHA without reporting a
+red/canceled status back to GitHub.</p>
 <p>The commit-status context is <code dir="auto">ci/gocdnext/&#x3C;project>/&#x3C;pipeline></code>, project-qualified
 so two projects on the same repo don’t overwrite each other’s status. GitHub
 compares contexts <strong>case-insensitively</strong>, so keep project/pipeline names
@@ -222,6 +237,8 @@ That needs the
 
 
 <table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody><tr><td>Payload URL</td><td><code dir="auto">https://ci.example.com/api/webhooks/github</code></td></tr><tr><td>Content type</td><td><code dir="auto">application/json</code></td></tr><tr><td>Secret</td><td>(any random string — copy to gocdnext below)</td></tr><tr><td>SSL verification</td><td>Enable</td></tr><tr><td>Events</td><td>Push events, Pull requests, Tags created</td></tr><tr><td>Active</td><td>✓</td></tr></tbody></table>
+<p>Do not send GitHub merge queue events to this per-repo endpoint; <code dir="auto">merge_group</code>
+is handled by the GitHub App webhook at <code dir="auto">/api/webhooks/github/app</code>.</p>
 <p>After the webhook is created, register the secret with gocdnext:</p>
 <ol>
 <li><em>Project → Settings → SCM source</em>.</li>
