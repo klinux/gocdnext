@@ -255,6 +255,64 @@ func TestGitHubAppMergeGroupRequiresReporterBeforeFanout(t *testing.T) {
 	}
 }
 
+func TestGitHubAppMergeGroupReportingErrorReturns500AndRetryRepostsExistingRuns(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	stub := &appGitHubStub{installID: testInstID, nextCheckID: testCheckID, checkStatus: http.StatusInternalServerError}
+	srv := newAppServerWithReporterStub(t, s, true, stub)
+	seedMergeGroupPipelines(t, pool)
+
+	body := mergeGroupBody("checks_requested")
+	resp := postApp(t, srv, "merge_group", mgDelivery+"-report-fail", body, signBody(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when a required check cannot be created; body=%s",
+			resp.StatusCode, readBody(t, resp))
+	}
+	var runs int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*)
+		FROM runs
+		WHERE cause = $1
+	`, string(domain.CauseMergeGroup)).Scan(&runs); err != nil {
+		t.Fatalf("count runs after report failure: %v", err)
+	}
+	if runs != 2 {
+		t.Fatalf("runs after report failure = %d, want successful fan-out preserved", runs)
+	}
+	var links int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM github_check_runs`).Scan(&links); err != nil {
+		t.Fatalf("count check links: %v", err)
+	}
+	if links != 0 {
+		t.Fatalf("check links after failed create = %d, want none", links)
+	}
+
+	stub.checkStatus = 0
+	resp = postApp(t, srv, "merge_group", mgDelivery+"-report-retry", body, signBody(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("retry status = %d, want 202 after reporting recovers; body=%s",
+			resp.StatusCode, readBody(t, resp))
+	}
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*)
+		FROM runs
+		WHERE cause = $1
+	`, string(domain.CauseMergeGroup)).Scan(&runs); err != nil {
+		t.Fatalf("count retry runs: %v", err)
+	}
+	if runs != 2 {
+		t.Fatalf("runs after retry = %d, want no duplicate runs", runs)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM github_check_runs`).Scan(&links); err != nil {
+		t.Fatalf("count retry check links: %v", err)
+	}
+	if links != 2 {
+		t.Fatalf("check links after retry = %d, want one per required run", links)
+	}
+}
+
 func TestGitHubAppMergeGroupPartialFanoutErrorReturns500AndRedeliveryCompletes(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

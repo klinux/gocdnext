@@ -133,10 +133,11 @@ func seedWebhookRun(t *testing.T, pool *pgxpool.Pool, repoURL string, cause stri
 	if cause == string(domain.CauseMergeGroup) {
 		branch = "gh-readonly-queue/main/pr-42-d8f8c1e"
 		causeDetail, _ = json.Marshal(map[string]any{
-			"mg_head_sha": revision,
-			"mg_head_ref": branch,
-			"mg_base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			"mg_base_ref": "main",
+			"mg_head_sha":    revision,
+			"mg_head_ref":    branch,
+			"mg_base_sha":    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"mg_base_ref":    "main",
+			"mg_fingerprint": fp,
 			// Guard against accidentally reusing PR semantics for merge-group
 			// checks: this value must NOT override the queue head SHA.
 			"pr_head_sha": "ffffffffffffffffffffffffffffffffffffffff",
@@ -316,7 +317,9 @@ func TestCompleteCheck_SuppressesMergeGroupDestroyedCancellation(t *testing.T) {
 	beforeStatuses := stub.statusCount.Load()
 	stub.updatedBody.Store(nil)
 
-	canceled, err := s.CancelMergeGroupRuns(ctx, "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1", "superseded by queue")
+	canceled, err := s.CancelMergeGroupRuns(ctx,
+		domain.GitFingerprint("https://github.com/org/repo", "main"),
+		"d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1", "superseded by queue")
 	if err != nil {
 		t.Fatalf("cancel merge_group: %v", err)
 	}

@@ -8,18 +8,37 @@
 ALTER TABLE runs ADD COLUMN merge_group_cancel_effects_claimed_at TIMESTAMPTZ;
 ALTER TABLE runs ADD COLUMN merge_group_cancel_effects_at         TIMESTAMPTZ;
 
+-- Persist which GitHub App created the run->check identity so terminal updates
+-- use the same App installation in multi-App deployments. Nullable preserves
+-- older check rows created before this metadata existed.
+ALTER TABLE github_check_runs ADD COLUMN app_id BIGINT;
+
+-- Tombstones close the destroyed-before-checks_requested and destroyed-during-
+-- fanout races. Retention can prune by destroyed_at once all matching refs are
+-- well outside GitHub's webhook redelivery window.
+CREATE TABLE merge_group_destroyed (
+    fingerprint  TEXT        NOT NULL,
+    head_sha     TEXT        NOT NULL,
+    reason       TEXT,
+    destroyed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (fingerprint, head_sha)
+);
+CREATE INDEX merge_group_destroyed_destroyed_at_idx
+    ON merge_group_destroyed(destroyed_at);
+
 -- Replay lookup for canceled merge-group runs whose external effects have not
 -- completed. Partial index keeps the scheduler tick bounded by pending work.
 CREATE INDEX runs_merge_group_cancel_effects_pending_idx ON runs (finished_at)
   WHERE cause = 'merge_group'
     AND status = 'canceled'
+    AND cancel_reason LIKE 'github merge_group destroyed%'
     AND merge_group_cancel_effects_at IS NULL;
 
 -- Hot path for `merge_group.destroyed`: locate only live merge-group runs for
--- the abandoned head SHA. The expression rides cause_detail because the head SHA
--- is provider metadata, while revisions keeps the material keyed by id.
-CREATE INDEX runs_merge_group_live_head_sha_idx
-  ON runs ((cause_detail->>'mg_head_sha'))
+-- the abandoned head SHA in this repository. The expressions ride cause_detail
+-- because this is provider metadata, while revisions keeps materials keyed by id.
+CREATE INDEX runs_merge_group_live_fingerprint_head_sha_idx
+  ON runs ((cause_detail->>'mg_fingerprint'), (cause_detail->>'mg_head_sha'))
   WHERE cause = 'merge_group' AND status IN ('queued', 'running');
 
 -- `merge_group` is a system cancel origin: a destroyed queue ref should be
@@ -46,8 +65,11 @@ ALTER TABLE job_runs
     CHECK (cancel_origin IS NULL OR cancel_origin IN
         ('user_job', 'user_run', 'supersede', 'approval_expiry', 'dependency'));
 
-DROP INDEX IF EXISTS runs_merge_group_live_head_sha_idx;
+DROP INDEX IF EXISTS runs_merge_group_live_fingerprint_head_sha_idx;
 DROP INDEX IF EXISTS runs_merge_group_cancel_effects_pending_idx;
+DROP INDEX IF EXISTS merge_group_destroyed_destroyed_at_idx;
+DROP TABLE IF EXISTS merge_group_destroyed;
+ALTER TABLE github_check_runs DROP COLUMN IF EXISTS app_id;
 ALTER TABLE runs DROP COLUMN IF EXISTS merge_group_cancel_effects_at;
 ALTER TABLE runs DROP COLUMN IF EXISTS merge_group_cancel_effects_claimed_at;
 

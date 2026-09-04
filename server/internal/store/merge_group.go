@@ -19,13 +19,14 @@ import (
 const MergeGroupCanceledRunChannel = "run_merge_group_canceled"
 
 // CancelMergeGroupRuns cancels every active merge-group run for the provided
-// GitHub merge_group.head_sha and emits one transactional NOTIFY per canceled
-// run. Idempotent: a redelivery after the first transaction commits finds no
-// active rows and returns an empty list.
-func (s *Store) CancelMergeGroupRuns(ctx context.Context, headSHA, reason string) ([]uuid.UUID, error) {
+// material fingerprint + GitHub merge_group.head_sha and emits one transactional
+// NOTIFY per canceled run. Idempotent: a redelivery after the first transaction
+// commits finds no active rows and returns an empty list.
+func (s *Store) CancelMergeGroupRuns(ctx context.Context, fingerprint, headSHA, reason string) ([]uuid.UUID, error) {
+	fingerprint = strings.TrimSpace(fingerprint)
 	headSHA = strings.TrimSpace(headSHA)
-	if headSHA == "" {
-		return nil, errors.New("store: merge group head sha required")
+	if fingerprint == "" || headSHA == "" {
+		return nil, ErrMergeGroupInvalidInput
 	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -35,25 +36,39 @@ func (s *Store) CancelMergeGroupRuns(ctx context.Context, headSHA, reason string
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
 
+	if err := lockMergeGroupTx(ctx, tx, fingerprint, headSHA); err != nil {
+		return nil, fmt.Errorf("store: cancel merge group: lock: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO merge_group_destroyed (fingerprint, head_sha, reason)
+		VALUES ($1, $2, NULLIF($3, ''))
+		ON CONFLICT (fingerprint, head_sha) DO UPDATE
+		SET reason = COALESCE(EXCLUDED.reason, merge_group_destroyed.reason),
+		    destroyed_at = NOW()
+	`, fingerprint, headSHA, strings.TrimSpace(reason)); err != nil {
+		return nil, fmt.Errorf("store: cancel merge group: tombstone: %w", err)
+	}
+
 	rows, err := tx.Query(ctx, `
 		SELECT id
 		FROM runs
 		WHERE cause = $1
 		  AND status IN ('queued', 'running')
-		  AND cause_detail->>'mg_head_sha' = $2
-		FOR UPDATE
-	`, string(domain.CauseMergeGroup), headSHA)
+		  AND cause_detail->>'mg_fingerprint' = $2
+		  AND cause_detail->>'mg_head_sha' = $3
+		ORDER BY id
+	`, string(domain.CauseMergeGroup), fingerprint, headSHA)
 	if err != nil {
 		return nil, fmt.Errorf("store: cancel merge group: candidates: %w", err)
 	}
-	var runIDs []uuid.UUID
+	var candidates []uuid.UUID
 	for rows.Next() {
 		var id pgtype.UUID
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("store: cancel merge group: scan: %w", err)
 		}
-		runIDs = append(runIDs, fromPgUUID(id))
+		candidates = append(candidates, fromPgUUID(id))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: cancel merge group: rows: %w", err)
@@ -64,7 +79,8 @@ func (s *Store) CancelMergeGroupRuns(ctx context.Context, headSHA, reason string
 	if reason = strings.TrimSpace(reason); reason != "" {
 		cancelReason += ": " + reason
 	}
-	for _, runID := range runIDs {
+	runIDs := make([]uuid.UUID, 0, len(candidates))
+	for _, runID := range candidates {
 		if _, err := tx.Exec(ctx, `
 			UPDATE job_runs j
 			SET status = CASE WHEN j.status = 'running' THEN j.status ELSE 'canceled' END,
@@ -102,6 +118,7 @@ func (s *Store) CancelMergeGroupRuns(ctx context.Context, headSHA, reason string
 		if tag.RowsAffected() == 0 {
 			continue
 		}
+		runIDs = append(runIDs, runID)
 		if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, MergeGroupCanceledRunChannel, runID.String()); err != nil {
 			return nil, fmt.Errorf("store: cancel merge group: notify: %w", err)
 		}
@@ -133,6 +150,7 @@ func (s *Store) ClaimMergeGroupCancelEffects(ctx context.Context, runID uuid.UUI
 		WHERE r.id = cur.id
 		  AND r.cause = $2
 		  AND r.status = 'canceled'
+		  AND r.cancel_reason LIKE 'github merge_group destroyed%'
 		  AND cur.effects_at IS NULL
 		  AND (cur.prev_claim IS NULL
 		       OR cur.prev_claim < NOW() - $3::INTERVAL)
@@ -154,6 +172,7 @@ func (s *Store) MarkMergeGroupCancelEffectsDone(ctx context.Context, runID uuid.
 		WHERE id = $1
 		  AND cause = $2
 		  AND status = 'canceled'
+		  AND cancel_reason LIKE 'github merge_group destroyed%'
 	`, pgUUID(runID), string(domain.CauseMergeGroup)); err != nil {
 		return fmt.Errorf("store: mark merge group cancel effects done: %w", err)
 	}
@@ -169,6 +188,7 @@ func (s *Store) ListPendingMergeGroupCancelEffects(ctx context.Context, max int3
 		FROM runs
 		WHERE cause = $1
 		  AND status = 'canceled'
+		  AND cancel_reason LIKE 'github merge_group destroyed%'
 		  AND merge_group_cancel_effects_at IS NULL
 		  AND (merge_group_cancel_effects_claimed_at IS NULL
 		       OR merge_group_cancel_effects_claimed_at < NOW() - $2::INTERVAL)
@@ -205,6 +225,7 @@ func (s *Store) MergeGroupCanceledRunServiceGeneration(ctx context.Context, runI
 		WHERE id = $1
 		  AND cause = $2
 		  AND status = 'canceled'
+		  AND cancel_reason LIKE 'github merge_group destroyed%'
 		  AND merge_group_cancel_effects_at IS NULL
 	`, pgUUID(runID), string(domain.CauseMergeGroup)).Scan(&generation)
 	if errors.Is(err, pgx.ErrNoRows) {

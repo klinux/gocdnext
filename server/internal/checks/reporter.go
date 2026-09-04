@@ -66,6 +66,16 @@ func (r *Reporter) appClient() *ghscm.AppClient {
 	return r.vcs.GitHubApp()
 }
 
+func (r *Reporter) appClientForLink(link store.GithubCheckRun) *ghscm.AppClient {
+	if r == nil || r.vcs == nil {
+		return nil
+	}
+	if link.AppID != nil {
+		return r.vcs.GitHubAppByID(*link.AppID)
+	}
+	return r.vcs.GitHubApp()
+}
+
 // ReportRunCreated is called from the webhook path once a new run is
 // queued. Fire-and-forget: spawns a goroutine so the caller's HTTP
 // request returns immediately. The request's ctx is replaced by a
@@ -117,115 +127,6 @@ func (r *Reporter) ReportRunReopened(_ context.Context, runID uuid.UUID) {
 	}()
 }
 
-// CreateCheck is the synchronous version of ReportRunCreated —
-// callable from tests and from any caller that wants to know whether
-// the check was created. Returns nil when the run shouldn't produce
-// a check (manual/upstream cause, non-GitHub repo, App not
-// installed) so callers can't trivially tell "created" from
-// "skipped"; check logs for that. merge_group declines are errors because
-// a missing check can strand GitHub's merge queue.
-func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
-	ctxInfo, err := r.resolveRunContext(ctx, runID)
-	if err != nil {
-		return err
-	}
-	if ctxInfo == nil {
-		return nil // non-reportable cause, non-GitHub repo, etc.
-	}
-	app := r.appClient()
-	if app == nil {
-		if err := mergeGroupAppDisabledError(ctxInfo); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	// Effective mode: STICKY to the mode this run started in — a mid-run
-	// settings flip must not change how an in-flight run reports. reopen's
-	// recreate path routes through here for the SAME run, so the persisted
-	// row's mode wins over the project's current setting. Fresh run → no row
-	// yet → the project's current mode.
-	mode := normalizeMode(ctxInfo.reportingMode)
-	if existing, gerr := r.store.GetGithubCheckRun(ctx, runID); gerr == nil {
-		mode = normalizeMode(existing.ReportingMode)
-	} else if !errors.Is(gerr, store.ErrCheckRunNotFound) {
-		return gerr
-	}
-
-	// The installation is needed in EVERY mode — the commit status is posted
-	// through the same App installation as the check run.
-	installationID, err := app.InstallationID(ctx, ctxInfo.owner, ctxInfo.repo)
-	if errors.Is(err, ghscm.ErrNoInstallation) {
-		if err := mergeGroupNoInstallationError(ctxInfo); err != nil {
-			return err
-		}
-		r.log.Info("checks: app not installed, skipping",
-			"run_id", runID, "repo", ctxInfo.owner+"/"+ctxInfo.repo)
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("installation lookup: %w", err)
-	}
-
-	// Create the rich Check Run unless the mode is commit_status. When skipped,
-	// the row still persists (identity) with a NULL check_run_id.
-	var checkRunID *int64
-	if postsCheckRun(mode) {
-		created, cerr := app.CreateCheckRun(ctx, installationID, ghscm.CreateCheckRunInput{
-			Owner:      ctxInfo.owner,
-			Repo:       ctxInfo.repo,
-			Name:       fmt.Sprintf("gocdnext / %s", ctxInfo.pipelineName),
-			HeadSHA:    ctxInfo.headSHA,
-			Status:     ghscm.CheckStatusInProgress,
-			DetailsURL: r.detailsURL(runID),
-			ExternalID: runID.String(),
-			Output: &ghscm.CheckRunOutput{
-				Title:   "Pipeline queued",
-				Summary: fmt.Sprintf("Run #%d on %s — follow the run for details.", ctxInfo.counter, ctxInfo.branch),
-			},
-		})
-		if cerr != nil {
-			return fmt.Errorf("create check run: %w", cerr)
-		}
-		id := created.ID
-		checkRunID = &id
-	}
-
-	sc := statusContext(ctxInfo.projectSlug, ctxInfo.pipelineName)
-	if err := r.store.UpsertGithubCheckRun(ctx, store.UpsertGithubCheckRunInput{
-		RunID:          runID,
-		InstallationID: installationID,
-		CheckRunID:     checkRunID,
-		Owner:          ctxInfo.owner,
-		Repo:           ctxInfo.repo,
-		HeadSHA:        ctxInfo.headSHA,
-		StatusContext:  sc,
-		ReportingMode:  mode,
-	}); err != nil {
-		return fmt.Errorf("persist check link: %w", err)
-	}
-
-	// Mirror as a commit status (straight-to-run link) unless the mode is
-	// check_run. Best-effort in both/check_run; hard-fails in commit_status
-	// (the only channel there).
-	if err := r.postStatusForMode(ctx, app, mode, installationID, ghscm.CreateStatusInput{
-		Owner:       ctxInfo.owner,
-		Repo:        ctxInfo.repo,
-		SHA:         ctxInfo.headSHA,
-		State:       "pending",
-		Context:     sc,
-		TargetURL:   r.detailsURL(runID),
-		Description: fmt.Sprintf("Run #%d on %s", ctxInfo.counter, ctxInfo.branch),
-	}, runID); err != nil {
-		return err
-	}
-
-	r.log.Info("checks: created",
-		"run_id", runID, "mode", mode, "check_run_id", derefInt64(checkRunID),
-		"repo", ctxInfo.owner+"/"+ctxInfo.repo, "head_sha", ctxInfo.headSHA)
-	return nil
-}
-
 // derefInt64 renders a nullable check-run id for logs (0 = commit_status mode).
 func derefInt64(p *int64) int64 {
 	if p == nil {
@@ -240,7 +141,7 @@ func derefInt64(p *int64) int64 {
 // with ReopenCheck so a stale completion can't land between a concurrent
 // reopen's status read and its PATCH.
 func (r *Reporter) CompleteCheck(ctx context.Context, runID uuid.UUID, status string) error {
-	if r.appClient() == nil {
+	if r == nil {
 		return nil
 	}
 	return r.store.WithRunCheckLock(ctx, runID, func() error {
@@ -253,10 +154,6 @@ func (r *Reporter) CompleteCheck(ctx context.Context, runID uuid.UUID, status st
 // already holds the lock) — re-acquiring would deadlock on a different
 // pooled connection.
 func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, status string) error {
-	app := r.appClient()
-	if app == nil {
-		return nil
-	}
 	link, err := r.store.GetGithubCheckRun(ctx, runID)
 	if errors.Is(err, store.ErrCheckRunNotFound) {
 		return nil
@@ -288,6 +185,15 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 		return err
 	}
 	if suppress {
+		return nil
+	}
+	app := r.appClientForLink(link)
+	if app == nil {
+		if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
+			if err := mergeGroupAppDisabledError(rc); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -358,7 +264,7 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 // ONCE and dispatches to locked-variant helpers — never the public lock-taking
 // methods (re-entry would deadlock on a second pooled connection).
 func (r *Reporter) RefreshSecuritySummary(ctx context.Context, runID uuid.UUID) error {
-	if r.appClient() == nil {
+	if r == nil {
 		return nil
 	}
 	return r.store.WithRunCheckLock(ctx, runID, func() error {
@@ -367,10 +273,6 @@ func (r *Reporter) RefreshSecuritySummary(ctx context.Context, runID uuid.UUID) 
 }
 
 func (r *Reporter) refreshSecurityLocked(ctx context.Context, runID uuid.UUID) error {
-	app := r.appClient()
-	if app == nil {
-		return nil
-	}
 	link, err := r.store.GetGithubCheckRun(ctx, runID)
 	if errors.Is(err, store.ErrCheckRunNotFound) {
 		return nil // no check for this run — nothing to refresh
@@ -393,6 +295,10 @@ func (r *Reporter) refreshSecurityLocked(ctx context.Context, runID uuid.UUID) e
 	// only on the rich check output. The terminal convergence above already
 	// posted the commit status; nothing else to refresh.
 	if link.CheckRunID == nil {
+		return nil
+	}
+	app := r.appClientForLink(link)
+	if app == nil {
 		return nil
 	}
 	// Otherwise re-PATCH output, reasserting (not deriving) the current state:
@@ -431,7 +337,7 @@ func (r *Reporter) refreshSecurityLocked(ctx context.Context, runID uuid.UUID) e
 // complete the check immediately. Idempotent with the connect.go
 // completion path — whichever closes it last writes the same conclusion.
 func (r *Reporter) ReopenCheck(ctx context.Context, runID uuid.UUID) error {
-	if r.appClient() == nil {
+	if r == nil {
 		return nil
 	}
 	return r.store.WithRunCheckLock(ctx, runID, func() error {
@@ -440,10 +346,6 @@ func (r *Reporter) ReopenCheck(ctx context.Context, runID uuid.UUID) error {
 }
 
 func (r *Reporter) reopenLocked(ctx context.Context, runID uuid.UUID) error {
-	app := r.appClient()
-	if app == nil {
-		return nil
-	}
 	link, err := r.store.GetGithubCheckRun(ctx, runID)
 	switch {
 	case errors.Is(err, store.ErrCheckRunNotFound):
@@ -463,11 +365,15 @@ func (r *Reporter) reopenLocked(ctx context.Context, runID uuid.UUID) error {
 		// completed flag to FALSE. The per-run lock serialises concurrent
 		// job-reruns: the first recreates, the rest then see completed=FALSE
 		// and take the reuse PATCH below — so no check run is orphaned.
-		if err := r.CreateCheck(ctx, runID); err != nil {
+		if err := r.createCheck(ctx, runID, r.appClientForLink(link), nil); err != nil {
 			return err
 		}
 		r.log.Info("checks: reopened (new check run)", "run_id", runID)
 	default:
+		app := r.appClientForLink(link)
+		if app == nil {
+			return nil
+		}
 		// Reopen in the run's PERSISTED mode (link.ReportingMode), never the
 		// project's current setting — a mid-run flip must not change how an
 		// in-flight run reports.

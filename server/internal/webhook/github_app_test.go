@@ -3,13 +3,24 @@ package webhook_test
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -43,6 +54,14 @@ func newAppServerWithoutReporter(t *testing.T, s *store.Store) http.Handler {
 
 func newAppServerWithReporter(t *testing.T, s *store.Store, withReporter bool) http.Handler {
 	t.Helper()
+	stub := &appGitHubStub{installID: testInstID, nextCheckID: testCheckID}
+	return newAppServerWithReporterStub(t, s, withReporter, stub)
+}
+
+func newAppServerWithReporterStub(t *testing.T, s *store.Store, withReporter bool, stub *appGitHubStub) http.Handler {
+	t.Helper()
+	api := httptest.NewServer(stub.handler(t))
+	t.Cleanup(api.Close)
 	s.SetAuthCipher(newTestCipher(t))
 	appID := testAppID
 	if _, err := s.UpsertVCSIntegration(context.Background(), store.UpsertVCSIntegrationInput{
@@ -50,7 +69,9 @@ func newAppServerWithReporter(t *testing.T, s *store.Store, withReporter bool) h
 		Kind:          "github_app",
 		DisplayName:   "Test App",
 		AppID:         &appID,
+		PrivateKeyPEM: throwawayAppPEM(t),
 		WebhookSecret: testSecret,
+		APIBase:       api.URL,
 		Enabled:       true,
 	}); err != nil {
 		t.Fatalf("seed vcs integration: %v", err)
@@ -62,6 +83,69 @@ func newAppServerWithReporter(t *testing.T, s *store.Store, withReporter bool) h
 		h = h.WithChecksReporter(reporter)
 	}
 	return http.HandlerFunc(h.HandleGitHubApp)
+}
+
+type appGitHubStub struct {
+	installID   int64
+	nextCheckID int64
+	checkStatus int
+	statusCode  int
+	statusPosts atomic.Int64
+}
+
+func (g *appGitHubStub) handler(t *testing.T) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation") && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": g.installID})
+		case strings.Contains(r.URL.Path, "/access_tokens") && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"token":      "inst-tok",
+				"expires_at": time.Now().Add(time.Hour).Format(time.RFC3339),
+			})
+		case strings.HasSuffix(r.URL.Path, "/check-runs") && r.Method == http.MethodPost:
+			if g.checkStatus != 0 && g.checkStatus != http.StatusCreated {
+				http.Error(w, "check failed", g.checkStatus)
+				return
+			}
+			id := g.nextCheckID
+			if id == 0 {
+				id = testCheckID
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
+		case strings.Contains(r.URL.Path, "/statuses/") && r.Method == http.MethodPost:
+			g.statusPosts.Add(1)
+			if g.statusCode != 0 && g.statusCode != http.StatusCreated {
+				http.Error(w, "status failed", g.statusCode)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		default:
+			t.Errorf("unexpected GitHub API call: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	})
+}
+
+func throwawayAppPEM(t *testing.T) []byte {
+	t.Helper()
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(k),
+	})
+}
+
+func signBodyWith(body []byte, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 // seedRerunnableRun creates a project/pipeline/material + a modification + a
@@ -377,5 +461,72 @@ func TestGitHubApp_MergeGroupMultiAppAuthenticatesWithoutAppID(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("merge_group status = %d, want 204 (authenticated by trying all App secrets, then no material); body=%s",
 			resp.StatusCode, readBody(t, resp))
+	}
+}
+
+func TestGitHubApp_MergeGroupWithoutAppIDRejectsInvalidSignature(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newAppServer(t, s)
+
+	body := mergeGroupBody("checks_requested")
+	resp := postApp(t, srv, "merge_group", "mg-bad-sig", body, "sha256=deadbeef")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for invalid app-less merge_group signature; body=%s",
+			resp.StatusCode, readBody(t, resp))
+	}
+}
+
+func TestGitHubApp_MergeGroupWithoutAppIDRejectsWhenNoAppSecretsConfigured(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newTestCipher(t))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := http.HandlerFunc(webhook.NewHandler(s, logger).HandleGitHubApp)
+
+	body := mergeGroupBody("checks_requested")
+	resp := postApp(t, srv, "merge_group", "mg-no-app", body, signBody(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 when no enabled App secret can authenticate; body=%s",
+			resp.StatusCode, readBody(t, resp))
+	}
+}
+
+func TestGitHubApp_MergeGroupApplessSignatureBindsToMatchedApp(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newAppServer(t, s) // App A: secret testSecret, installation 100.
+	seedMergeGroupPipelines(t, pool)
+
+	// App B has a valid webhook secret too, but resolves org/repo to a different
+	// installation. A body signed by B must not be allowed to create runs/checks
+	// for App A's installation id just because the payload lacks app.id.
+	otherStub := &appGitHubStub{installID: testInstID + 999, nextCheckID: testCheckID + 999}
+	otherAPI := httptest.NewServer(otherStub.handler(t))
+	t.Cleanup(otherAPI.Close)
+	otherID := testAppID + 1
+	if _, err := s.UpsertVCSIntegration(context.Background(), store.UpsertVCSIntegrationInput{
+		Name:          "other-app",
+		Kind:          "github_app",
+		AppID:         &otherID,
+		PrivateKeyPEM: throwawayAppPEM(t),
+		WebhookSecret: "other-secret",
+		APIBase:       otherAPI.URL,
+		Enabled:       true,
+	}); err != nil {
+		t.Fatalf("seed second app: %v", err)
+	}
+
+	body := mergeGroupBody("checks_requested")
+	resp := postApp(t, srv, "merge_group", "mg-wrong-app", body, signBodyWith(body, "other-secret"))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 when matched App does not own payload installation; body=%s",
+			resp.StatusCode, readBody(t, resp))
+	}
+	if n := runCount(t, pool, "merge-group"); n != 0 {
+		t.Fatalf("runs = %d, want no fan-out for wrong authenticated App", n)
 	}
 }

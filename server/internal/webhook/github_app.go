@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/audit"
+	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 )
@@ -58,7 +59,8 @@ func (h *Handler) HandleGitHubApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.verifyAppSignature(r.Context(), event, delivery, body, signature, rec, w) {
+	auth, ok := h.verifyAppSignature(r.Context(), event, delivery, body, signature, rec, w)
+	if !ok {
 		return
 	}
 
@@ -69,7 +71,7 @@ func (h *Handler) HandleGitHubApp(w http.ResponseWriter, r *http.Request) {
 	case "check_run":
 		h.handleCheckRerun(w, r, body, delivery, rec)
 	case "merge_group":
-		h.handleMergeGroup(w, r, body, delivery, rec)
+		h.handleMergeGroup(w, r, body, delivery, rec, auth)
 	default:
 		// check_suite (deferred) + check_run created/completed → nothing to do.
 		rec.status = store.WebhookStatusIgnored
@@ -78,13 +80,38 @@ func (h *Handler) HandleGitHubApp(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type appWebhookAuth struct {
+	integration store.AppWebhookIntegration
+	app         *ghscm.AppClient
+	appErr      error
+}
+
+func newAppWebhookAuth(in store.AppWebhookIntegration) *appWebhookAuth {
+	auth := &appWebhookAuth{integration: in}
+	if len(in.PrivateKeyPEM) == 0 {
+		auth.appErr = errors.New("github app private key not configured")
+		return auth
+	}
+	app, err := ghscm.NewAppClient(ghscm.AppConfig{
+		AppID:         in.AppID,
+		PrivateKeyPEM: in.PrivateKeyPEM,
+		APIBase:       in.APIBase,
+	})
+	if err != nil {
+		auth.appErr = err
+		return auth
+	}
+	auth.app = app
+	return auth
+}
+
 // verifyAppSignature verifies an App-delivered webhook. When the payload carries
 // an app id (ping/check_run/check_suite, and defensively any future merge_group
 // shape with app.id), it selects that candidate secret first. Some App events,
 // including GitHub's documented merge_group payload, only carry installation.id;
 // for those we try every enabled App webhook secret and let HMAC be the
 // authority. The body is still trusted for nothing until this returns true.
-func (h *Handler) verifyAppSignature(ctx context.Context, event, delivery string, body []byte, signature string, rec *deliveryRec, w http.ResponseWriter) bool {
+func (h *Handler) verifyAppSignature(ctx context.Context, event, delivery string, body []byte, signature string, rec *deliveryRec, w http.ResponseWriter) (*appWebhookAuth, bool) {
 	var appID int64
 	switch event {
 	case "ping":
@@ -102,38 +129,38 @@ func (h *Handler) verifyAppSignature(ctx context.Context, event, delivery string
 	}
 
 	if appID != 0 {
-		secret, err := h.store.AppWebhookSecretByAppID(ctx, appID)
-		if err == nil && secret != "" {
-			if err := github.VerifySignature(secret, body, signature); err != nil {
+		integration, err := h.store.AppWebhookIntegrationByAppID(ctx, appID)
+		if err == nil && integration.WebhookSecret != "" {
+			if err := github.VerifySignature(integration.WebhookSecret, body, signature); err != nil {
 				rec.status = store.WebhookStatusRejected
 				rec.errText = "invalid signature: " + err.Error()
 				h.log.Warn("github app webhook: signature rejected",
 					"event", event, "delivery", delivery, "app_id", appID, "err", err)
 				http.Error(w, "invalid signature", http.StatusUnauthorized)
-				return false
+				return nil, false
 			}
-			return true
+			return newAppWebhookAuth(integration), true
 		}
 		rec.status = store.WebhookStatusRejected
 		rec.errText = "app webhook secret not resolved"
 		h.log.Warn("github app webhook: app id secret not resolved",
 			"event", event, "delivery", delivery, "app_id", appID, "err", err)
 		http.Error(w, "unknown or unconfigured github app", http.StatusUnauthorized)
-		return false
+		return nil, false
 	}
 
-	secrets, err := h.store.AppWebhookSecrets(ctx)
-	if err != nil || len(secrets) == 0 {
+	integrations, err := h.store.AppWebhookIntegrations(ctx)
+	if err != nil || len(integrations) == 0 {
 		rec.status = store.WebhookStatusRejected
 		rec.errText = "app webhook secret not resolved"
 		h.log.Warn("github app webhook: secret not resolved",
 			"event", event, "app_id", appID, "err", err)
 		http.Error(w, "unknown or unconfigured github app", http.StatusUnauthorized)
-		return false
+		return nil, false
 	}
-	for _, secret := range secrets {
-		if github.VerifySignature(secret, body, signature) == nil {
-			return true
+	for _, integration := range integrations {
+		if github.VerifySignature(integration.WebhookSecret, body, signature) == nil {
+			return newAppWebhookAuth(integration), true
 		}
 	}
 	rec.status = store.WebhookStatusRejected
@@ -141,7 +168,7 @@ func (h *Handler) verifyAppSignature(ctx context.Context, event, delivery string
 	h.log.Warn("github app webhook: signature rejected",
 		"event", event, "delivery", delivery, "app_id", appID)
 	http.Error(w, "invalid signature", http.StatusUnauthorized)
-	return false
+	return nil, false
 }
 
 // handleCheckRerun processes a verified `check_run` event. Only `rerequested`

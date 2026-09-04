@@ -53,6 +53,10 @@ func Reload(ctx context.Context, reg *Registry, cfg *config.Config, dbSource DBS
 
 	var dbIntegrations []Integration
 	var dbClient *ghscm.AppClient
+	githubApps := map[int64]*ghscm.AppClient{}
+	if envClient != nil && envIntegration != nil && envIntegration.AppID != nil {
+		githubApps[*envIntegration.AppID] = envClient
+	}
 	if dbSource != nil {
 		rows, err := dbSource.ListBootstrapVCSIntegrations(ctx)
 		if err != nil {
@@ -68,6 +72,9 @@ func Reload(ctx context.Context, reg *Registry, cfg *config.Config, dbSource DBS
 				if client != nil && dbClient == nil && row.Kind == store.VCSKindGitHubApp {
 					dbClient = client
 					log.Info("vcs: active github_app from db", "name", row.Name)
+				}
+				if client != nil && row.Kind == store.VCSKindGitHubApp && row.AppID != nil {
+					githubApps[*row.AppID] = client
 				}
 				dbIntegrations = append(dbIntegrations, meta)
 			}
@@ -98,7 +105,7 @@ func Reload(ctx context.Context, reg *Registry, cfg *config.Config, dbSource DBS
 		active = dbClient
 	}
 
-	reg.Replace(active, all)
+	reg.ReplaceGitHubApps(active, githubApps, all)
 	log.Info("vcs: registry loaded",
 		"env", envIntegration != nil, "db", len(dbIntegrations),
 		"active_github_app", active != nil)

@@ -168,13 +168,14 @@ func TestGetQueueDepth_DispatchableExcludesSerialGatedRuns(t *testing.T) {
 	}
 }
 
-// GitHub merge queue can send multiple merge_group SHAs for the same serial
-// pipeline. They must stay dispatchable independently so GitHub receives the
-// required check for each group instead of one queue SHA waiting behind another.
-func TestGetQueueDepth_DispatchableIncludesMergeGroupSerialRuns(t *testing.T) {
+// Merge-group runs keep the pipeline's serial contract: if a prior sibling is
+// already running, their jobs are not dispatchable yet and must not inflate the
+// autoscaling signal.
+func TestGetQueueDepth_DispatchableExcludesMergeGroupSerialRuns(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	ctx := context.Background()
+	fp := store.FingerprintFor("https://github.com/org/serial", "main")
 
 	pipelineID, materialID := seedSerialPipeline(t, pool)
 	run1, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
@@ -195,10 +196,11 @@ func TestGetQueueDepth_DispatchableIncludesMergeGroupSerialRuns(t *testing.T) {
 	}
 
 	detail, _ := json.Marshal(map[string]any{
-		"mg_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		"mg_head_ref": "gh-readonly-queue/main/pr-2-bbbb",
-		"mg_base_sha": "1111111111111111111111111111111111111111",
-		"mg_base_ref": "main",
+		"mg_head_sha":    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"mg_head_ref":    "gh-readonly-queue/main/pr-2-bbbb",
+		"mg_base_sha":    "1111111111111111111111111111111111111111",
+		"mg_base_ref":    "main",
+		"mg_fingerprint": fp,
 	})
 	if _, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
 		PipelineID:     pipelineID,
@@ -219,7 +221,7 @@ func TestGetQueueDepth_DispatchableIncludesMergeGroupSerialRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue depth: %v", err)
 	}
-	if snap.DispatchableJobs != 2 {
-		t.Fatalf("dispatchable = %d with merge_group behind serial run, want 2", snap.DispatchableJobs)
+	if snap.DispatchableJobs != 1 {
+		t.Fatalf("dispatchable = %d with merge_group behind serial run, want 1", snap.DispatchableJobs)
 	}
 }

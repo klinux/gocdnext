@@ -303,6 +303,7 @@ type GithubCheckRun struct {
 	Completed      bool
 	StatusContext  string
 	ReportingMode  string
+	AppID          *int64
 }
 
 type Group struct {
@@ -388,6 +389,13 @@ type MaterialPollState struct {
 	LastHeadSha   *string
 	LastPollError *string
 	UpdatedAt     pgtype.Timestamptz
+}
+
+type MergeGroupDestroyed struct {
+	Fingerprint string
+	HeadSha     string
+	Reason      *string
+	DestroyedAt pgtype.Timestamptz
 }
 
 type Modification struct {

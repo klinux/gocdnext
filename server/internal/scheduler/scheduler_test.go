@@ -2343,7 +2343,7 @@ func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
 	}
 }
 
-func TestDispatchRun_MergeGroupBypassesSerialBusyGate(t *testing.T) {
+func TestDispatchRun_MergeGroupHonorsSerialBusyGate(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	sessions := grpcsrv.NewSessionStore()
@@ -2391,10 +2391,11 @@ func TestDispatchRun_MergeGroupBypassesSerialBusyGate(t *testing.T) {
 	}
 
 	detail, _ := json.Marshal(map[string]any{
-		"mg_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		"mg_head_ref": "gh-readonly-queue/main/pr-2-bbbb",
-		"mg_base_sha": "1111111111111111111111111111111111111111",
-		"mg_base_ref": "main",
+		"mg_head_sha":    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"mg_head_ref":    "gh-readonly-queue/main/pr-2-bbbb",
+		"mg_base_sha":    "1111111111111111111111111111111111111111",
+		"mg_base_ref":    "main",
+		"mg_fingerprint": fp,
 	})
 	second, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
 		PipelineID: pipelineID, MaterialID: materialID, ModificationID: 2,
@@ -2414,11 +2415,15 @@ func TestDispatchRun_MergeGroupBypassesSerialBusyGate(t *testing.T) {
 
 	select {
 	case msg := <-sess.Out():
-		if msg.GetAssign() == nil {
-			t.Fatalf("unexpected message: %+v", msg)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("merge_group serial run was gated behind %s", first.RunID)
+		t.Fatalf("unexpected dispatch while serial predecessor is running: %+v", msg)
+	default:
+	}
+	var reason *string
+	if err := pool.QueryRow(ctx, `SELECT queue_reason FROM runs WHERE id=$1`, second.RunID).Scan(&reason); err != nil {
+		t.Fatalf("read queue_reason: %v", err)
+	}
+	if reason == nil || !strings.HasPrefix(*reason, "serial-busy:"+first.RunID.String()) {
+		t.Fatalf("queue_reason = %v, want serial-busy:%s", reason, first.RunID)
 	}
 }
 
