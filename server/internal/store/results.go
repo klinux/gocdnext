@@ -294,12 +294,17 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 		return JobCompletion{}, false, fmt.Errorf("store: complete job: invalid status %q", in.Status)
 	}
 
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	ready, err := s.q.PrecheckJobCompletion(ctx, db.PrecheckJobCompletionParams{
+		ID:              pgUUID(in.JobRunID),
+		ExpectedAgentID: pgUUIDNullable(in.ExpectedAgentID),
+		ExpectedAttempt: in.ExpectedAttempt,
+	})
 	if err != nil {
-		return JobCompletion{}, false, fmt.Errorf("store: complete job: begin: %w", err)
+		return JobCompletion{}, false, fmt.Errorf("store: complete job: precheck: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := s.q.WithTx(tx)
+	if !ready {
+		return JobCompletion{}, false, nil
+	}
 
 	exitCode := in.ExitCode
 	// Marshal outputs to JSONB. Nil/empty map → nil bytes → SQL
@@ -313,6 +318,14 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 			return JobCompletion{}, false, fmt.Errorf("store: complete job: marshal outputs: %w", err)
 		}
 	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return JobCompletion{}, false, fmt.Errorf("store: complete job: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
 	row, err := q.CompleteJobRun(ctx, db.CompleteJobRunParams{
 		ID:              pgUUID(in.JobRunID),
 		Status:          in.Status,
@@ -481,6 +494,12 @@ func cascadeAfterJobCompletion(ctx context.Context, q *db.Queries, stageRunID, r
 		return fmt.Errorf("store: run service generation: %w", err)
 	}
 	comp.ServiceGeneration = gen
+	if err := q.NotifyRunTerminalEffects(ctx, db.NotifyRunTerminalEffectsParams{
+		Channel: RunTerminalEffectsChannel,
+		Payload: fromPgUUID(runID).String(),
+	}); err != nil {
+		return fmt.Errorf("store: notify run terminal effects: %w", err)
+	}
 	return nil
 }
 

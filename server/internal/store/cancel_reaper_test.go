@@ -11,6 +11,20 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
+func requirePendingTerminalEffects(t *testing.T, s *store.Store, ctx context.Context, runID uuid.UUID) {
+	t.Helper()
+	pending, err := s.ListPendingRunTerminalEffects(ctx, 100)
+	if err != nil {
+		t.Fatalf("list pending terminal effects: %v", err)
+	}
+	for _, id := range pending {
+		if id == runID {
+			return
+		}
+	}
+	t.Fatalf("run %s missing from pending terminal effects: %v", runID, pending)
+}
+
 // #207 Part 2d: the general reaper (ReclaimStaleJobs) must NOT requeue or fail a
 // cancel-requested running job — that would mask an intentional cancel as a generic
 // reaper action (failed/requeued). The cancel-pending finaliser is what turns it
@@ -80,6 +94,27 @@ func TestReclaimPendingCancels_FinalizesAgentDeployRevision(t *testing.T) {
 		 VALUES ($1, $2, $3, 'v1', 'in_progress')`, envID, jobID, attempt); err != nil {
 		t.Fatalf("insert revision: %v", err)
 	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET status='success', finished_at=NOW()
+		 WHERE run_id=$1 AND id <> $2`, runID, jobID); err != nil {
+		t.Fatalf("terminalise sibling jobs: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='success', finished_at=NOW()
+		 WHERE run_id=$1
+		   AND id <> (SELECT stage_run_id FROM job_runs WHERE id=$2)`,
+		runID, jobID); err != nil {
+		t.Fatalf("terminalise sibling stages: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='running' WHERE id=$1`, runID); err != nil {
+		t.Fatalf("promote run: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='running'
+		 WHERE id=(SELECT stage_run_id FROM job_runs WHERE id=$1)`, jobID); err != nil {
+		t.Fatalf("promote stage: %v", err)
+	}
 
 	got, err := s.ReclaimPendingCancelsForOfflineAgent(ctx, 0)
 	if err != nil {
@@ -94,6 +129,10 @@ func TestReclaimPendingCancels_FinalizesAgentDeployRevision(t *testing.T) {
 	if st := scalarStr(t, pool, `SELECT status FROM deployment_revisions WHERE job_run_id=$1`, jobID); st != "canceled" {
 		t.Errorf("revision status = %q, want canceled (finalised by the returned attempt)", st)
 	}
+	if st := scalarStr(t, pool, `SELECT status FROM runs WHERE id=$1`, runID); st != "canceled" {
+		t.Errorf("run status = %q, want canceled", st)
+	}
+	requirePendingTerminalEffects(t, s, ctx, runID)
 }
 
 // #207 Part 2e: a cancel-requested NATIVE deploy (agent_id NULL) whose deploy_watch
@@ -124,6 +163,27 @@ func TestReclaimAbandonedNativeCancels(t *testing.T) {
 		 VALUES ($1, $2, $3, 'v1', 'in_progress')`, envID, jobID, attempt); err != nil {
 		t.Fatalf("insert revision: %v", err)
 	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET status='success', finished_at=NOW()
+		 WHERE run_id=$1 AND id <> $2`, runID, jobID); err != nil {
+		t.Fatalf("terminalise sibling jobs: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='success', finished_at=NOW()
+		 WHERE run_id=$1
+		   AND id <> (SELECT stage_run_id FROM job_runs WHERE id=$2)`,
+		runID, jobID); err != nil {
+		t.Fatalf("terminalise sibling stages: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='running' WHERE id=$1`, runID); err != nil {
+		t.Fatalf("promote run: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='running'
+		 WHERE id=(SELECT stage_run_id FROM job_runs WHERE id=$1)`, jobID); err != nil {
+		t.Fatalf("promote stage: %v", err)
+	}
 
 	// (1) Fresh stamp: within grace → NOT reclaimed yet (don't race the watcher).
 	if _, err := pool.Exec(ctx, `UPDATE job_runs SET cancel_requested_at=NOW(), cancel_origin='user_run' WHERE id=$1`, jobID); err != nil {
@@ -153,6 +213,10 @@ func TestReclaimAbandonedNativeCancels(t *testing.T) {
 	if st := scalarStr(t, pool, `SELECT status FROM deployment_revisions WHERE job_run_id=$1`, jobID); st != "canceled" {
 		t.Errorf("revision status = %q, want canceled (atomic with the job)", st)
 	}
+	if st := scalarStr(t, pool, `SELECT status FROM runs WHERE id=$1`, runID); st != "canceled" {
+		t.Errorf("run status = %q, want canceled", st)
+	}
+	requirePendingTerminalEffects(t, s, ctx, runID)
 }
 
 // A native cancel with a LIVE deploy_watch is NOT reclaimed — the watcher owns it.

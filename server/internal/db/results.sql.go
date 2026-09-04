@@ -12,17 +12,24 @@ import (
 )
 
 const cancelQueuedJobsInRun = `-- name: CancelQueuedJobsInRun :exec
+WITH locked AS (
+    SELECT j.id
+    FROM job_runs j
+    JOIN stage_runs s ON s.id = j.stage_run_id
+    WHERE j.run_id = $1
+      AND s.name != '_notifications'
+      AND j.status IN ('queued', 'awaiting_approval')
+    ORDER BY j.id
+    FOR UPDATE OF j
+)
 UPDATE job_runs j
 SET status = 'canceled', finished_at = COALESCE(j.finished_at, NOW()),
     -- #207: this is the fail-fast DEPENDENCY cancel (an upstream stage failed).
     -- An upstream rerun SHOULD revive these (they were canceled by the system,
     -- not the user), so cancel_origin='dependency' — RerunJob only skips 'user_job'.
     cancel_origin = COALESCE(j.cancel_origin, $2)
-FROM stage_runs s
-WHERE j.run_id = $1
-  AND s.id = j.stage_run_id
-  AND s.name != '_notifications'
-  AND j.status IN ('queued', 'awaiting_approval')
+FROM locked
+WHERE j.id = locked.id
 `
 
 type CancelQueuedJobsInRunParams struct {
@@ -42,11 +49,19 @@ func (q *Queries) CancelQueuedJobsInRun(ctx context.Context, arg CancelQueuedJob
 }
 
 const cancelQueuedStagesInRun = `-- name: CancelQueuedStagesInRun :exec
-UPDATE stage_runs
-SET status = 'canceled', finished_at = COALESCE(finished_at, NOW())
-WHERE run_id = $1
-  AND status = 'queued'
-  AND name != '_notifications'
+WITH locked AS (
+    SELECT stage_runs.id
+    FROM stage_runs
+    WHERE stage_runs.run_id = $1
+      AND stage_runs.status = 'queued'
+      AND stage_runs.name != '_notifications'
+    ORDER BY stage_runs.id
+    FOR UPDATE
+)
+UPDATE stage_runs s
+SET status = 'canceled', finished_at = COALESCE(s.finished_at, NOW())
+FROM locked
+WHERE s.id = locked.id
 `
 
 // When a user stage fails we stop dispatching the rest of the run's user
@@ -156,7 +171,11 @@ func (q *Queries) CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) 
 
 const completeRun = `-- name: CompleteRun :execrows
 UPDATE runs
-SET status = $2, finished_at = COALESCE(finished_at, NOW())
+SET status = $2,
+    finished_at = COALESCE(finished_at, NOW()),
+    terminal_effects_required = true,
+    terminal_effects_claimed_at = NULL,
+    terminal_effects_at = NULL
 WHERE id = $1 AND status IN ('queued', 'running')
 `
 
@@ -566,6 +585,34 @@ type MarkJobLogsArchivedParams struct {
 func (q *Queries) MarkJobLogsArchived(ctx context.Context, arg MarkJobLogsArchivedParams) error {
 	_, err := q.db.Exec(ctx, markJobLogsArchived, arg.ID, arg.LogsArchiveUri)
 	return err
+}
+
+const precheckJobCompletion = `-- name: PrecheckJobCompletion :one
+SELECT EXISTS (
+    SELECT 1
+    FROM job_runs
+    WHERE id = $1
+      AND status IN ('queued', 'running')
+      AND agent_id IS NOT DISTINCT FROM $2::uuid
+      AND attempt = $3::int
+)::boolean
+`
+
+type PrecheckJobCompletionParams struct {
+	ID              pgtype.UUID
+	ExpectedAgentID pgtype.UUID
+	ExpectedAttempt int32
+}
+
+// Cheap duplicate/stale-result guard for CompleteJob. This does not own
+// correctness — CompleteJobRun's UPDATE keeps the authoritative CAS — but it lets
+// already-terminal, wrong-attempt, and wrong-agent results return before reaching
+// the row-locking UPDATE path. Hot duplicate storms stay a primary-key read.
+func (q *Queries) PrecheckJobCompletion(ctx context.Context, arg PrecheckJobCompletionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, precheckJobCompletion, arg.ID, arg.ExpectedAgentID, arg.ExpectedAttempt)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const skipJobRun = `-- name: SkipJobRun :one

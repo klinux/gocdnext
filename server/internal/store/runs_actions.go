@@ -138,6 +138,12 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 		}
 		return CancelRunResult{}, fmt.Errorf("store: cancel run: update: %w", err)
 	}
+	if err := q.NotifyRunTerminalEffects(ctx, db.NotifyRunTerminalEffectsParams{
+		Channel: RunTerminalEffectsChannel,
+		Payload: runID.String(),
+	}); err != nil {
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: notify terminal effects: %w", err)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return CancelRunResult{}, fmt.Errorf("store: cancel run: commit: %w", err)
@@ -970,10 +976,10 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 	}
 	// Reviving a run also clears any supersede state (#97): a run that was superseded
 	// (canceled + superseded_by) and then rerun is a live run again, not "superseded
-	// by #N". Resetting supersede/merge-group effect markers too is load-bearing —
-	// without it a LATER system-cancel of this revived run could never claim its
-	// effects (the claim requires effects_at IS NULL), so its CancelJob frames /
-	// cleanup / audit would never fire.
+	// by #N". Resetting supersede/merge-group/generic terminal effect markers too
+	// is load-bearing — without it a LATER system-cancel of this revived run could
+	// never claim its effects (the claim requires effects_at IS NULL), so its
+	// CancelJob frames / cleanup / audit would never fire.
 	//
 	// Bumping service_generation here is what makes the generation-aware service
 	// cleanup work (#97): a still-pending supersede/terminal CleanupRunServices carries
@@ -989,6 +995,9 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 		    supersede_effects_claimed_at = NULL, supersede_effects_at = NULL,
 		    merge_group_cancel_effects_claimed_at = NULL,
 		    merge_group_cancel_effects_at = NULL,
+		    terminal_effects_required = false,
+		    terminal_effects_claimed_at = NULL,
+		    terminal_effects_at = NULL,
 		    service_generation = service_generation + 1
 		WHERE id = $1 AND status IN ('success', 'failed', 'canceled')
 	`, runID); err != nil {
@@ -1018,39 +1027,57 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 	// re-culls any revived job whose upstream is still failed, so reviving
 	// the whole tail is self-correcting.
 	if _, err := tx.Exec(ctx, `
-		UPDATE job_runs
+		WITH downstream_stage AS (
+		    SELECT ordinal FROM stage_runs WHERE id = $2
+		),
+		locked AS (
+		    SELECT j.id
+		    FROM job_runs j
+		    JOIN stage_runs s ON s.id = j.stage_run_id
+		    JOIN downstream_stage ds ON true
+		    WHERE j.run_id = $1
+		      AND j.status = 'canceled'
+		      AND j.cancel_origin IS DISTINCT FROM 'user_job'
+		      AND j.approval_gate = false
+		      AND s.ordinal > ds.ordinal
+		    ORDER BY j.id
+		    FOR UPDATE OF j
+		)
+		UPDATE job_runs j
 		SET status = 'queued', agent_id = NULL, started_at = NULL,
 		    finished_at = NULL, exit_code = NULL, error = NULL,
 		    cancel_requested_at = NULL, cancel_origin = NULL
-		WHERE run_id = $1
-		  AND status = 'canceled'
-		  AND cancel_origin IS DISTINCT FROM 'user_job'
-		  AND approval_gate = false
-		  AND stage_run_id IN (
-		      SELECT id FROM stage_runs
-		      WHERE run_id = $1
-		        AND ordinal > (SELECT ordinal FROM stage_runs WHERE id = $2)
-		  )
+		FROM locked
+		WHERE j.id = locked.id
 	`, runID, stageRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: revive downstream jobs: %w", err)
 	}
 	rearmRows, err := tx.Query(ctx, `
-		UPDATE job_runs
+		WITH downstream_stage AS (
+		    SELECT ordinal FROM stage_runs WHERE id = $2
+		),
+		locked AS (
+		    SELECT j.id
+		    FROM job_runs j
+		    JOIN stage_runs s ON s.id = j.stage_run_id
+		    JOIN downstream_stage ds ON true
+		    WHERE j.run_id = $1
+		      AND j.status = 'canceled'
+		      AND j.cancel_origin IS DISTINCT FROM 'user_job'
+		      AND j.approval_gate = true
+		      AND s.ordinal > ds.ordinal
+		    ORDER BY j.id
+		    FOR UPDATE OF j
+		)
+		UPDATE job_runs j
 		SET status = 'awaiting_approval', awaiting_since = NOW(),
 		    agent_id = NULL, started_at = NULL, finished_at = NULL,
 		    exit_code = NULL, error = NULL,
 		    cancel_requested_at = NULL, cancel_origin = NULL,
 		    decided_by = NULL, decided_at = NULL, decision = NULL
-		WHERE run_id = $1
-		  AND status = 'canceled'
-		  AND cancel_origin IS DISTINCT FROM 'user_job'
-		  AND approval_gate = true
-		  AND stage_run_id IN (
-		      SELECT id FROM stage_runs
-		      WHERE run_id = $1
-		        AND ordinal > (SELECT ordinal FROM stage_runs WHERE id = $2)
-		  )
-		RETURNING id
+		FROM locked
+		WHERE j.id = locked.id
+		RETURNING j.id
 	`, runID, stageRunID)
 	if err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: re-arm downstream gates: %w", err)
@@ -1077,16 +1104,28 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 	// stage whose jobs were ALL user-canceled gets no revived job and
 	// correctly stays 'canceled'.
 	if _, err := tx.Exec(ctx, `
-		UPDATE stage_runs
+		WITH current_stage AS (
+		    SELECT ordinal FROM stage_runs WHERE id = $2
+		),
+		locked AS (
+		    SELECT s.id
+		    FROM stage_runs s
+		    JOIN current_stage cs ON true
+		    WHERE s.run_id = $1
+		      AND s.status = 'canceled'
+		      AND s.ordinal > cs.ordinal
+		      AND EXISTS (
+		          SELECT 1 FROM job_runs jr
+		          WHERE jr.stage_run_id = s.id
+		            AND jr.status IN ('queued', 'awaiting_approval')
+		      )
+		    ORDER BY s.id
+		    FOR UPDATE OF s
+		)
+		UPDATE stage_runs s
 		SET status = 'queued', started_at = NULL, finished_at = NULL
-		WHERE run_id = $1
-		  AND status = 'canceled'
-		  AND ordinal > (SELECT ordinal FROM stage_runs WHERE id = $2)
-		  AND EXISTS (
-		      SELECT 1 FROM job_runs jr
-		      WHERE jr.stage_run_id = stage_runs.id
-		        AND jr.status IN ('queued', 'awaiting_approval')
-		  )
+		FROM locked
+		WHERE s.id = locked.id
 	`, runID, stageRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen downstream stages: %w", err)
 	}

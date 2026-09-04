@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,10 +53,10 @@ type supersedeInput struct {
 
 // supersedeLaneSiblings cancels older pending runs in N's lane whose pending-gate
 // env set intersects N's ready-gate env set. Runs INSIDE the caller's tx. Victims
-// are locked + revalidated one at a time in counter-DESC order (so concurrent
-// supersede passes acquire runs rows in one consistent descending order and can't
-// deadlock), and terminalized via the same cascade CancelRun uses. Returns the
-// superseded runs for the caller to fire external effects post-commit.
+// are locked + revalidated one at a time in id-ASC order, the universal
+// intra-table run lock order for multi-run operations, and terminalized via the
+// same cascade CancelRun uses. Returned victims are sorted by counter DESC for
+// the existing presentation/audit contract.
 //
 // Rollback note (#97): there is no runs.is_rollback — a rollback is a RerunJob on
 // an EXISTING run (no new counter), so it never appears as a newer-run candidate.
@@ -133,7 +134,7 @@ func (s *Store) supersedeLaneSiblings(ctx context.Context, tx pgx.Tx, in superse
 	}()
 
 	var out []SupersededRun
-	for _, c := range candidates { // already counter DESC from SQL
+	for _, c := range candidates { // id ASC from SQL: universal intra-table run lock order
 		// One savepoint per victim so a lock-timeout/deadlock abort rolls back only
 		// this victim's partial terminalization (incl. the runs-status flip) and the
 		// loop continues with the outer tx healthy.
@@ -156,6 +157,9 @@ func (s *Store) supersedeLaneSiblings(ctx context.Context, tx pgx.Tx, in superse
 			out = append(out, *superseded)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Counter > out[j].Counter
+	})
 	return out, nil
 }
 

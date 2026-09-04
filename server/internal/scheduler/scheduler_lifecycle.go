@@ -155,10 +155,15 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		_ = conn.Close(context.Background())
 		return fmt.Errorf("scheduler: LISTEN merge_group canceled: %w", err)
 	}
+	if _, err := conn.Exec(ctx, "LISTEN "+store.RunTerminalEffectsChannel); err != nil {
+		_ = conn.Close(context.Background())
+		return fmt.Errorf("scheduler: LISTEN run terminal effects: %w", err)
+	}
 
 	runCh := make(chan uuid.UUID, 32)
 	supersededCh := make(chan uuid.UUID, 32)
 	mergeGroupCanceledCh := make(chan uuid.UUID, 32)
+	runTerminalEffectsCh := make(chan uuid.UUID, 32)
 	// drainCh is the single-producer signal: on an agent register,
 	// or a tick, we coalesce into one drain without blocking the
 	// signaller. Buffer of 1 because two back-to-back drains add
@@ -199,6 +204,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				target = supersededCh
 			} else if note.Channel == store.MergeGroupCanceledRunChannel {
 				target = mergeGroupCanceledCh
+			} else if note.Channel == store.RunTerminalEffectsChannel {
+				target = runTerminalEffectsCh
 			}
 			select {
 			case target <- id:
@@ -211,6 +218,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 					s.log.Warn("scheduler: superseded channel full; frame push deferred to reconnect/reaper", "run_id", id)
 				} else if note.Channel == store.MergeGroupCanceledRunChannel {
 					s.log.Warn("scheduler: merge_group canceled channel full; effects deferred to replay/reaper", "run_id", id)
+				} else if note.Channel == store.RunTerminalEffectsChannel {
+					s.log.Warn("scheduler: run terminal effects channel full; effects deferred to replay", "run_id", id)
 				}
 			}
 		}
@@ -239,6 +248,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			s.fireSupersedeEffects(ctx, runID)
 		case runID := <-mergeGroupCanceledCh:
 			s.fireMergeGroupCancelEffects(ctx, runID)
+		case runID := <-runTerminalEffectsCh:
+			s.fireRunTerminalEffects(ctx, runID)
 		case <-drainCh:
 			// Agent came online — re-try every queued run so jobs
 			// stop sitting around for up to a tick interval just
@@ -247,6 +258,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-ticker.C:
 			s.drainQueued(ctx)
 			s.refreshQueueDepth(ctx)
+			s.replayRunTerminalEffects(ctx)
 			s.replaySupersedeEffects(ctx)
 			s.replayMergeGroupCancelEffects(ctx)
 		}
