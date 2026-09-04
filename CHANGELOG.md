@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.98.0 — 2026-09-04
+
 ### Added
 
 - **GitHub merge queue support.** The GitHub App webhook now handles
