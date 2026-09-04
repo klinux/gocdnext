@@ -50,6 +50,14 @@ func TestSubject_PerCause(t *testing.T) {
 			},
 			want: "project:shop:pipeline:ops:ref_type:none:ref:none",
 		},
+		{
+			name: "merge group run",
+			jc: JobClaims{
+				ProjectSlug: "shop", Pipeline: "ci",
+				RefType: "merge_group", Ref: "main", Cause: "merge_group",
+			},
+			want: "project:shop:pipeline:ci:merge_group:ref:main",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

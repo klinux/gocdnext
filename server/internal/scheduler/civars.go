@@ -50,6 +50,7 @@ func buildCIVars(run store.RunForDispatch, jobName string) map[string]string {
 		out["CI_CAUSE"] = run.Cause
 	}
 	addPullRequestVars(out, run.Cause, run.CauseDetail)
+	addMergeGroupVars(out, run.Cause, run.CauseDetail)
 	addTagVars(out, run.Cause, run.CauseDetail)
 	addUpstreamVars(out, run.CauseDetail)
 	return out
@@ -219,6 +220,39 @@ func addPullRequestVars(out map[string]string, cause string, detail []byte) {
 	// not a comma-split.
 	if len(pr.Labels) > 0 {
 		out["CI_PULL_REQUEST_LABELS"] = strings.Join(pr.Labels, ",")
+	}
+}
+
+// mergeGroupDetail mirrors the JSONB the GitHub App webhook handler stamps on
+// `runs.cause_detail` for a merge_group cause. No PR vars are emitted here:
+// GitHub's payload does not carry a PR number and the queue ref format is not
+// an API contract.
+type mergeGroupDetail struct {
+	HeadSHA string `json:"mg_head_sha"`
+	HeadRef string `json:"mg_head_ref"`
+	BaseSHA string `json:"mg_base_sha"`
+	BaseRef string `json:"mg_base_ref"`
+}
+
+func addMergeGroupVars(out map[string]string, cause string, detail []byte) {
+	if cause != "merge_group" || len(detail) == 0 {
+		return
+	}
+	var mg mergeGroupDetail
+	if err := json.Unmarshal(detail, &mg); err != nil {
+		return
+	}
+	if mg.HeadSHA != "" {
+		out["CI_MERGE_GROUP_HEAD_SHA"] = mg.HeadSHA
+	}
+	if mg.HeadRef != "" {
+		out["CI_MERGE_GROUP_HEAD_REF"] = mg.HeadRef
+	}
+	if mg.BaseSHA != "" {
+		out["CI_MERGE_GROUP_BASE_SHA"] = mg.BaseSHA
+	}
+	if mg.BaseRef != "" {
+		out["CI_MERGE_GROUP_BASE_REF"] = mg.BaseRef
 	}
 }
 

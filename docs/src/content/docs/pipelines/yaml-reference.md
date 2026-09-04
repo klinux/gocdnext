@@ -57,18 +57,23 @@ level. The parser accepts:
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `event` | `[]string` | `[push]` | `push`, `pull_request`, `tag`, `manual`, `cron`, `upstream` |
+| `event` | `[]string` | `[push]` | `push`, `pull_request`, `merge_group`, `tag`, `manual`, `cron`, `upstream` |
 | `branch` | `[]string` | all | Singular `branch:` (the YAML key). List of branch names; substring/exact match per scheduler config. Empty = any branch. |
 
 ```yaml
 when:
-  event: [push, pull_request]
+  event: [push, pull_request, merge_group]
   branch: [main, develop]
 ```
 
 `event: [manual]` makes the pipeline runnable only via *Run latest*
 in the UI or `gocdnext run <pipeline>`. `event: [cron]` is set
 automatically by the project's cron schedule.
+
+`merge_group` is GitHub merge queue support. A material that listens to
+`pull_request` is also eligible for `merge_group` dispatch, so required PR
+checks keep reporting when GitHub tests a queue SHA. Add `merge_group`
+explicitly when you want the intent visible in YAML.
 
 `when.status:` is **rejected at parse** (it was reserved and
 unenforced — declaring it gated nothing; issue #40). Tag-name regexes
@@ -99,6 +104,7 @@ Where the changed-file set comes from, per event:
 | push (Bitbucket) | — | payload has no file lists — always **fails open** |
 | pull_request (GitHub) | PR files API (paginated, up to 3000 files) | needs repo credentials (PAT or GitHub App); without them, **fails open** |
 | pull_request (GitLab/Bitbucket) | — | adapter not implemented yet — **fails open** |
+| merge_group (GitHub App) | — | queue payload has no reliable changed-file set — **always runs**, ignoring `when.paths` |
 | tag / manual / cron / upstream | — | no changed-file concept — always runs |
 
 **Fail open** means the pipeline runs anyway: an unknown file set
@@ -118,9 +124,9 @@ bumps, changelog regeneration) avoids retriggering itself.
 
 Two deliberate boundaries:
 
-- **`pull_request` events never honor the markers** — otherwise any
-  contributor could bypass PR validation by writing the marker into
-  their own commits.
+- **`pull_request` and `merge_group` events never honor the markers** —
+  otherwise any contributor could bypass PR / merge-queue validation by writing
+  the marker into their own commits.
 - **Annotated tags can't be skipped**: the push payload carries no
   commit message for them (same caveat GitHub Actions has).
   Lightweight tags honor the marker on the tagged commit.
@@ -633,7 +639,7 @@ The agent injects these into every job's environment:
 | `CI_PROJECT_ID` | UUID of the project |
 | `CI_PROJECT_SLUG` | project slug |
 | `CI_JOB_NAME` | job name |
-| `CI_CAUSE` | trigger that created the run — `webhook`, `pull_request`, `tag`, `manual`, `upstream`, `schedule`, `poll` |
+| `CI_CAUSE` | trigger that created the run — `webhook`, `pull_request`, `merge_group`, `tag`, `manual`, `upstream`, `schedule`, `poll` |
 | `GOCDNEXT_MATRIX` | matrix jobs only — the cell as `K=V,K=V` (dimensions lex-sorted). Each dimension is **also** injected as its own var, e.g. `$OS`, `$ARCH`. See [Parallel / matrix](#parallel--matrix). |
 
 ### Pull-request runs
@@ -654,6 +660,22 @@ Missing fields stay UNSET (rather than empty strings) — so a PR
 with no title leaves `${CI_PULL_REQUEST_TITLE}` literal at
 substitution time. Non-PR runs (push, manual, upstream, schedule,
 poll) skip all `CI_PULL_REQUEST_*` vars silently.
+
+### GitHub merge-queue runs
+
+When `CI_CAUSE == "merge_group"`, the following are injected from GitHub's
+merge queue payload:
+
+| Name | Value |
+|---|---|
+| `CI_MERGE_GROUP_HEAD_SHA` | merge-group head SHA that GitHub is testing |
+| `CI_MERGE_GROUP_HEAD_REF` | queue ref, e.g. `gh-readonly-queue/main/pr-42-deadbeef` |
+| `CI_MERGE_GROUP_BASE_SHA` | base SHA from the merge-group payload |
+| `CI_MERGE_GROUP_BASE_REF` | target branch, e.g. `main` |
+
+Merge-group runs do **not** emit `CI_PULL_REQUEST_*`: GitHub's payload does not
+carry a stable PR number contract, and one merge group can represent more than
+one queued PR.
 
 ### Tag-push runs
 

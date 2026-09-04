@@ -365,6 +365,54 @@ jobs:
 	}
 }
 
+func TestParse_TriggerEvents_AcceptsMergeGroup(t *testing.T) {
+	const y = `
+name: queue
+when:
+  event: [merge_group]
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "queue")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.TriggerEvents) != 1 || p.TriggerEvents[0] != "merge_group" {
+		t.Errorf("TriggerEvents = %v, want [merge_group]", p.TriggerEvents)
+	}
+}
+
+func TestParse_GitMaterialEvents_AcceptsMergeGroup(t *testing.T) {
+	const y = `
+name: queue
+stages: [build]
+materials:
+  - git:
+      url: https://github.com/org/repo
+      branch: main
+      on: [merge_group]
+jobs:
+  build:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "queue")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := p.Materials[0].Git.Events
+	if len(got) != 1 || got[0] != "merge_group" {
+		t.Errorf("Events = %v, want [merge_group]", got)
+	}
+}
+
 func TestParse_TriggerEvents_RejectsTypo(t *testing.T) {
 	// `event: [tags]` (note the trailing s) used to apply cleanly
 	// then silently never fire — the field is enum-validated since
@@ -380,6 +428,38 @@ func TestParse_TriggerEvents_RejectsTypo(t *testing.T) {
 name: release
 when:
   event: [tags]
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`,
+		},
+		{
+			name: "merge group hyphen typo",
+			yaml: `
+name: release
+when:
+  event: [merge-group]
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`,
+		},
+		{
+			name: "merge groups plural typo",
+			yaml: `
+name: release
+when:
+  event: [merge_groups]
 stages: [build]
 materials:
   - manual: true
@@ -412,6 +492,9 @@ jobs:
 			_, err := ParseNamed(strings.NewReader(tc.yaml), "p", "release")
 			if err == nil {
 				t.Fatal("expected error on invalid event, got nil")
+			}
+			if !strings.Contains(err.Error(), "accepted: push, pull_request, merge_group, tag, manual, cron, upstream") {
+				t.Fatalf("error = %v, want accepted event set", err)
 			}
 		})
 	}

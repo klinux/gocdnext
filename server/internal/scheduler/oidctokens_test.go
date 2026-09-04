@@ -240,4 +240,24 @@ func TestMintIDTokens_ClaimsPerCause(t *testing.T) {
 			t.Errorf("ref = %s/%s, want tag/v1.2.3", cap.jc.RefType, cap.jc.Ref)
 		}
 	})
+
+	t.Run("merge_group run gets merge_group sub over base ref", func(t *testing.T) {
+		cap := &claimCapture{}
+		s := scheduler.New(nil, nil, nil, "").WithIDTokenMinter(cap)
+		run := idTokenRun(t, "deploy", specs, "merge_group", `{"mg_base_ref": "main", "mg_head_ref": "gh-readonly-queue/main/pr-1-aaaa"}`)
+		run.Revisions = json.RawMessage(`{"00000000-0000-0000-0000-000000000001": {"revision": "queue-sha", "branch": "gh-readonly-queue/main/pr-1-aaaa"}}`)
+		job := store.DispatchableJob{ID: uuid.New(), RunID: run.ID, Name: "deploy"}
+		if _, err := scheduler.MintIDTokensForTest(s, ctx, run, job); err != nil {
+			t.Fatalf("mint: %v", err)
+		}
+		if cap.jc.RefType != "merge_group" || cap.jc.Ref != "main" {
+			t.Errorf("ref = %s/%s, want merge_group/main", cap.jc.RefType, cap.jc.Ref)
+		}
+		if cap.jc.SHA != "queue-sha" {
+			t.Errorf("sha = %q, want queue-sha", cap.jc.SHA)
+		}
+		if sub := cap.jc.Subject(); sub != "project:shop:pipeline:ci:merge_group:ref:main" {
+			t.Errorf("sub = %q", sub)
+		}
+	})
 }

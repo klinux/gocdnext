@@ -71,8 +71,8 @@ type fanOutOutcome struct {
 // fanOutMaterials walks each material in the input set, inserts a
 // modification (idempotent on material_id+revision+branch), and on
 // CREATE-NOT-DUPLICATE creates a run for the owning pipeline. Errors
-// per material are returned in the per-outcome Err field so one bad
-// pipeline doesn't take down all the others on the same delivery.
+// per material are returned in the per-outcome Err field so each caller can
+// decide whether partial fan-out is acceptable for that event type.
 //
 // Concurrency: serial today. The dispatch path is already async
 // (LISTEN/NOTIFY wakes the scheduler), so the latency of N

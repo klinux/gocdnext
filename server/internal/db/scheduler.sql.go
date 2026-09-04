@@ -86,9 +86,7 @@ dispatchable_runs AS (
     -- Drop serial runs gated behind a running sibling: the dispatcher leaves
     -- them queued (scheduler.go serial gate), so their jobs can't reach an agent
     -- now and must not inflate the fleet. Mirrors the gate exactly — gated iff
-    -- THIS run is serial AND another run of the same pipeline is running. A
-    -- running run is never gated (it is the active one), so its own still-queued
-    -- stage jobs keep counting.
+    -- THIS run is serial AND another run of the same pipeline is running.
     SELECT ar.id
     FROM active_runs ar
     WHERE NOT (

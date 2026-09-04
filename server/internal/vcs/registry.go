@@ -48,6 +48,7 @@ type Integration struct {
 type Registry struct {
 	mu           sync.RWMutex
 	githubApp    *ghscm.AppClient
+	githubApps   map[int64]*ghscm.AppClient
 	integrations []Integration
 }
 
@@ -64,9 +65,27 @@ func New() *Registry {
 // then DB) and collisions resolve to "last seen wins" in the
 // metadata; the AppClient argument is already resolved.
 func (r *Registry) Replace(githubApp *ghscm.AppClient, integrations []Integration) {
+	apps := map[int64]*ghscm.AppClient{}
+	if githubApp != nil {
+		apps[githubApp.AppID()] = githubApp
+	}
+	r.ReplaceGitHubApps(githubApp, apps, integrations)
+}
+
+// ReplaceGitHubApps atomically swaps the registry contents, including the
+// optional per-App clients used when a persisted check was created by a
+// non-primary GitHub App.
+func (r *Registry) ReplaceGitHubApps(githubApp *ghscm.AppClient, githubApps map[int64]*ghscm.AppClient, integrations []Integration) {
 	copy := append([]Integration(nil), integrations...)
+	appCopy := make(map[int64]*ghscm.AppClient, len(githubApps))
+	for appID, client := range githubApps {
+		if appID != 0 && client != nil {
+			appCopy[appID] = client
+		}
+	}
 	r.mu.Lock()
 	r.githubApp = githubApp
+	r.githubApps = appCopy
 	r.integrations = copy
 	r.mu.Unlock()
 }
@@ -79,6 +98,19 @@ func (r *Registry) GitHubApp() *ghscm.AppClient {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.githubApp
+}
+
+// GitHubAppByID returns the client for a specific GitHub App id when the
+// registry has one. It does not fall back to the primary client: callers use
+// this for persisted identities where using a different App would fail closed
+// or touch the wrong installation.
+func (r *Registry) GitHubAppByID(appID int64) *ghscm.AppClient {
+	if r == nil || appID == 0 {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.githubApps[appID]
 }
 
 // TokenForGitURL satisfies scheduler.GitTokenSource so the dispatch

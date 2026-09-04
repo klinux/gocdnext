@@ -2343,6 +2343,90 @@ func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
 	}
 }
 
+func TestDispatchRun_MergeGroupHonorsSerialBusyGate(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	fp := domain.GitFingerprint("https://github.com/org/mg-serial", "main")
+	applyRes, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "mg-serial", Name: "MG Serial",
+		Pipelines: []*domain.Pipeline{{
+			Name:        "deploy",
+			Stages:      []string{"deploy"},
+			Concurrency: domain.ConcurrencySerial,
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{
+					URL: "https://github.com/org/mg-serial", Branch: "main",
+					Events: []string{"pull_request"},
+				},
+			}},
+			Jobs: []domain.Job{{
+				Name: "apply", Stage: "deploy", Image: "alpine:3.19",
+				Tasks: []domain.Task{{Script: "echo deploy"}},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	pipelineID := applyRes.Pipelines[0].PipelineID
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint=$1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("mat lookup: %v", err)
+	}
+	first, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: pipelineID, MaterialID: materialID, ModificationID: 1,
+		Revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Branch: "main",
+		Provider: "github", Delivery: "t-1", TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if err := s.MarkRunRunning(ctx, first.RunID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+
+	detail, _ := json.Marshal(map[string]any{
+		"mg_head_sha":    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"mg_head_ref":    "gh-readonly-queue/main/pr-2-bbbb",
+		"mg_base_sha":    "1111111111111111111111111111111111111111",
+		"mg_base_ref":    "main",
+		"mg_fingerprint": fp,
+	})
+	second, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: pipelineID, MaterialID: materialID, ModificationID: 2,
+		Revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Branch:   "gh-readonly-queue/main/pr-2-bbbb",
+		Provider: "github", Delivery: "t-2", TriggeredBy: "system:webhook",
+		Cause: string(domain.CauseMergeGroup), CauseDetail: detail,
+	})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+
+	agentID := seedAgentRow(t, pool, "mg-serial-agent")
+	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	markReady(t, sessions, sess.ID)
+	sched.DispatchRun(ctx, second.RunID)
+
+	select {
+	case msg := <-sess.Out():
+		t.Fatalf("unexpected dispatch while serial predecessor is running: %+v", msg)
+	default:
+	}
+	var reason *string
+	if err := pool.QueryRow(ctx, `SELECT queue_reason FROM runs WHERE id=$1`, second.RunID).Scan(&reason); err != nil {
+		t.Fatalf("read queue_reason: %v", err)
+	}
+	if reason == nil || !strings.HasPrefix(*reason, "serial-busy:"+first.RunID.String()) {
+		t.Fatalf("queue_reason = %v, want serial-busy:%s", reason, first.RunID)
+	}
+}
+
 // seedSameStageNeeds creates a pipeline with TWO jobs in the SAME
 // stage where the second declares `needs: [first]`. Mirrors the
 // Same-stage needs regression: `build needs: [types-generate]` in the same
