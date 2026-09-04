@@ -16,7 +16,10 @@ UPDATE runs
 SET status = 'canceled',
     finished_at = COALESCE(finished_at, NOW()),
     queue_reason = NULL,
-    cancel_reason = $2
+    cancel_reason = $2,
+    terminal_effects_required = true,
+    terminal_effects_claimed_at = NULL,
+    terminal_effects_at = NULL
 WHERE id = $1 AND status IN ('queued', 'running')
 RETURNING id, service_generation
 `

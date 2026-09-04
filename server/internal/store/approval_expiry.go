@@ -360,6 +360,12 @@ func (s *Store) ExpireApprovalGate(ctx context.Context, in ExpireApprovalGateInp
 		}
 		running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
 	}
+	if err := q.NotifyRunTerminalEffects(ctx, db.NotifyRunTerminalEffectsParams{
+		Channel: RunTerminalEffectsChannel,
+		Payload: runID.String(),
+	}); err != nil {
+		return ExpireApprovalGateResult{}, fmt.Errorf("store: expire approval gate: notify terminal effects: %w", err)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return ExpireApprovalGateResult{}, fmt.Errorf("store: expire approval gate: commit: %w", err)

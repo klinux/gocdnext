@@ -515,6 +515,12 @@ type Run struct {
 	ServiceGeneration                int64
 	MergeGroupCancelEffectsClaimedAt pgtype.Timestamptz
 	MergeGroupCancelEffectsAt        pgtype.Timestamptz
+	// True when a post-migration terminal run still needs generic terminal effects.
+	TerminalEffectsRequired bool
+	// Lease claim for generic terminal run effects (GitHub completion + service cleanup).
+	TerminalEffectsClaimedAt pgtype.Timestamptz
+	// Set once generic terminal run effects have resolved; service cleanup is durable, GitHub is best-effort.
+	TerminalEffectsAt pgtype.Timestamptz
 }
 
 type RunGatePass struct {

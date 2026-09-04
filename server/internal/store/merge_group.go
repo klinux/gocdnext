@@ -82,6 +82,16 @@ func (s *Store) CancelMergeGroupRuns(ctx context.Context, fingerprint, headSHA, 
 	runIDs := make([]uuid.UUID, 0, len(candidates))
 	for _, runID := range candidates {
 		if _, err := tx.Exec(ctx, `
+			WITH locked AS (
+			    SELECT j.id
+			    FROM job_runs j
+			    JOIN stage_runs s ON s.id = j.stage_run_id
+			    WHERE j.run_id = $1
+			      AND s.name != '_notifications'
+			      AND j.status IN ('queued', 'running', 'awaiting_approval')
+			    ORDER BY j.id
+			    FOR UPDATE OF j
+			)
 			UPDATE job_runs j
 			SET status = CASE WHEN j.status = 'running' THEN j.status ELSE 'canceled' END,
 			    finished_at = CASE WHEN j.status = 'running'
@@ -90,11 +100,8 @@ func (s *Store) CancelMergeGroupRuns(ctx context.Context, fingerprint, headSHA, 
 			                              THEN COALESCE(j.cancel_requested_at, NOW())
 			                              ELSE j.cancel_requested_at END,
 			    cancel_origin = COALESCE(j.cancel_origin, $2)
-			FROM stage_runs s
-			WHERE j.run_id = $1
-			  AND s.id = j.stage_run_id
-			  AND s.name != '_notifications'
-			  AND j.status IN ('queued', 'running', 'awaiting_approval')
+			FROM locked
+			WHERE j.id = locked.id
 		`, pgUUID(runID), string(CancelOriginMergeGroup)); err != nil {
 			return nil, fmt.Errorf("store: cancel merge group: jobs: %w", err)
 		}
