@@ -91,7 +91,10 @@ on the repo, requiring each pipeline’s commit-status context
 <code dir="auto">ci/gocdnext/&#x3C;project>/&#x3C;pipeline></code>. The name carries the project slug, so two
 projects bound to the same repo each own a separate ruleset and never clobber
 each other.</li>
-<li>A PR to the default branch can’t merge until every required pipeline is green.</li>
+<li>A PR to the default branch can’t merge until every required pipeline is green.
+If GitHub merge queue is enabled, the same required context is reported on
+the queue SHA from <code dir="auto">merge_group.checks_requested</code>, so GitHub can validate the
+speculative merge before landing it.</li>
 </ol>
 <p>Because it is a <strong>dedicated ruleset</strong>, it stacks with any other rules you already
 have — gocdnext never touches your existing branch protection or other rulesets.
@@ -107,6 +110,9 @@ actionable <em>“re-approve the App”</em> message (nothing is half-applied). 
 the project’s <em>check reporting</em> must be <code dir="auto">both</code> or <code dir="auto">commit_status</code> (the
 default is <code dir="auto">both</code>). A project set to <code dir="auto">check_run</code> only can’t be gated this way —
 the UI blocks it and tells you to switch.</li>
+<li><strong>For GitHub merge queue:</strong> the GitHub App needs <strong>Merge queues: read</strong>, its
+App webhook must be configured at <code dir="auto">/api/webhooks/github/app</code>, and it must be
+subscribed to <strong>Merge group</strong> events. See <a href="/install/webhooks/#github">webhook setup</a>.</li>
 </ul>
 <h2 id="which-pipelines-are-eligible">Which pipelines are eligible</h2>
 <p>A pipeline is offered (and accepted) as required <strong>only</strong> when it will reliably
@@ -123,6 +129,9 @@ PRs that don’t touch its paths, so its check wouldn’t post for those.</li>
 <p>Anything outside this set would <strong>deadlock the merge</strong> (GitHub waits forever for a
 check that never arrives), so it isn’t selectable. A path-scoped pipeline simply
 won’t appear in the list — that’s expected, not a bug.</p>
+<p>On merge queue deliveries, path-scoped PR pipelines run anyway. GitHub does not
+send a reliable changed-file set with <code dir="auto">merge_group</code>, and a skipped required
+context would leave the queue SHA pending forever.</p>
 <p>If you later rename/remove a required pipeline, change its events/branch, or add a
 path filter, gocdnext re-syncs the ruleset on the next project apply, dropping any
 pipeline that is no longer eligible.</p>
