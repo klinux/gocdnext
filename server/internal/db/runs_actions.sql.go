@@ -883,7 +883,7 @@ WHERE r.pipeline_id = $1 AND r.ref = $2 AND r.counter < $3
   AND r.status IN ('queued', 'running')
   AND EXISTS (SELECT 1 FROM job_runs j
               WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
-ORDER BY r.counter DESC
+ORDER BY r.id ASC
 `
 
 type SupersedeCandidatesBranchParams struct {
@@ -898,9 +898,9 @@ type SupersedeCandidatesBranchRow struct {
 }
 
 // Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
-// the supersede victim candidates for `supersede: branch`. counter DESC so
-// concurrent supersede passes lock runs.id rows in one consistent descending
-// order (current is the highest, already locked by its own tx) and can't cycle.
+// the supersede victim candidates for `supersede: branch`. id ASC is the
+// universal intra-table lock order for multi-run operations; callers can sort
+// presentation separately.
 func (q *Queries) SupersedeCandidatesBranch(ctx context.Context, arg SupersedeCandidatesBranchParams) ([]SupersedeCandidatesBranchRow, error) {
 	rows, err := q.db.Query(ctx, supersedeCandidatesBranch, arg.PipelineID, arg.Ref, arg.Counter)
 	if err != nil {
@@ -928,7 +928,7 @@ WHERE r.pipeline_id = $1 AND r.counter < $2
   AND r.status IN ('queued', 'running')
   AND EXISTS (SELECT 1 FROM job_runs j
               WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
-ORDER BY r.counter DESC
+ORDER BY r.id ASC
 `
 
 type SupersedeCandidatesPipelineParams struct {
@@ -942,7 +942,7 @@ type SupersedeCandidatesPipelineRow struct {
 }
 
 // Same, for `supersede: pipeline` (lane ignores ref) — no ref predicate so it
-// rides the (pipeline_id, counter) partial index.
+// rides the (pipeline_id, counter) partial index. Lock order remains id ASC.
 func (q *Queries) SupersedeCandidatesPipeline(ctx context.Context, arg SupersedeCandidatesPipelineParams) ([]SupersedeCandidatesPipelineRow, error) {
 	rows, err := q.db.Query(ctx, supersedeCandidatesPipeline, arg.PipelineID, arg.Counter)
 	if err != nil {

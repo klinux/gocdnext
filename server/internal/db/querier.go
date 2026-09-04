@@ -2083,12 +2083,12 @@ type Querier interface {
 	// reaper never observes a running-no-agent job without its owning watch.
 	StartServerManagedJob(ctx context.Context, id pgtype.UUID) (StartServerManagedJobRow, error)
 	// Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
-	// the supersede victim candidates for `supersede: branch`. counter DESC so
-	// concurrent supersede passes lock runs.id rows in one consistent descending
-	// order (current is the highest, already locked by its own tx) and can't cycle.
+	// the supersede victim candidates for `supersede: branch`. id ASC is the
+	// universal intra-table lock order for multi-run operations; callers can sort
+	// presentation separately.
 	SupersedeCandidatesBranch(ctx context.Context, arg SupersedeCandidatesBranchParams) ([]SupersedeCandidatesBranchRow, error)
 	// Same, for `supersede: pipeline` (lane ignores ref) — no ref predicate so it
-	// rides the (pipeline_id, counter) partial index.
+	// rides the (pipeline_id, counter) partial index. Lock order remains id ASC.
 	SupersedeCandidatesPipeline(ctx context.Context, arg SupersedeCandidatesPipelineParams) ([]SupersedeCandidatesPipelineRow, error)
 	// Latest-wins supersede (#97): flip an older pending run to canceled + stamp the
 	// superseding run id + reason. Same shape/guard as CancelActiveRun (idempotent —

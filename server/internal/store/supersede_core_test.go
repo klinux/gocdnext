@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
@@ -81,6 +82,39 @@ func (f gateFixture) createRun(t *testing.T, branch string) RunCreated {
 		t.Fatalf("create run: %v", err)
 	}
 	return run
+}
+
+func (f gateFixture) insertSupersedeCandidateRun(t *testing.T, id uuid.UUID, counter int64, ref string) RunCreated {
+	t.Helper()
+	stageID := uuid.New()
+	gateID := uuid.New()
+	tx, err := f.pool.Begin(f.ctx)
+	if err != nil {
+		t.Fatalf("begin insert supersede candidate run: %v", err)
+	}
+	defer func() { _ = tx.Rollback(f.ctx) }()
+	if _, err := tx.Exec(f.ctx, `
+		INSERT INTO runs (id, pipeline_id, counter, cause, status, revisions, triggered_by, ref, definition)
+		VALUES ($1, $2, $3, 'webhook', 'queued', '{}'::jsonb, 'system:test', $4, '{}'::jsonb)
+	`, id, f.pipelineID, counter, ref); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if _, err := tx.Exec(f.ctx, `
+		INSERT INTO stage_runs (id, run_id, name, ordinal, status)
+		VALUES ($1, $2, 'gate-staging', 1, 'queued')
+	`, stageID, id); err != nil {
+		t.Fatalf("insert stage run: %v", err)
+	}
+	if _, err := tx.Exec(f.ctx, `
+		INSERT INTO job_runs (id, run_id, stage_run_id, name, status, approval_gate)
+		VALUES ($1, $2, $3, 'approve-staging', 'awaiting_approval', true)
+	`, gateID, id, stageID); err != nil {
+		t.Fatalf("insert gate job: %v", err)
+	}
+	if err := tx.Commit(f.ctx); err != nil {
+		t.Fatalf("commit insert supersede candidate run: %v", err)
+	}
+	return RunCreated{RunID: id, Counter: counter}
 }
 
 // approveGate simulates an approval by flipping the gate job to 'success' so it
@@ -157,9 +191,10 @@ func (f gateFixture) runSupersede(t *testing.T, newer RunCreated, ref string, re
 	return out
 }
 
-// A newer run clears the older pending pile in one lane: victims are returned +
-// terminalized in counter-DESC order, stamped superseded_by the newer run, and the
-// cancel_reason cites the counter ONLY (never the branch/ref value).
+// A newer run clears the older pending pile in one lane: victims are returned in
+// counter-DESC order, stamped superseded_by the newer run, and the cancel_reason
+// cites the counter ONLY (never the branch/ref value). Internally the row locks
+// are acquired by run id, not counter.
 func TestSupersede_DESCAndReason(t *testing.T) {
 	f := newGateFixture(t, "supdesc")
 	r1 := f.createRun(t, "main")
@@ -197,6 +232,43 @@ func TestSupersede_DESCAndReason(t *testing.T) {
 	}
 	if st := f.stateOf(t, r3.RunID); st.status != "queued" {
 		t.Fatalf("newer run status = %q, want queued (untouched)", st.status)
+	}
+}
+
+func TestSupersede_LocksCandidatesByIDAndReturnsByCounter(t *testing.T) {
+	f := newGateFixture(t, "suplockorder")
+	lowCounterHighID := f.insertSupersedeCandidateRun(t,
+		uuid.MustParse("ffffffff-ffff-ffff-ffff-fffffffffff1"), 1, "main")
+	highCounterLowID := f.insertSupersedeCandidateRun(t,
+		uuid.MustParse("00000000-0000-0000-0000-000000000002"), 2, "main")
+	newer := f.insertSupersedeCandidateRun(t,
+		uuid.MustParse("88888888-8888-8888-8888-888888888883"), 3, "main")
+
+	candidates, err := f.s.q.SupersedeCandidatesBranch(f.ctx, db.SupersedeCandidatesBranchParams{
+		PipelineID: pgUUID(f.pipelineID),
+		Ref:        "main",
+		Counter:    newer.Counter,
+	})
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %d, want 2", len(candidates))
+	}
+	if got := fromPgUUID(candidates[0].ID); got != highCounterLowID.RunID {
+		t.Fatalf("first lock candidate = %s, want lowest run id %s", got, highCounterLowID.RunID)
+	}
+	if got := fromPgUUID(candidates[1].ID); got != lowCounterHighID.RunID {
+		t.Fatalf("second lock candidate = %s, want highest run id %s", got, lowCounterHighID.RunID)
+	}
+
+	victims := f.runSupersede(t, newer, "main", []string{"staging"})
+	if len(victims) != 2 {
+		t.Fatalf("victims = %d, want 2", len(victims))
+	}
+	if victims[0].RunID != highCounterLowID.RunID || victims[1].RunID != lowCounterHighID.RunID {
+		t.Fatalf("victim return order = [%s,%s], want counter DESC [%s,%s]",
+			victims[0].RunID, victims[1].RunID, highCounterLowID.RunID, lowCounterHighID.RunID)
 	}
 }
 
@@ -283,10 +355,9 @@ func TestSupersede_StaleRevalidation(t *testing.T) {
 	})
 }
 
-// Two newer runs racing to clear an overlapping pile must not deadlock: both
-// process victims in counter-DESC order (one global descending order), so they
-// serialize on the shared rows instead of cycling. Final state: the whole older
-// pile ends canceled exactly once.
+// Two newer runs racing to clear an overlapping pile must not deadlock: both lock
+// victim run rows in id-ASC order, so they serialize on shared rows instead of
+// cycling. Final state: the whole older pile ends canceled exactly once.
 func TestSupersede_ConcurrentNoDeadlock(t *testing.T) {
 	f := newGateFixture(t, "suprace")
 	r1 := f.createRun(t, "main")

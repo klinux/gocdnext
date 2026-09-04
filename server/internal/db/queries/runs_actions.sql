@@ -31,27 +31,27 @@ WHERE run_id = $1 AND approval_gate = true AND status = 'awaiting_approval';
 
 -- name: SupersedeCandidatesBranch :many
 -- Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
--- the supersede victim candidates for `supersede: branch`. counter DESC so
--- concurrent supersede passes lock runs.id rows in one consistent descending
--- order (current is the highest, already locked by its own tx) and can't cycle.
+-- the supersede victim candidates for `supersede: branch`. id ASC is the
+-- universal intra-table lock order for multi-run operations; callers can sort
+-- presentation separately.
 SELECT r.id, r.counter
 FROM runs r
 WHERE r.pipeline_id = $1 AND r.ref = $2 AND r.counter < $3
   AND r.status IN ('queued', 'running')
   AND EXISTS (SELECT 1 FROM job_runs j
               WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
-ORDER BY r.counter DESC;
+ORDER BY r.id ASC;
 
 -- name: SupersedeCandidatesPipeline :many
 -- Same, for `supersede: pipeline` (lane ignores ref) — no ref predicate so it
--- rides the (pipeline_id, counter) partial index.
+-- rides the (pipeline_id, counter) partial index. Lock order remains id ASC.
 SELECT r.id, r.counter
 FROM runs r
 WHERE r.pipeline_id = $1 AND r.counter < $2
   AND r.status IN ('queued', 'running')
   AND EXISTS (SELECT 1 FROM job_runs j
               WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
-ORDER BY r.counter DESC;
+ORDER BY r.id ASC;
 
 -- name: RunHasSupersededBy :one
 -- Whether a run is still marked superseded. The effects worker re-checks this right
