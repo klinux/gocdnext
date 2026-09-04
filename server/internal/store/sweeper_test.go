@@ -416,6 +416,7 @@ func TestReclaimAgentJobs_FailsAtMaxAttempts(t *testing.T) {
 	if runStatus != "failed" {
 		t.Fatalf("run cascade status = %q, want failed", runStatus)
 	}
+	requirePendingTerminalEffects(t, s, ctx, runID)
 }
 
 // TestReclaimAgentJobs_NoopOnFreshAgent — first-ever register or an agent
@@ -1932,6 +1933,7 @@ func TestReclaimPendingCancelsForOfflineAgent_CascadesToStageAndRun(t *testing.T
 	if runStatus == "running" || runStatus == "queued" {
 		t.Errorf("run status = %q, want terminal (cascade missed)", runStatus)
 	}
+	requirePendingTerminalEffects(t, s, ctx, runID)
 }
 
 // TestReclaimPendingCancelsForOfflineAgent_RespectsGrace — the

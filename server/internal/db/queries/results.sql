@@ -103,6 +103,20 @@ INSERT INTO log_lines (job_run_id, seq, stream, at, text)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (job_run_id, seq, at) DO NOTHING;
 
+-- name: PrecheckJobCompletion :one
+-- Cheap duplicate/stale-result guard for CompleteJob. This does not own
+-- correctness — CompleteJobRun's UPDATE keeps the authoritative CAS — but it lets
+-- already-terminal, wrong-attempt, and wrong-agent results return before reaching
+-- the row-locking UPDATE path. Hot duplicate storms stay a primary-key read.
+SELECT EXISTS (
+    SELECT 1
+    FROM job_runs
+    WHERE id = $1
+      AND status IN ('queued', 'running')
+      AND agent_id IS NOT DISTINCT FROM @expected_agent_id::uuid
+      AND attempt = @expected_attempt::int
+)::boolean;
+
 -- name: CompleteJobRun :one
 -- Flips a queued or running job to its terminal state, IF the caller's
 -- expected agent_id snapshot still matches what's on the row.
@@ -186,7 +200,11 @@ WHERE run_id = $1;
 
 -- name: CompleteRun :execrows
 UPDATE runs
-SET status = $2, finished_at = COALESCE(finished_at, NOW())
+SET status = $2,
+    finished_at = COALESCE(finished_at, NOW()),
+    terminal_effects_required = true,
+    terminal_effects_claimed_at = NULL,
+    terminal_effects_at = NULL
 WHERE id = $1 AND status IN ('queued', 'running');
 
 -- name: SkipJobRun :one
@@ -249,11 +267,19 @@ WHERE j.run_id = $1 AND s.name != '_notifications';
 -- a pipeline that declared `on: failure` notifications still needs them
 -- to fire. The scheduler filters the notification jobs by `on:` when
 -- dispatching so only the matching ones actually run.
-UPDATE stage_runs
-SET status = 'canceled', finished_at = COALESCE(finished_at, NOW())
-WHERE run_id = $1
-  AND status = 'queued'
-  AND name != '_notifications';
+WITH locked AS (
+    SELECT stage_runs.id
+    FROM stage_runs
+    WHERE stage_runs.run_id = $1
+      AND stage_runs.status = 'queued'
+      AND stage_runs.name != '_notifications'
+    ORDER BY stage_runs.id
+    FOR UPDATE
+)
+UPDATE stage_runs s
+SET status = 'canceled', finished_at = COALESCE(s.finished_at, NOW())
+FROM locked
+WHERE s.id = locked.id;
 
 -- name: CancelQueuedJobsInRun :exec
 -- Pending approval gates in a failed run also get canceled so a
@@ -262,14 +288,21 @@ WHERE run_id = $1
 -- path; cancel here only fires on upstream stage failure. Jobs
 -- inside the synthetic _notifications stage are preserved so
 -- `on: failure` notifications still fire.
+WITH locked AS (
+    SELECT j.id
+    FROM job_runs j
+    JOIN stage_runs s ON s.id = j.stage_run_id
+    WHERE j.run_id = $1
+      AND s.name != '_notifications'
+      AND j.status IN ('queued', 'awaiting_approval')
+    ORDER BY j.id
+    FOR UPDATE OF j
+)
 UPDATE job_runs j
 SET status = 'canceled', finished_at = COALESCE(j.finished_at, NOW()),
     -- #207: this is the fail-fast DEPENDENCY cancel (an upstream stage failed).
     -- An upstream rerun SHOULD revive these (they were canceled by the system,
     -- not the user), so cancel_origin='dependency' — RerunJob only skips 'user_job'.
     cancel_origin = COALESCE(j.cancel_origin, @origin)
-FROM stage_runs s
-WHERE j.run_id = $1
-  AND s.id = j.stage_run_id
-  AND s.name != '_notifications'
-  AND j.status IN ('queued', 'awaiting_approval');
+FROM locked
+WHERE j.id = locked.id;

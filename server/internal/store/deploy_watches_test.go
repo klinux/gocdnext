@@ -459,6 +459,56 @@ func TestFinalizeDeployWatch_CompletesServerManagedJob(t *testing.T) {
 	}
 }
 
+func TestFinalizeDeployWatch_LockTimeoutRollsBackAndCanRetry(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	ctx := context.Background()
+	_, jobID, revID, claimID := seedServerManagedDeploy(t, s, pool)
+
+	txHold, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin holder: %v", err)
+	}
+	if _, err := txHold.Exec(ctx, `SELECT 1 FROM job_runs WHERE id=$1 FOR UPDATE`, jobID); err != nil {
+		t.Fatalf("hold job row: %v", err)
+	}
+
+	start := time.Now()
+	if _, err := s.FinalizeDeployWatch(ctx, revID, claimID, store.DeployStatusSuccess, ""); err == nil {
+		t.Fatal("finalize succeeded while job row was locked, want lock timeout")
+	} else if !strings.Contains(err.Error(), "lock timeout") && !strings.Contains(err.Error(), "55P03") {
+		t.Fatalf("finalize err = %v, want lock timeout/55P03", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("finalize waited %s, want bounded lock timeout", d)
+	}
+
+	if _, err := s.GetDeployWatch(ctx, revID); err != nil {
+		t.Fatalf("watch after rollback = %v, want still claimed and retryable", err)
+	}
+	if rev, err := s.GetDeploymentRevision(ctx, revID); err != nil || rev.Status != store.DeployStatusInProgress {
+		t.Fatalf("revision after rollback = %q err=%v, want in_progress", rev.Status, err)
+	}
+	if got := scalarStr(t, pool, `SELECT status FROM job_runs WHERE id=$1`, jobID); got != "running" {
+		t.Fatalf("job after rollback = %q, want running", got)
+	}
+
+	if err := txHold.Rollback(ctx); err != nil {
+		t.Fatalf("release holder: %v", err)
+	}
+	res, err := s.FinalizeDeployWatch(ctx, revID, claimID, store.DeployStatusSuccess, "")
+	if err != nil {
+		t.Fatalf("retry finalize: %v", err)
+	}
+	if !res.Finalized {
+		t.Fatalf("retry res = %+v, want finalized", res)
+	}
+	if _, err := s.GetDeployWatch(ctx, revID); err != store.ErrDeployWatchNotFound {
+		t.Fatalf("watch after retry = %v, want gone", err)
+	}
+}
+
 // #207 Part 6b: a server-managed (native) deploy job with cancel_requested_at stamped
 // must land BOTH the job AND its revision `canceled`, even though the watcher's verdict
 // is `failed` (deploy.Decide's non-rollout cancel = FinalizeFailed). The finalize order

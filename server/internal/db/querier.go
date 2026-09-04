@@ -95,9 +95,10 @@ type Querier interface {
 	// fanouts a CancelJob frame ONLY to rows that are running AND agent_id.Valid;
 	// native rows are driven by the watcher/reaper, not a frame.
 	//
-	// Lock order (#207): this runs FIRST in CancelRun (jobs), before stages and the
-	// run, matching the completion cascade's job → stage → run order so the two never
-	// deadlock (40P01).
+	// Lock order (#207/#211): this runs FIRST in CancelRun (jobs), before stages
+	// and the run, matching the completion cascade's job → stage → run order. The
+	// CTE locks job rows by id ASC so every multi-row job batch shares one
+	// intra-table order; presentation remains caller-owned.
 	CancelRunJobs(ctx context.Context, runID pgtype.UUID) ([]CancelRunJobsRow, error)
 	// Atomically marks a bounded batch of artefacts as 'deleting' and
 	// returns their storage keys so the sweeper can call Store.Delete and
@@ -138,6 +139,10 @@ type Querier interface {
 	// commit together (exactly-once, crash-safe). The PK is the mutual-exclusion
 	// point: a concurrent claim blocks here until this tx commits or rolls back.
 	ClaimGithubAppDelivery(ctx context.Context, arg ClaimGithubAppDeliveryParams) (int64, error)
+	// Claim generic terminal effects for a run. service_generation is returned with
+	// the claim and later used by MarkRunTerminalEffectsDone so a stale worker cannot
+	// mark a run's post-rerun terminalization done after RerunJob bumped generation.
+	ClaimRunTerminalEffects(ctx context.Context, arg ClaimRunTerminalEffectsParams) (ClaimRunTerminalEffectsRow, error)
 	// Claim the right to fire a superseded run's external effects. Succeeds when the
 	// effects aren't already done AND no LIVE claim holds it — a claim older than the
 	// lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
@@ -1413,6 +1418,8 @@ type Querier interface {
 	// index-only on the WHERE clause makes this a sub-millisecond
 	// lookup even on a job_runs table in the millions.
 	ListPendingCancelsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListPendingCancelsForAgentRow, error)
+	// Replay terminal effects that missed their NOTIFY or whose claimer crashed.
+	ListPendingRunTerminalEffects(ctx context.Context, arg ListPendingRunTerminalEffectsParams) ([]pgtype.UUID, error)
 	// Superseded runs whose effects haven't completed AND are claimable right now — the
 	// replay work-list (missed NOTIFY or a claim past its lease). Filtering out LIVE
 	// claims (within the lease) matters: with LIMIT, a block of in-flight claims would
@@ -1745,6 +1752,10 @@ type Querier interface {
 	// step's votes in the same tx.
 	MarkRolloutAbortActioned(ctx context.Context, arg MarkRolloutAbortActionedParams) (int64, error)
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
+	// Complete the generic terminal-effects lease. The generation guard prevents an
+	// old worker from completing a newer terminal event after RerunJob revived the
+	// same run_id and bumped service_generation.
+	MarkRunTerminalEffectsDone(ctx context.Context, arg MarkRunTerminalEffectsDoneParams) (int64, error)
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	// Mark a superseded run's DURABLE effects COMPLETE (cleanup + audit resolved), after
 	// which the replay stops retrying. Guarded on superseded_by so the method can't mark
@@ -1760,6 +1771,9 @@ type Querier interface {
 	// floor is serialized against a concurrent unfreeze upsert.
 	MaxLastUnfrozenAt(ctx context.Context, arg MaxLastUnfrozenAtParams) (pgtype.Timestamptz, error)
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
+	// Transactional wake-up for the generic terminal-effects worker. PostgreSQL only
+	// delivers NOTIFY after the surrounding transaction commits.
+	NotifyRunTerminalEffects(ctx context.Context, arg NotifyRunTerminalEffectsParams) error
 	// Returns the run_id of an in-flight predecessor blocking the
 	// pipeline's serial-concurrency gate, or pgx.ErrNoRows if none.
 	// Used by the scheduler for two things on one query: (1) the busy
@@ -1785,6 +1799,11 @@ type Querier interface {
 	// are excluded: their wall time is human/QA wait, not compute, and cannot be
 	// split reliably from the stage timestamps after the fact.
 	PipelineStageMetricsByProjectSlug(ctx context.Context, arg PipelineStageMetricsByProjectSlugParams) ([]PipelineStageMetricsByProjectSlugRow, error)
+	// Cheap duplicate/stale-result guard for CompleteJob. This does not own
+	// correctness — CompleteJobRun's UPDATE keeps the authoritative CAS — but it lets
+	// already-terminal, wrong-attempt, and wrong-agent results return before reaching
+	// the row-locking UPDATE path. Hot duplicate storms stay a primary-key read.
+	PrecheckJobCompletion(ctx context.Context, arg PrecheckJobCompletionParams) (bool, error)
 	// Per-project roll-up of terminal runs over the last $1 interval.
 	// Same math as PipelineMetricsByProjectSlug but grouped by project
 	// instead of pipeline — the projects list card shows one KPI strip
@@ -1801,6 +1820,7 @@ type Querier interface {
 	// Two guards (Kleber invariant): (1) a GRACE window on cancel_requested_at so we
 	// never race the watcher's own finalize on a freshly-stamped row; (2) NO deploy_watch
 	// row of ANY status may exist for the job — a live/claimed watch still owns it.
+	// #211: same id-ASC batch lock order as the agent-owned cancel reaper.
 	ReclaimAbandonedNativeCancels(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimAbandonedNativeCancelsRow, error)
 	// Flips a running job back to queued, IF it is still running, still
 	// under the retry cap, AND its (agent_id, attempt) STILL matches the
@@ -1876,6 +1896,10 @@ type Querier interface {
 	// A perfectly healthy agent (status=online AND last_seen_at
 	// recent) is skipped — the replay path is still expected to
 	// land the cancel on its next Connect frame.
+	//
+	// #211: lock the reclaimed job rows by id ASC before updating. This path later
+	// cascades each row through stage/run rollup, so deterministic job lock order
+	// keeps it aligned with cancel/supersede batches.
 	ReclaimPendingCancelsForOfflineAgent(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimPendingCancelsForOfflineAgentRow, error)
 	// The pipelines that break most, among projects carrying label_key, over the
 	// window — from the rollup. EXISTS (not a label JOIN) so each pipeline appears
@@ -2063,6 +2087,8 @@ type Querier interface {
 	// too so the watcher/reaper honours the cancel — the caller fanouts a CancelJob
 	// frame only to the returned rows whose agent_id IS valid. A dispatch landing in
 	// the Revoke→Register window is rescued by the same replay + reaper paths.
+	// #211: lock the batch by id ASC before updating, matching CancelRunJobs and
+	// reaper cancel-finalization.
 	StampCancelRequestedAtForRun(ctx context.Context, arg StampCancelRequestedAtForRunParams) ([]StampCancelRequestedAtForRunRow, error)
 	// UNFENCED stamp of the correlation anchor at dispatch, before any watcher has
 	// claimed the watch (so the fenced MarkDeployWatchSyncRequested can't be used yet).

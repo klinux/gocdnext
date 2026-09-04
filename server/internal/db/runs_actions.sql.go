@@ -15,7 +15,10 @@ const cancelActiveRun = `-- name: CancelActiveRun :one
 UPDATE runs
 SET status = 'canceled',
     finished_at = COALESCE(finished_at, NOW()),
-    queue_reason = NULL
+    queue_reason = NULL,
+    terminal_effects_required = true,
+    terminal_effects_claimed_at = NULL,
+    terminal_effects_at = NULL
 WHERE id = $1 AND status IN ('queued', 'running')
 RETURNING id, service_generation
 `
@@ -75,6 +78,16 @@ func (q *Queries) CancelQueuedJobRun(ctx context.Context, id pgtype.UUID) (pgtyp
 }
 
 const cancelRunJobs = `-- name: CancelRunJobs :many
+WITH locked AS (
+    SELECT j.id
+    FROM job_runs j
+    JOIN stage_runs s ON s.id = j.stage_run_id
+    WHERE j.run_id = $1
+      AND s.name != '_notifications'
+      AND j.status IN ('queued', 'running', 'awaiting_approval')
+    ORDER BY j.id
+    FOR UPDATE OF j
+)
 UPDATE job_runs j
 SET status = CASE WHEN j.status = 'running' THEN j.status ELSE 'canceled' END,
     finished_at = CASE WHEN j.status = 'running'
@@ -83,11 +96,8 @@ SET status = CASE WHEN j.status = 'running' THEN j.status ELSE 'canceled' END,
                               THEN COALESCE(j.cancel_requested_at, NOW())
                               ELSE j.cancel_requested_at END,
     cancel_origin = COALESCE(j.cancel_origin, 'user_run')
-FROM stage_runs s
-WHERE j.run_id = $1
-  AND s.id = j.stage_run_id
-  AND s.name != '_notifications'
-  AND j.status IN ('queued', 'running', 'awaiting_approval')
+FROM locked
+WHERE j.id = locked.id
 RETURNING j.id, j.agent_id, j.status
 `
 
@@ -107,9 +117,10 @@ type CancelRunJobsRow struct {
 // fanouts a CancelJob frame ONLY to rows that are running AND agent_id.Valid;
 // native rows are driven by the watcher/reaper, not a frame.
 //
-// Lock order (#207): this runs FIRST in CancelRun (jobs), before stages and the
-// run, matching the completion cascade's job → stage → run order so the two never
-// deadlock (40P01).
+// Lock order (#207/#211): this runs FIRST in CancelRun (jobs), before stages
+// and the run, matching the completion cascade's job → stage → run order. The
+// CTE locks job rows by id ASC so every multi-row job batch shares one
+// intra-table order; presentation remains caller-owned.
 func (q *Queries) CancelRunJobs(ctx context.Context, runID pgtype.UUID) ([]CancelRunJobsRow, error) {
 	rows, err := q.db.Query(ctx, cancelRunJobs, runID)
 	if err != nil {
@@ -621,17 +632,25 @@ func (q *Queries) MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) 
 }
 
 const reclaimAbandonedNativeCancels = `-- name: ReclaimAbandonedNativeCancels :many
+WITH locked AS (
+    SELECT jr.id
+    FROM job_runs jr
+    WHERE jr.status = 'running'
+      AND jr.agent_id IS NULL
+      AND jr.cancel_requested_at IS NOT NULL
+      AND jr.cancel_requested_at < NOW() - $1::INTERVAL
+      AND NOT EXISTS (
+          SELECT 1 FROM deploy_watches dw
+          JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+          WHERE dr.job_run_id = jr.id
+      )
+    ORDER BY jr.id
+    FOR UPDATE
+)
 UPDATE job_runs jr
 SET status = 'canceled', finished_at = COALESCE(finished_at, NOW())
-WHERE jr.status = 'running'
-  AND jr.agent_id IS NULL
-  AND jr.cancel_requested_at IS NOT NULL
-  AND jr.cancel_requested_at < NOW() - $1::INTERVAL
-  AND NOT EXISTS (
-      SELECT 1 FROM deploy_watches dw
-      JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
-      WHERE dr.job_run_id = jr.id
-  )
+FROM locked
+WHERE jr.id = locked.id
 RETURNING jr.id, jr.run_id, jr.stage_run_id, jr.attempt, jr.name
 `
 
@@ -653,6 +672,7 @@ type ReclaimAbandonedNativeCancelsRow struct {
 // Two guards (Kleber invariant): (1) a GRACE window on cancel_requested_at so we
 // never race the watcher's own finalize on a freshly-stamped row; (2) NO deploy_watch
 // row of ANY status may exist for the job — a live/claimed watch still owns it.
+// #211: same id-ASC batch lock order as the agent-owned cancel reaper.
 func (q *Queries) ReclaimAbandonedNativeCancels(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimAbandonedNativeCancelsRow, error) {
 	rows, err := q.db.Query(ctx, reclaimAbandonedNativeCancels, graceInterval)
 	if err != nil {
@@ -680,18 +700,25 @@ func (q *Queries) ReclaimAbandonedNativeCancels(ctx context.Context, graceInterv
 }
 
 const reclaimPendingCancelsForOfflineAgent = `-- name: ReclaimPendingCancelsForOfflineAgent :many
+WITH locked AS (
+    SELECT jr.id
+    FROM job_runs jr
+    JOIN agents a ON jr.agent_id = a.id
+    WHERE jr.status = 'running'
+      AND jr.cancel_requested_at IS NOT NULL
+      AND (
+            a.status = 'offline'
+            OR a.last_seen_at IS NULL
+            OR a.last_seen_at < NOW() - $1::INTERVAL
+          )
+    ORDER BY jr.id
+    FOR UPDATE OF jr
+)
 UPDATE job_runs jr
 SET status      = 'canceled',
     finished_at = COALESCE(finished_at, NOW())
-FROM agents a
-WHERE jr.agent_id = a.id
-  AND jr.status = 'running'
-  AND jr.cancel_requested_at IS NOT NULL
-  AND (
-        a.status = 'offline'
-        OR a.last_seen_at IS NULL
-        OR a.last_seen_at < NOW() - $1::INTERVAL
-      )
+FROM locked
+WHERE jr.id = locked.id
 RETURNING jr.id, jr.run_id, jr.stage_run_id, jr.agent_id, jr.attempt, jr.cancel_requested_at, jr.name
 `
 
@@ -746,6 +773,10 @@ type ReclaimPendingCancelsForOfflineAgentRow struct {
 // A perfectly healthy agent (status=online AND last_seen_at
 // recent) is skipped — the replay path is still expected to
 // land the cancel on its next Connect frame.
+//
+// #211: lock the reclaimed job rows by id ASC before updating. This path later
+// cascades each row through stage/run rollup, so deterministic job lock order
+// keeps it aligned with cancel/supersede batches.
 func (q *Queries) ReclaimPendingCancelsForOfflineAgent(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimPendingCancelsForOfflineAgentRow, error) {
 	rows, err := q.db.Query(ctx, reclaimPendingCancelsForOfflineAgent, graceInterval)
 	if err != nil {
@@ -831,12 +862,20 @@ func (q *Queries) StampCancelRequestedAt(ctx context.Context, id pgtype.UUID) (S
 }
 
 const stampCancelRequestedAtForRun = `-- name: StampCancelRequestedAtForRun :many
-UPDATE job_runs
-SET cancel_requested_at = COALESCE(cancel_requested_at, NOW()),
-    cancel_origin = COALESCE(cancel_origin, $2)
-WHERE run_id = $1
-  AND status = 'running'
-RETURNING id, agent_id
+WITH locked AS (
+    SELECT job_runs.id
+    FROM job_runs
+    WHERE job_runs.run_id = $1
+      AND job_runs.status = 'running'
+    ORDER BY job_runs.id
+    FOR UPDATE
+)
+UPDATE job_runs j
+SET cancel_requested_at = COALESCE(j.cancel_requested_at, NOW()),
+    cancel_origin = COALESCE(j.cancel_origin, $2)
+FROM locked
+WHERE j.id = locked.id
+RETURNING j.id, j.agent_id
 `
 
 type StampCancelRequestedAtForRunParams struct {
@@ -856,6 +895,8 @@ type StampCancelRequestedAtForRunRow struct {
 // too so the watcher/reaper honours the cancel — the caller fanouts a CancelJob
 // frame only to the returned rows whose agent_id IS valid. A dispatch landing in
 // the Revoke→Register window is rescued by the same replay + reaper paths.
+// #211: lock the batch by id ASC before updating, matching CancelRunJobs and
+// reaper cancel-finalization.
 func (q *Queries) StampCancelRequestedAtForRun(ctx context.Context, arg StampCancelRequestedAtForRunParams) ([]StampCancelRequestedAtForRunRow, error) {
 	rows, err := q.db.Query(ctx, stampCancelRequestedAtForRun, arg.RunID, arg.Origin)
 	if err != nil {

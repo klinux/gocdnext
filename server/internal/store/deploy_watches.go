@@ -292,6 +292,14 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
 
+	// #211: the watcher is retryable (lease + next tick), while an agent JobResult
+	// may not be re-sent. If this terminalizer contends with the hot completion path,
+	// be the cheap loser: rollback restores the fenced watch delete and the watcher
+	// retries, instead of letting Postgres pick the agent result as a 40P01 victim.
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '75ms'`); err != nil {
+		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch lock timeout: %w", err)
+	}
+
 	// Fenced delete FIRST: 0 rows → lease lost → abort without touching anything else.
 	del, err := q.DeleteDeployWatchClaimed(ctx, db.DeleteDeployWatchClaimedParams{
 		DeploymentRevisionID: pgUUID(revID), ClaimID: pgUUID(claimID),
