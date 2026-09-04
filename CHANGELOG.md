@@ -8,6 +8,25 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.99.0 — 2026-09-04
+
+### Fixed
+
+- **Completion & terminalization lock-order hardening (#211).** Removed a
+  latent `40P01` deadlock class between the job-completion cascade and the
+  supersede / cancel / reaper / merge-group-cancel / deploy-watch paths by
+  adopting a deterministic `id ASC` intra-table lock order for every multi-row
+  `runs` / `job_runs` / `stage_runs` batch. Job completion now runs a cheap
+  precheck before taking the authoritative row-locking CAS, keeping duplicate /
+  stale / wrong-attempt result storms off the hot lock. Terminal run effects
+  (GitHub check close + exposed `services:` teardown) are now durable —
+  claim/lease/replay driven and `service_generation`-fenced — so a crash or a
+  missed NOTIFY no longer leaks an exposed workload; the teardown gates the
+  done-marker while the GitHub check close stays best-effort. `FinalizeDeployWatch`
+  moves to a fence-last protocol (job/stage/run → revision → the claimed watch
+  delete as the final ownership fence), so a reclaimed watcher rolls the whole
+  transaction back instead of racing the completion path.
+
 ## v0.98.0 — 2026-09-04
 
 ### Added
