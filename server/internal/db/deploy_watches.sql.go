@@ -376,8 +376,8 @@ type DeleteDeployWatchClaimedParams struct {
 	ClaimID              pgtype.UUID
 }
 
-// Fenced delete used by the atomic terminal tx: 0 rows means the lease was lost, so
-// the caller MUST NOT terminalize the deploy (fencing guarantee).
+// Final fenced delete used by the atomic terminal tx: 0 rows means the lease was
+// lost, so the caller MUST roll back and report no-op (fencing guarantee).
 func (q *Queries) DeleteDeployWatchClaimed(ctx context.Context, arg DeleteDeployWatchClaimedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteDeployWatchClaimed, arg.DeploymentRevisionID, arg.ClaimID)
 	if err != nil {

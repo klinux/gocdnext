@@ -272,19 +272,34 @@ type DeployWatchFinalizeResult struct {
 }
 
 // FinalizeDeployWatch atomically terminalizes a server-managed deploy (ADR-0001,
-// Model A) in ONE tx: it deletes the watch (fenced on claimID), flips the revision to
-// status, and completes the deploy's job_run (with the stage/run cascade) so the job
-// status equals the deploy outcome. Doing all three together closes the crash gap
-// where the watch is gone but the job is left running (which the reaper would then
-// reclaim). Returns Finalized=false with NO effect when the lease was lost — the
-// fencing guarantee: a reclaimed watcher can't terminalize. status is "success" or
-// "failed"; reason annotates a failed job_run.
+// Model A) in ONE tx: it completes the deploy's job_run (with the stage/run
+// cascade), flips the revision to status, then deletes the watch as the final
+// fenced step. Doing all three together closes the crash gap where the watch is
+// gone but the job is left running (which the reaper would then reclaim).
+// Returns Finalized=false with NO effect when the lease was lost — the final
+// delete's claimID predicate is the fencing guarantee: a reclaimed watcher can't
+// terminalize. status is "success" or "failed"; reason annotates a failed job_run.
 func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status, reason string) (DeployWatchFinalizeResult, error) {
 	// Validate up front (mirrors FinalizeDeploymentRevision) — a clean error rather
 	// than letting the revision's status CHECK abort the tx.
 	if status != DeployStatusSuccess && status != DeployStatusFailed && status != DeployStatusCanceled {
 		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch: invalid status %q", status)
 	}
+
+	// Cheap precheck only: avoids taking job/stage/run locks for an obviously stale
+	// watcher. Correctness still comes from the final fenced delete inside the tx;
+	// if the lease is stolen after this read, all prior writes roll back.
+	w, err := s.q.GetDeployWatch(ctx, pgUUID(revID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DeployWatchFinalizeResult{Finalized: false}, nil
+		}
+		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch precheck: %w", err)
+	}
+	if !w.ClaimID.Valid || fromPgUUID(w.ClaimID) != claimID {
+		return DeployWatchFinalizeResult{Finalized: false}, nil
+	}
+
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch begin: %w", err)
@@ -300,17 +315,6 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch lock timeout: %w", err)
 	}
 
-	// Fenced delete FIRST: 0 rows → lease lost → abort without touching anything else.
-	del, err := q.DeleteDeployWatchClaimed(ctx, db.DeleteDeployWatchClaimedParams{
-		DeploymentRevisionID: pgUUID(revID), ClaimID: pgUUID(claimID),
-	})
-	if err != nil {
-		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch delete: %w", err)
-	}
-	if del == 0 {
-		return DeployWatchFinalizeResult{Finalized: false}, nil
-	}
-
 	// #207 ORDER: complete the native job FIRST so its EFFECTIVE status (the
 	// CompleteJobRun CASE turns a cancel-stamped row into 'canceled' regardless of
 	// the watcher's convergence verdict) drives the revision status. Finalizing the
@@ -320,6 +324,11 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Revision gone (job/reaper path finalized + deleted it in a rare interleave).
+			if finalized, err := deleteDeployWatchClaimed(ctx, q, revID, claimID); err != nil {
+				return DeployWatchFinalizeResult{}, err
+			} else if !finalized {
+				return DeployWatchFinalizeResult{Finalized: false}, nil
+			}
 			if err := tx.Commit(ctx); err != nil {
 				return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch commit: %w", err)
 			}
@@ -329,6 +338,11 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 	}
 	if rev.Status != DeployStatusInProgress {
 		// Already terminal (job/reaper path won) — nothing to do.
+		if finalized, err := deleteDeployWatchClaimed(ctx, q, revID, claimID); err != nil {
+			return DeployWatchFinalizeResult{}, err
+		} else if !finalized {
+			return DeployWatchFinalizeResult{Finalized: false}, nil
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch commit: %w", err)
 		}
@@ -387,9 +401,25 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch revision: %w", err)
 	}
+	if finalized, err := deleteDeployWatchClaimed(ctx, q, revID, claimID); err != nil {
+		return DeployWatchFinalizeResult{}, err
+	} else if !finalized {
+		return DeployWatchFinalizeResult{Finalized: false}, nil
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch commit: %w", err)
 	}
 	return res, nil
+}
+
+func deleteDeployWatchClaimed(ctx context.Context, q *db.Queries, revID, claimID uuid.UUID) (bool, error) {
+	del, err := q.DeleteDeployWatchClaimed(ctx, db.DeleteDeployWatchClaimedParams{
+		DeploymentRevisionID: pgUUID(revID),
+		ClaimID:              pgUUID(claimID),
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: finalize deploy watch delete: %w", err)
+	}
+	return del > 0, nil
 }

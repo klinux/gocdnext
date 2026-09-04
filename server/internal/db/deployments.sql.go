@@ -238,7 +238,8 @@ type FinalizeDeploymentRevisionByIDRow struct {
 // and return its job link so the SAME tx can complete the server-managed deploy
 // job_run (ADR-0001, Model A). Guarded on status='in_progress' so a re-delivered
 // finalize is a no-op (ErrNoRows). The watcher's FinalizeDeployWatch deletes the
-// deploy_watch (fenced) in the same tx before calling this.
+// deploy_watch (fenced) in the same tx after job/revision work, so the final fence
+// can roll the whole tx back if the lease was stolen.
 func (q *Queries) FinalizeDeploymentRevisionByID(ctx context.Context, arg FinalizeDeploymentRevisionByIDParams) (FinalizeDeploymentRevisionByIDRow, error) {
 	row := q.db.QueryRow(ctx, finalizeDeploymentRevisionByID, arg.ID, arg.Status)
 	var i FinalizeDeploymentRevisionByIDRow

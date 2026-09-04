@@ -381,8 +381,8 @@ type Querier interface {
 	// Deletes a specific target row (used after LockDeployTargetForDelete decided the
 	// locked row is ungated). Same tx / lock as the lock-read.
 	DeleteDeployTargetByID(ctx context.Context, id pgtype.UUID) (int64, error)
-	// Fenced delete used by the atomic terminal tx: 0 rows means the lease was lost, so
-	// the caller MUST NOT terminalize the deploy (fencing guarantee).
+	// Final fenced delete used by the atomic terminal tx: 0 rows means the lease was
+	// lost, so the caller MUST roll back and report no-op (fencing guarantee).
 	DeleteDeployWatchClaimed(ctx context.Context, arg DeleteDeployWatchClaimedParams) (int64, error)
 	// Removes a revision created at dispatch when the dispatch then failed
 	// to reach an agent (the frame never went out, so no deploy happened).
@@ -603,7 +603,8 @@ type Querier interface {
 	// and return its job link so the SAME tx can complete the server-managed deploy
 	// job_run (ADR-0001, Model A). Guarded on status='in_progress' so a re-delivered
 	// finalize is a no-op (ErrNoRows). The watcher's FinalizeDeployWatch deletes the
-	// deploy_watch (fenced) in the same tx before calling this.
+	// deploy_watch (fenced) in the same tx after job/revision work, so the final fence
+	// can roll the whole tx back if the lease was stolen.
 	FinalizeDeploymentRevisionByID(ctx context.Context, arg FinalizeDeploymentRevisionByIDParams) (FinalizeDeploymentRevisionByIDRow, error)
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	// Same shape as ListAgentsWithRunning but for one row — reused by

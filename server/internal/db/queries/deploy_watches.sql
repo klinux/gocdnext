@@ -220,8 +220,8 @@ SET degraded_since = NULL
 WHERE deployment_revision_id = $1 AND claim_id = $2;
 
 -- name: DeleteDeployWatchClaimed :execrows
--- Fenced delete used by the atomic terminal tx: 0 rows means the lease was lost, so
--- the caller MUST NOT terminalize the deploy (fencing guarantee).
+-- Final fenced delete used by the atomic terminal tx: 0 rows means the lease was
+-- lost, so the caller MUST roll back and report no-op (fencing guarantee).
 DELETE FROM deploy_watches
 WHERE deployment_revision_id = $1 AND claim_id = $2;
 

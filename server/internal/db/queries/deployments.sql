@@ -104,7 +104,8 @@ SELECT count(*) FROM finalized;
 -- and return its job link so the SAME tx can complete the server-managed deploy
 -- job_run (ADR-0001, Model A). Guarded on status='in_progress' so a re-delivered
 -- finalize is a no-op (ErrNoRows). The watcher's FinalizeDeployWatch deletes the
--- deploy_watch (fenced) in the same tx before calling this.
+-- deploy_watch (fenced) in the same tx after job/revision work, so the final fence
+-- can roll the whole tx back if the lease was stolen.
 UPDATE deployment_revisions
 SET status = $2, finished_at = NOW()
 WHERE id = $1 AND status = 'in_progress'

@@ -509,6 +509,90 @@ func TestFinalizeDeployWatch_LockTimeoutRollsBackAndCanRetry(t *testing.T) {
 	}
 }
 
+func TestFinalizeDeployWatch_FinalFenceRollsBackWhenClaimStolen(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	ctx := context.Background()
+	_, jobID, revID, claimID := seedServerManagedDeploy(t, s, pool)
+
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_sleep_before_deploy_revision_finalize()
+		RETURNS trigger AS $$
+		BEGIN
+			PERFORM pg_sleep(0.25);
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+		DROP TRIGGER IF EXISTS test_sleep_before_deploy_revision_finalize ON deployment_revisions;
+		CREATE TRIGGER test_sleep_before_deploy_revision_finalize
+		BEFORE UPDATE OF status ON deployment_revisions
+		FOR EACH ROW
+		WHEN (OLD.status = 'in_progress' AND NEW.status IS DISTINCT FROM OLD.status)
+		EXECUTE FUNCTION test_sleep_before_deploy_revision_finalize();
+	`); err != nil {
+		t.Fatalf("install finalize sleep trigger: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `
+			DROP TRIGGER IF EXISTS test_sleep_before_deploy_revision_finalize ON deployment_revisions;
+			DROP FUNCTION IF EXISTS test_sleep_before_deploy_revision_finalize();
+		`)
+	}()
+
+	type finalizeResult struct {
+		res store.DeployWatchFinalizeResult
+		err error
+	}
+	done := make(chan finalizeResult, 1)
+	go func() {
+		res, err := s.FinalizeDeployWatch(ctx, revID, claimID, store.DeployStatusSuccess, "")
+		done <- finalizeResult{res: res, err: err}
+	}()
+
+	waitJobLocked(t, pool, jobID)
+	stolenClaim := uuid.New()
+	stealCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	tag, err := pool.Exec(stealCtx, `
+		UPDATE deploy_watches
+		SET claim_id=$2, claimed_by='stealer', claimed_at=NOW()
+		WHERE deployment_revision_id=$1
+	`, revID, stolenClaim)
+	cancel()
+	if err != nil {
+		t.Fatalf("steal claim while finalizer holds job lock: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("steal claim affected %d rows, want 1", tag.RowsAffected())
+	}
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("finalize after stolen claim errored: %v", got.err)
+		}
+		if got.res.Finalized {
+			t.Fatalf("finalize res = %+v, want fenced no-op", got.res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("finalize hung after claim steal")
+	}
+
+	w, err := s.GetDeployWatch(ctx, revID)
+	if err != nil {
+		t.Fatalf("watch after final fence rollback: %v", err)
+	}
+	if w.ClaimID != stolenClaim {
+		t.Fatalf("watch claim = %v, want stolen claim %v", w.ClaimID, stolenClaim)
+	}
+	if rev, err := s.GetDeploymentRevision(ctx, revID); err != nil || rev.Status != store.DeployStatusInProgress {
+		t.Fatalf("revision after final fence rollback = %q err=%v, want in_progress", rev.Status, err)
+	}
+	if got := scalarStr(t, pool, `SELECT status FROM job_runs WHERE id=$1`, jobID); got != "running" {
+		t.Fatalf("job after final fence rollback = %q, want running", got)
+	}
+}
+
 // #207 Part 6b: a server-managed (native) deploy job with cancel_requested_at stamped
 // must land BOTH the job AND its revision `canceled`, even though the watcher's verdict
 // is `failed` (deploy.Decide's non-rollout cancel = FinalizeFailed). The finalize order
