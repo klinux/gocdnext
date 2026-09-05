@@ -8,6 +8,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Artifact upload integrity (#210 slice).** Job-result reconciliation now reads
+  uploaded artifact bytes from the configured backend and records only the
+  server-observed size/SHA-256, downgrading a claimed success when the agent's
+  reported digest or size does not match the stored object. Filesystem artifact
+  PUTs are write-once with identical-retry tolerance, while cache PUTs keep their
+  replacement semantics. Retrying a still-pending artifact ticket reuses the
+  existing storage key and mints a fresh URL instead of getting stuck behind the
+  active `(job_run_id, path)` uniqueness guard.
+
 ## v0.100.0 — 2026-09-04
 
 ### Fixed
