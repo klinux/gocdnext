@@ -18,6 +18,7 @@ import (
 	"github.com/gocdnext/gocdnext/cli/internal/admin"
 	"github.com/gocdnext/gocdnext/cli/internal/apply"
 	"github.com/gocdnext/gocdnext/cli/internal/cliconfig"
+	"github.com/gocdnext/gocdnext/cli/internal/rbac"
 	"github.com/gocdnext/gocdnext/cli/internal/runlocal"
 	"github.com/gocdnext/gocdnext/cli/internal/scaffold"
 	"github.com/gocdnext/gocdnext/cli/internal/secrets"
@@ -43,6 +44,7 @@ func main() {
 		applyCmd(),
 		secretCmd(),
 		complianceCmd(),
+		rbacCmd(),
 		adminCmd(),
 		loginCmd(),
 		logoutCmd(),
@@ -471,6 +473,61 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func rbacCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "rbac",
+		Short: "Generate operator-owned RBAC manifests",
+	}
+	cmd.AddCommand(rbacDeployCmd())
+	return cmd
+}
+
+func rbacDeployCmd() *cobra.Command {
+	var (
+		name                    string
+		namespace               string
+		serviceAccount          string
+		serviceAccountNamespace string
+		clusterWide             bool
+		noSecrets               bool
+	)
+	cmd := &cobra.Command{
+		Use:   "deploy",
+		Short: "Print Kubernetes RBAC for deploy jobs that use cluster:",
+		Long: strings.TrimSpace(`
+Print a starter ServiceAccount + Role/Binding manifest for Kubernetes deploy jobs
+that use the pipeline job key cluster:. The command only writes YAML to stdout; it
+never talks to the cluster and never applies or widens RBAC.
+
+Use the namespaced form by default. Reach for --cluster-wide only when one deploy
+credential must touch several namespaces, and then trim the generated rules before
+applying them.
+`),
+		RunE: func(c *cobra.Command, _ []string) error {
+			out, err := rbac.RenderDeployRBAC(rbac.Options{
+				Name:                    name,
+				Namespace:               namespace,
+				ServiceAccount:          serviceAccount,
+				ServiceAccountNamespace: serviceAccountNamespace,
+				ClusterWide:             clusterWide,
+				IncludeSecrets:          !noSecrets,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(c.OutOrStdout(), out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&name, "name", "gocdnext-deployer", "Role/Binding name")
+	cmd.Flags().StringVar(&namespace, "namespace", "", "target namespace for the namespaced Role")
+	cmd.Flags().StringVar(&serviceAccount, "service-account", "gocdnext-deployer", "ServiceAccount name")
+	cmd.Flags().StringVar(&serviceAccountNamespace, "service-account-namespace", "gocdnext-deploy", "ServiceAccount namespace")
+	cmd.Flags().BoolVar(&clusterWide, "cluster-wide", false, "emit ClusterRole/ClusterRoleBinding instead of Role/RoleBinding")
+	cmd.Flags().BoolVar(&noSecrets, "no-secrets", false, "omit secrets from the core-resource rule")
+	return cmd
 }
 
 // adminCmd groups ops-level actions that bypass the HTTP API.

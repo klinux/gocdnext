@@ -325,8 +325,9 @@ clusters is the natural fit**, and it needs no special handling:
 `kubeconfig` or a scoped `token`. Because the control plane reaches the
 hub *from outside*, **`in_cluster` credentials are rejected** for
 native targets (they're only valid from inside that cluster's own
-pods). The token needs least-privilege RBAC on the Application CRs — at
-minimum `get` (to observe) and `patch` (to sync in `trigger` mode):
+pods). The token needs least-privilege RBAC on the Application CRs:
+`get` to validate/observe the Application, plus `patch` when the target
+uses `trigger` mode and gocdnext starts the sync:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -337,8 +338,15 @@ metadata:
 rules:
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
-    verbs: ["get", "list", "watch", "patch", "update"]
+    verbs: ["get", "patch"]
 ```
+
+When a native target is registered or reconciled from pipeline YAML,
+gocdnext asks Kubernetes for a `SelfSubjectAccessReview` on these exact
+Application permissions. If Kubernetes answers `allowed=false`, the
+target is rejected before any database write with an error naming the
+missing verb/resource. gocdnext never creates or widens RBAC itself; the
+operator still owns the Role/Binding.
 
 **For gate-driven rollout control** (below), the token that reaches the
 **Rollout's cluster** (the workload's destination — the same registered

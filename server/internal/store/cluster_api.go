@@ -49,11 +49,16 @@ func readCappedBody(r io.Reader) ([]byte, error) {
 // string-matching.
 type ClusterAPIStatusError struct {
 	Status int
+	Method string
 	Path   string
 }
 
 func (e *ClusterAPIStatusError) Error() string {
-	return fmt.Sprintf("cluster API GET %s: unexpected status %d", e.Path, e.Status)
+	method := e.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	return fmt.Sprintf("cluster API %s %s: unexpected status %d", method, e.Path, e.Status)
 }
 
 // ClusterAPIGet issues an authenticated GET to path on a registered cluster's k8s
@@ -107,7 +112,7 @@ func doClusterAPIGet(ctx context.Context, ep kubeEndpoint, path string) ([]byte,
 
 	body, readErr := readCappedBody(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, &ClusterAPIStatusError{Status: resp.StatusCode, Path: path}
+		return nil, &ClusterAPIStatusError{Status: resp.StatusCode, Method: http.MethodGet, Path: path}
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("cluster API GET %s: read body: %w", path, readErr)
@@ -165,7 +170,7 @@ func doClusterAPIWrite(ctx context.Context, ep kubeEndpoint, method, contentType
 
 	respBody, readErr := readCappedBody(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &ClusterAPIStatusError{Status: resp.StatusCode, Path: path}
+		return nil, &ClusterAPIStatusError{Status: resp.StatusCode, Method: method, Path: path}
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("cluster API %s %s: read body: %w", method, path, readErr)

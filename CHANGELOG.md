@@ -8,6 +8,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Deploy cluster RBAC diagnostics (#255).** Native ArgoCD deploy target
+  registration/reconciliation now preflights the registered cluster credential
+  with Kubernetes `SelfSubjectAccessReview` for the exact Application
+  permissions gocdnext uses (`get`, and `patch` in trigger mode), failing early
+  with an actionable missing-verb message when Kubernetes denies access. The
+  cluster registry RBAC examples now include `delete` and `batch/jobs`, covering
+  prune/recreate flows and immutable migration Jobs without suggesting
+  cluster-admin or automatic self-provisioning.
+
 ## v0.99.0 — 2026-09-04
 
 ### Fixed

@@ -92,7 +92,8 @@ inputs:
     default: "false"
     description: >
       "true" enables `kubectl apply --prune` so resources removed from
-      the kustomization are deleted from the cluster. Requires prune_label.
+      the kustomization are deleted from the cluster. Requires prune_label
+      and Kubernetes RBAC `delete` on the pruned resource types.
   prune_label:
     required: false
     description: >
@@ -175,7 +176,8 @@ examples:
       Apply with prune so a manifest deleted from the kustomization gets
       cleaned up. The label selector is what `apply --prune` uses to know
       which existing resources to consider — set it via a commonLabels:
-      block on every kustomization.
+      block on every kustomization. The ServiceAccount also needs
+      Kubernetes RBAC `delete` on the resource types that may be pruned.
     yaml: |
       uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
       cluster: prod

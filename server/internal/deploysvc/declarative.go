@@ -154,6 +154,10 @@ func (r *Registrar) ReconcileDeclarativeTarget(ctx context.Context, in Declarati
 		Cluster:     in.Cluster,
 		Application: in.Application,
 		Namespace:   namespace,
+		SyncMode:    deploy.SyncMode(in.SyncMode),
+	}
+	if err := r.preflightApplicationRBAC(ctx, target); err != nil {
+		return classifyDeclarativeValidateErr(err), nil
 	}
 	if err := r.provider.ValidateSingleSource(ctx, target); err != nil {
 		return classifyDeclarativeValidateErr(err), nil
@@ -215,6 +219,10 @@ func classifyDeclarativeValidateErr(err error) DeclarativeResult {
 	}
 	if store.IsClusterUnavailable(err) {
 		return DeclarativeResult{Decision: ReconcileTerminalFault, Public: store.ClusterUnavailableMessage}
+	}
+	var denied *store.ClusterAccessDeniedError
+	if errors.As(err, &denied) {
+		return DeclarativeResult{Decision: ReconcileTerminalFault, Public: denied.Error()}
 	}
 	var apiErr *store.ClusterAPIStatusError
 	if errors.As(err, &apiErr) {
