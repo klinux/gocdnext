@@ -1278,12 +1278,11 @@ func TestArtifact_PathNormalization(t *testing.T) {
 
 // TestArtifact_PartialUniqueIndex_BlocksDuplicateActive locks in the
 // migration 00035 invariant — two active rows for the same
-// (job_run_id, path) are NOT allowed. The retire path soft-deletes
-// (sets deleted_at) so subsequent inserts on retry are fine, but a
-// raw double-insert without retirement must fail loudly so a future
-// regression in requeueStaleJob/RerunJob doesn't silently produce
-// the duplicate-row bug again.
-func TestArtifact_PartialUniqueIndex_BlocksDuplicateActive(t *testing.T) {
+// (job_run_id, path) are NOT allowed. A still-pending upload is
+// idempotently reissued with the same storage key, but a ready row
+// must not be reopened so a future retry/reclaim regression cannot
+// silently overwrite confirmed evidence.
+func TestArtifact_PartialUniqueIndex_ReissuesPendingAndBlocksReady(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	ctx := context.Background()
@@ -1298,17 +1297,39 @@ func TestArtifact_PartialUniqueIndex_BlocksDuplicateActive(t *testing.T) {
 		t.Fatalf("lookup ids: %v", err)
 	}
 
-	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+	firstKey := uuid.NewString()
+	first, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
 		RunID:      runID,
 		JobRunID:   jobID,
 		PipelineID: pipelineID,
 		ProjectID:  projectID,
 		Path:       "dist",
-		StorageKey: uuid.NewString(),
-	}); err != nil {
+		StorageKey: firstKey,
+	})
+	if err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
-	// Second insert with the same (job_run_id, path) — must fail.
+	// Second insert with the same still-pending (job_run_id, path)
+	// reissues the original row/key instead of stranding retries
+	// behind the uniqueness guard.
+	second, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+		RunID:      runID,
+		JobRunID:   jobID,
+		PipelineID: pipelineID,
+		ProjectID:  projectID,
+		Path:       "dist",
+		StorageKey: uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatalf("pending reissue: %v", err)
+	}
+	if second.ID != first.ID || second.StorageKey != firstKey {
+		t.Fatalf("reissue = %+v, want same row/key as %+v", second, first)
+	}
+
+	if _, err := s.MarkArtifactReady(ctx, firstKey, 1, "abc"); err != nil {
+		t.Fatalf("mark ready: %v", err)
+	}
 	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
 		RunID:      runID,
 		JobRunID:   jobID,
@@ -1316,8 +1337,8 @@ func TestArtifact_PartialUniqueIndex_BlocksDuplicateActive(t *testing.T) {
 		ProjectID:  projectID,
 		Path:       "dist",
 		StorageKey: uuid.NewString(),
-	}); err == nil {
-		t.Fatal("expected unique-index violation on duplicate active row, got nil")
+	}); !errors.Is(err, store.ErrArtifactActivePathNotPending) {
+		t.Fatalf("ready reissue err = %v, want ErrArtifactActivePathNotPending", err)
 	}
 }
 

@@ -11,6 +11,8 @@ package artifacts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"time"
@@ -20,6 +22,11 @@ import (
 // exist in the backend. Callers treat it as non-fatal when building a
 // sweeper (stale row is the same as missing object).
 var ErrNotFound = errors.New("artifacts: object not found")
+
+// ErrAlreadyExists is returned by create-only artifact writes when the
+// target key already contains different bytes. Callers that deliberately
+// replace mutable blobs (caches) must use the regular Put path instead.
+var ErrAlreadyExists = errors.New("artifacts: object already exists")
 
 // Store is what the rest of the server uses. Concrete backends implement
 // it; the scheduler/handler/sweeper consume it through this interface only.
@@ -50,6 +57,33 @@ type Store interface {
 
 	// Get returns a reader for the object. The caller must Close.
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
+}
+
+// ObjectInfo is the server-observed identity of one stored object.
+type ObjectInfo struct {
+	Size          int64
+	ContentSHA256 string
+}
+
+// InspectObject reads an object once and computes the content identity
+// gocdnext stores in the DB. It intentionally uses the Store interface's
+// existing Get path so every backend gets the same verification semantics.
+func InspectObject(ctx context.Context, st Store, key string) (ObjectInfo, error) {
+	rc, err := st.Get(ctx, key)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	defer func() { _ = rc.Close() }()
+
+	h := sha256.New()
+	n, err := io.Copy(h, rc)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	return ObjectInfo{
+		Size:          n,
+		ContentSHA256: hex.EncodeToString(h.Sum(nil)),
+	}, nil
 }
 
 // SignedURL is what SignedPutURL / SignedGetURL return. The URL is what

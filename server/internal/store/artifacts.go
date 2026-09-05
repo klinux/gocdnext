@@ -18,6 +18,11 @@ import (
 // key we never issued, or a key that's been swept.
 var ErrArtifactNotFound = errors.New("store: artifact not found")
 
+// ErrArtifactActivePathNotPending means a RequestArtifactUpload retry hit
+// the active (job_run_id, path) row after it was already finalized. The
+// caller must not reopen it or mint another PUT URL for that path.
+var ErrArtifactActivePathNotPending = errors.New("store: artifact path already finalized")
+
 // Artifact is the domain-shaped row. Mirrors the DB columns 1:1 except
 // storage_key is the opaque backend key (see internal/artifacts).
 type Artifact struct {
@@ -72,7 +77,9 @@ func NormalizeArtifactPath(p string) string {
 	return p
 }
 
-// InsertPendingArtifact creates the row.
+// InsertPendingArtifact creates a pending row or reissues the existing
+// pending row for the same (job_run_id, path). It never reopens a ready
+// active artifact.
 func (s *Store) InsertPendingArtifact(ctx context.Context, in InsertPendingArtifact) (Artifact, error) {
 	row, err := s.q.InsertPendingArtifact(ctx, db.InsertPendingArtifactParams{
 		RunID:      pgUUID(in.RunID),
@@ -83,6 +90,9 @@ func (s *Store) InsertPendingArtifact(ctx context.Context, in InsertPendingArtif
 		StorageKey: in.StorageKey,
 		ExpiresAt:  pgTimestamptzFromPtr(in.ExpiresAt),
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Artifact{}, ErrArtifactActivePathNotPending
+	}
 	if err != nil {
 		return Artifact{}, fmt.Errorf("store: insert artifact: %w", err)
 	}
@@ -100,8 +110,8 @@ func (s *Store) InsertPendingArtifact(ctx context.Context, in InsertPendingArtif
 	}, nil
 }
 
-// InsertPendingArtifactsBatch creates every row in one transaction
-// so partial-loop failures roll back cleanly. Two motivations
+// InsertPendingArtifactsBatch creates or reissues every pending row in one
+// transaction so partial-loop failures roll back cleanly. Two motivations
 // (both surfaced post-migration 00035, which made naked partial
 // failure observably worse):
 //
@@ -117,7 +127,7 @@ func (s *Store) InsertPendingArtifact(ctx context.Context, in InsertPendingArtif
 //     stays around and a later legitimate retry can't recreate it.
 //
 // Caller is expected to have already deduped the paths via
-// NormalizeArtifactPath; this function just runs the inserts.
+// NormalizeArtifactPath; this function just runs the inserts/reissues.
 func (s *Store) InsertPendingArtifactsBatch(ctx context.Context, ins []InsertPendingArtifact) ([]Artifact, error) {
 	if len(ins) == 0 {
 		return nil, nil
@@ -139,6 +149,9 @@ func (s *Store) InsertPendingArtifactsBatch(ctx context.Context, ins []InsertPen
 			StorageKey: in.StorageKey,
 			ExpiresAt:  pgTimestamptzFromPtr(in.ExpiresAt),
 		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrArtifactActivePathNotPending
+		}
 		if err != nil {
 			return nil, fmt.Errorf("store: insert artifact %q: %w", in.Path, err)
 		}
@@ -184,11 +197,10 @@ func (s *Store) RetireArtifactsByJobRun(ctx context.Context, jobRunID uuid.UUID)
 	return nil
 }
 
-// MarkArtifactReady flips a pending row to ready once the server
-// confirmed the object via Store.Head. Returns whether the row was
+// MarkArtifactReady flips a pending row to ready once the server read the
+// object and verified its content identity. Returns whether the row was
 // updated (false = already ready, or swept, or never existed). Callers
-// decide whether a non-update is an error — for the JobResult path we
-// just log and continue.
+// decide whether a non-update is an error.
 func (s *Store) MarkArtifactReady(ctx context.Context, storageKey string, size int64, sha256 string) (bool, error) {
 	n, err := s.q.MarkArtifactReady(ctx, db.MarkArtifactReadyParams{
 		StorageKey:    storageKey,

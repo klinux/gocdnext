@@ -2,8 +2,10 @@ package grpcsrv
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +17,7 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/proto/grpcconsts"
 
+	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -795,7 +798,7 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 	// rather have the job fail than let downstream jobs depend on a
 	// phantom row. `confirmArtifacts` returns an error message when
 	// something's off; we override the reported status in that case.
-	artifactErr := a.confirmArtifacts(ctx, log, r.GetArtifacts())
+	artifactErr := a.confirmArtifacts(ctx, log, jobID, r.GetArtifacts())
 	if artifactErr != "" && status == string(domain.StatusSuccess) {
 		// A reported success we DOWNGRADE — the integrity signal. It is preserved
 		// even when a concurrent cancel later makes the row land 'canceled' (#207):
@@ -1089,18 +1092,13 @@ func (a *AgentService) maybeEnqueueArchive(ctx context.Context, log logger, batc
 	batcher.AfterFlush(func() { a.logArchiver.Submit(jobID) })
 }
 
-// confirmArtifacts walks the ArtifactRef list the agent reported, HEADs
-// each object in the configured backend, and flips matching DB rows
-// from pending to ready. Returns an empty string on full success; a
-// human-readable message when something's off (HEAD mismatch, missing
-// row, short read). Missing backend = no-op so jobs without artefacts
-// still succeed on an unconfigured server.
-//
-// Size mismatch policy: the agent's reported size is authoritative for
-// the DB row, but Head() must return something non-zero for the object
-// to count as ready. A Head() that succeeds but reports 0 bytes on a
-// > 0 agent report is a mismatch we reject.
-func (a *AgentService) confirmArtifacts(ctx context.Context, log logger, refs []*gocdnextv1.ArtifactRef) string {
+// confirmArtifacts walks the ArtifactRef list the agent reported, verifies
+// that each storage key was issued for this job, reads the object from the
+// configured backend, and flips matching pending DB rows to ready using the
+// server-observed size/sha. Returns an empty string on full success; a
+// human-readable message when something's off. Missing backend = no-op so
+// jobs without artefacts still succeed on an unconfigured server.
+func (a *AgentService) confirmArtifacts(ctx context.Context, log logger, jobID uuid.UUID, refs []*gocdnextv1.ArtifactRef) string {
 	if len(refs) == 0 {
 		return ""
 	}
@@ -1110,6 +1108,15 @@ func (a *AgentService) confirmArtifacts(ctx context.Context, log logger, refs []
 		log.Warn("artifact confirm: refs reported but backend not configured", "count", len(refs))
 		return ""
 	}
+	issued, err := a.store.ListArtifactsByJobRun(ctx, jobID)
+	if err != nil {
+		return "list issued artifacts: " + err.Error()
+	}
+	issuedByKey := make(map[string]store.Artifact, len(issued))
+	for _, row := range issued {
+		issuedByKey[row.StorageKey] = row
+	}
+
 	var bad []string
 	for _, ref := range refs {
 		key := ref.GetStorageKey()
@@ -1117,21 +1124,68 @@ func (a *AgentService) confirmArtifacts(ctx context.Context, log logger, refs []
 			bad = append(bad, ref.GetPath()+" (empty storage_key)")
 			continue
 		}
-		size, err := a.artifactStore.Head(ctx, key)
+		row, ok := issuedByKey[key]
+		if !ok {
+			bad = append(bad, ref.GetPath()+" (not issued for job)")
+			continue
+		}
+		if row.Path != store.NormalizeArtifactPath(ref.GetPath()) {
+			bad = append(bad, ref.GetPath()+" (path does not match issued artifact)")
+			continue
+		}
+		wantSHA, ok := normalizeSHA256(ref.GetContentSha256())
+		if !ok {
+			bad = append(bad, ref.GetPath()+" (invalid sha256)")
+			continue
+		}
+		if ref.GetSize() < 0 {
+			bad = append(bad, ref.GetPath()+" (negative size)")
+			continue
+		}
+
+		info, err := artifacts.InspectObject(ctx, a.artifactStore, key)
 		if err != nil {
-			bad = append(bad, ref.GetPath()+" (head: "+err.Error()+")")
+			bad = append(bad, ref.GetPath()+" (inspect: "+err.Error()+")")
 			continue
 		}
-		if size == 0 && ref.GetSize() > 0 {
-			bad = append(bad, ref.GetPath()+" (empty object)")
+		if info.Size != ref.GetSize() {
+			bad = append(bad, ref.GetPath()+" (size mismatch)")
 			continue
 		}
-		updated, err := a.store.MarkArtifactReady(ctx, key, ref.GetSize(), ref.GetContentSha256())
+		if info.ContentSHA256 != wantSHA {
+			bad = append(bad, ref.GetPath()+" (sha256 mismatch)")
+			continue
+		}
+
+		switch row.Status {
+		case "pending":
+		case "ready":
+			if row.SizeBytes != info.Size || !strings.EqualFold(row.ContentSHA256, info.ContentSHA256) {
+				bad = append(bad, ref.GetPath()+" (ready row metadata mismatch)")
+			}
+			continue
+		default:
+			bad = append(bad, ref.GetPath()+" (artifact row not pending)")
+			continue
+		}
+
+		updated, err := a.store.MarkArtifactReady(ctx, key, info.Size, info.ContentSHA256)
 		if err != nil {
 			bad = append(bad, ref.GetPath()+" (mark ready: "+err.Error()+")")
 			continue
 		}
 		if !updated {
+			latest, err := a.store.GetArtifactByStorageKey(ctx, key)
+			if err == nil && latest.Status == "ready" &&
+				latest.SizeBytes == info.Size &&
+				strings.EqualFold(latest.ContentSHA256, info.ContentSHA256) {
+				continue
+			}
+			if err != nil {
+				bad = append(bad, ref.GetPath()+" (mark ready race: "+err.Error()+")")
+			} else {
+				bad = append(bad, ref.GetPath()+" (mark ready race: status "+latest.Status+")")
+			}
 			log.Debug("artifact confirm: row not pending",
 				"storage_key", key, "path", ref.GetPath())
 		}
@@ -1140,6 +1194,17 @@ func (a *AgentService) confirmArtifacts(ctx context.Context, log logger, refs []
 		return ""
 	}
 	return "failed artifacts: " + joinCSV(bad)
+}
+
+func normalizeSHA256(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) != 64 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(raw); err != nil {
+		return "", false
+	}
+	return strings.ToLower(raw), true
 }
 
 func joinCSV(xs []string) string {

@@ -61,6 +61,95 @@ func TestHandler_PutGet_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestHandler_RunArtifactPutRejectsDifferentReplay(t *testing.T) {
+	srv, fs := mustServer(t, 0)
+	ctx := context.Background()
+	key := "run/1/job/a/replay"
+
+	putURL, err := fs.SignedPutURL(ctx, key, time.Minute)
+	if err != nil {
+		t.Fatalf("sign put: %v", err)
+	}
+	first := []byte("first artifact bytes")
+	req, _ := http.NewRequest(http.MethodPut, putURL.URL, bytes.NewReader(first))
+	req.ContentLength = int64(len(first))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("first put: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first status = %d", resp.StatusCode)
+	}
+
+	replay, _ := http.NewRequest(http.MethodPut, putURL.URL, bytes.NewReader([]byte("different bytes")))
+	replay.ContentLength = int64(len("different bytes"))
+	resp2, err := http.DefaultClient.Do(replay)
+	if err != nil {
+		t.Fatalf("replay put: %v", err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusConflict {
+		t.Fatalf("replay status = %d, want 409", resp2.StatusCode)
+	}
+
+	getURL, _ := fs.SignedGetURL(ctx, key, time.Minute)
+	resp3, err := http.Get(getURL.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp3.Body.Close() }()
+	got, _ := io.ReadAll(resp3.Body)
+	if !bytes.Equal(got, first) {
+		t.Errorf("artifact was overwritten: got %q", got)
+	}
+	_ = srv
+}
+
+func TestHandler_CachePutStillReplaces(t *testing.T) {
+	srv, fs := mustServer(t, 0)
+	ctx := context.Background()
+	key := "cache/project/key"
+
+	putURL, err := fs.SignedPutURL(ctx, key, time.Minute)
+	if err != nil {
+		t.Fatalf("sign put: %v", err)
+	}
+	firstReq, _ := http.NewRequest(http.MethodPut, putURL.URL, strings.NewReader("old cache"))
+	firstReq.ContentLength = int64(len("old cache"))
+	firstResp, err := http.DefaultClient.Do(firstReq)
+	if err != nil {
+		t.Fatalf("first put: %v", err)
+	}
+	_ = firstResp.Body.Close()
+	if firstResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first status = %d", firstResp.StatusCode)
+	}
+
+	secondReq, _ := http.NewRequest(http.MethodPut, putURL.URL, strings.NewReader("new cache"))
+	secondReq.ContentLength = int64(len("new cache"))
+	secondResp, err := http.DefaultClient.Do(secondReq)
+	if err != nil {
+		t.Fatalf("second put: %v", err)
+	}
+	_ = secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("second status = %d, want 204", secondResp.StatusCode)
+	}
+
+	getURL, _ := fs.SignedGetURL(ctx, key, time.Minute)
+	resp, err := http.Get(getURL.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != "new cache" {
+		t.Errorf("cache replace broke: got %q", got)
+	}
+	_ = srv
+}
+
 func TestHandler_BadToken(t *testing.T) {
 	srv, _ := mustServer(t, 0)
 

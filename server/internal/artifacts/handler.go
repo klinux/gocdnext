@@ -54,11 +54,21 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = body.Close() }()
 
-	n, err := h.store.Put(r.Context(), key, body)
+	var n int64
+	var err error
+	if strings.HasPrefix(key, "cache/") {
+		n, err = h.store.Put(r.Context(), key, body)
+	} else {
+		n, err = h.store.PutCreateOnly(r.Context(), key, body)
+	}
 	if err != nil {
 		var mbErr *http.MaxBytesError
 		if errors.As(err, &mbErr) {
 			http.Error(w, "artifact exceeds max size", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if errors.Is(err, ErrAlreadyExists) {
+			http.Error(w, "artifact already uploaded", http.StatusConflict)
 			return
 		}
 		h.log.Error("artifact put failed", "key", key, "err", err)

@@ -2,6 +2,8 @@ package artifacts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -157,6 +159,79 @@ func (f *FilesystemStore) Put(_ context.Context, key string, r io.Reader) (int64
 		return 0, fmt.Errorf("artifacts: filesystem: rename: %w", err)
 	}
 	return n, nil
+}
+
+// PutCreateOnly stores immutable artifacts without replacing an existing
+// object. A retry with identical bytes is accepted as success; a retry or
+// replay with different bytes is rejected so a signed PUT URL cannot swap
+// a ready artifact on the filesystem backend.
+func (f *FilesystemStore) PutCreateOnly(_ context.Context, key string, r io.Reader) (int64, error) {
+	full, err := f.resolve(key)
+	if err != nil {
+		return 0, err
+	}
+	dir := filepath.Dir(full)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return 0, fmt.Errorf("artifacts: filesystem: mkdir: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(full)+".*.part")
+	if err != nil {
+		return 0, fmt.Errorf("artifacts: filesystem: create tmp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	n, copyErr := io.Copy(tmp, r)
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		return 0, fmt.Errorf("artifacts: filesystem: write: %w", copyErr)
+	}
+	if closeErr != nil {
+		return 0, fmt.Errorf("artifacts: filesystem: close: %w", closeErr)
+	}
+
+	if err := os.Link(tmpName, full); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			same, cmpErr := sameFileContent(tmpName, full)
+			if cmpErr != nil {
+				return 0, cmpErr
+			}
+			if same {
+				return n, nil
+			}
+			return 0, ErrAlreadyExists
+		}
+		return 0, fmt.Errorf("artifacts: filesystem: link: %w", err)
+	}
+	return n, nil
+}
+
+func sameFileContent(a, b string) (bool, error) {
+	ainfo, err := fileInfo(a)
+	if err != nil {
+		return false, err
+	}
+	binfo, err := fileInfo(b)
+	if err != nil {
+		return false, err
+	}
+	return ainfo == binfo, nil
+}
+
+func fileInfo(path string) (ObjectInfo, error) {
+	in, err := os.Open(path)
+	if err != nil {
+		return ObjectInfo{}, fmt.Errorf("artifacts: filesystem: open compare: %w", err)
+	}
+	defer func() { _ = in.Close() }()
+
+	h := sha256.New()
+	n, err := io.Copy(h, in)
+	if err != nil {
+		return ObjectInfo{}, fmt.Errorf("artifacts: filesystem: read compare: %w", err)
+	}
+	return ObjectInfo{Size: n, ContentSHA256: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
 func (f *FilesystemStore) Get(_ context.Context, key string) (io.ReadCloser, error) {

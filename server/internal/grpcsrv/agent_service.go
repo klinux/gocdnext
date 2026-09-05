@@ -459,10 +459,10 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 //     trailing slashes) so a YAML that lists `dist` and `dist/`
 //     doesn't try to plant two rows that would collide on the
 //     partial unique index (migration 00035).
-//  4. Insert every pending row in ONE transaction via
+//  4. Insert/reissue every pending row in ONE transaction via
 //     InsertPendingArtifactsBatch — partial-loop failures roll back
-//     cleanly instead of leaking orphan pending rows the operator
-//     would see in the UI as ghost uploads.
+//     cleanly, and a retry of a still-pending upload reuses the same
+//     storage key with a fresh URL.
 //  5. Sign PUT URLs OUTSIDE the transaction (no need to hold a tx
 //     open across an HTTP round-trip to S3/GCS). If signing fails,
 //     the pending rows for the batch leak until the sweeper's
@@ -536,37 +536,40 @@ func (a *AgentService) RequestArtifactUpload(ctx context.Context, req *gocdnextv
 		dedupedPaths = append(dedupedPaths, p)
 	}
 
-	// Build the batch + remember storage keys so the post-tx loop
-	// below can sign URLs against the same keys we just persisted.
+	// Build the batch. The DB returns the authoritative storage key for
+	// each row: a fresh random key on first issue, or the existing key
+	// when this is a retry of a still-pending upload.
 	ins := make([]store.InsertPendingArtifact, len(dedupedPaths))
-	storageKeys := make([]string, len(dedupedPaths))
 	for i, p := range dedupedPaths {
-		storageKeys[i] = "run/" + runID.String() + "/job/" + jobRunID.String() + "/" + uuid.NewString()
 		ins[i] = store.InsertPendingArtifact{
 			RunID:      runID,
 			JobRunID:   jobRunID,
 			PipelineID: pipelineID,
 			ProjectID:  projectID,
 			Path:       p,
-			StorageKey: storageKeys[i],
+			StorageKey: "run/" + runID.String() + "/job/" + jobRunID.String() + "/" + uuid.NewString(),
 			ExpiresAt:  &expiresAt,
 		}
 	}
-	if _, err := a.store.InsertPendingArtifactsBatch(ctx, ins); err != nil {
+	rows, err := a.store.InsertPendingArtifactsBatch(ctx, ins)
+	if errors.Is(err, store.ErrArtifactActivePathNotPending) {
+		return nil, status.Error(codes.FailedPrecondition, "artifact already finalized")
+	}
+	if err != nil {
 		a.log.Error("artifact upload: batch insert failed", "err", err)
 		return nil, status.Error(codes.Internal, "persist artifacts")
 	}
 
 	tickets := make([]*gocdnextv1.ArtifactUploadTicket, 0, len(dedupedPaths))
 	for i, p := range dedupedPaths {
-		signed, err := a.artifactStore.SignedPutURL(ctx, storageKeys[i], a.artifactPutURLTTL)
+		signed, err := a.artifactStore.SignedPutURL(ctx, rows[i].StorageKey, a.artifactPutURLTTL)
 		if err != nil {
 			a.log.Error("artifact upload: sign put failed", "path", p, "err", err)
 			return nil, status.Error(codes.Internal, "sign url")
 		}
 		tickets = append(tickets, &gocdnextv1.ArtifactUploadTicket{
 			Path:       p,
-			StorageKey: storageKeys[i],
+			StorageKey: rows[i].StorageKey,
 			PutUrl:     signed.URL,
 			ExpiresAt:  timestamppb.New(signed.ExpiresAt),
 		})
