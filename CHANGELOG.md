@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.101.0 — 2026-09-05
+
 ### Fixed
 
 - **Artifact upload integrity (#210 slice).** Job-result reconciliation now reads
