@@ -50,6 +50,10 @@ func classifyValidateErr(err error) *Fault {
 		// (hide existence); the specific error is kept in Err for the handler to log.
 		return &Fault{Kind: FaultNotFound, Err: err, Public: store.ClusterUnavailableMessage}
 	}
+	var denied *store.ClusterAccessDeniedError
+	if errors.As(err, &denied) {
+		return &Fault{Kind: FaultForbidden, Err: err}
+	}
 	var se *store.ClusterAPIStatusError
 	if errors.As(err, &se) {
 		switch se.Status {

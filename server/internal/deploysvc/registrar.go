@@ -44,6 +44,10 @@ type Registry interface {
 	ResolveDeployTarget(context.Context, uuid.UUID, string) (store.DeployTarget, error)
 }
 
+type clusterAccessReviewer interface {
+	CheckClusterAccess(context.Context, uuid.UUID, string, []store.ClusterAccessCheck) error
+}
+
 // Registrar registers deploy targets.
 type Registrar struct {
 	provider Provider
@@ -158,6 +162,9 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 	}
 	// Fetch + authorize + single-source check BEFORE any DB write. (Validates the
 	// Application; the Rollout is resolved lazily at observe time.)
+	if err := r.preflightApplicationRBAC(ctx, target); err != nil {
+		return store.DeployTarget{}, classifyValidateErr(err)
+	}
 	if err := r.provider.ValidateSingleSource(ctx, target); err != nil {
 		return store.DeployTarget{}, classifyValidateErr(err)
 	}
@@ -284,4 +291,43 @@ func guardFrom(snapshot *store.DeployTarget) store.DeployTargetSoDGuard {
 		RolloutNamespace: snapshot.RolloutNamespace,
 		RolloutName:      snapshot.RolloutName,
 	}
+}
+
+func (r *Registrar) preflightApplicationRBAC(ctx context.Context, target deploy.DeploymentTarget) error {
+	reviewer, ok := r.registry.(clusterAccessReviewer)
+	if !ok {
+		return nil
+	}
+	err := reviewer.CheckClusterAccess(ctx, target.ProjectID, target.Cluster, applicationAccessChecks(target))
+	if err == nil {
+		return nil
+	}
+	var denied *store.ClusterAccessDeniedError
+	if errors.As(err, &denied) {
+		return err
+	}
+	// The review endpoint is diagnostic, not the authority. A cluster that cannot
+	// answer SelfSubjectAccessReview still gets the real Application fetch below,
+	// preserving existing behavior while surfacing explicit RBAC denials early.
+	return nil
+}
+
+func applicationAccessChecks(target deploy.DeploymentTarget) []store.ClusterAccessCheck {
+	checks := []store.ClusterAccessCheck{{
+		Group:     "argoproj.io",
+		Resource:  "applications",
+		Verb:      "get",
+		Namespace: target.Namespace,
+		Name:      target.Application,
+	}}
+	if target.SyncMode == deploy.SyncModeTrigger {
+		checks = append(checks, store.ClusterAccessCheck{
+			Group:     "argoproj.io",
+			Resource:  "applications",
+			Verb:      "patch",
+			Namespace: target.Namespace,
+			Name:      target.Application,
+		})
+	}
+	return checks
 }

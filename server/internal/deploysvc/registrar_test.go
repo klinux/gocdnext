@@ -94,6 +94,20 @@ type fakeRegistry struct {
 	log                *[]string
 }
 
+type fakeRBACRegistry struct {
+	*fakeRegistry
+	accessErr  error
+	gotCluster string
+	gotChecks  []store.ClusterAccessCheck
+}
+
+func (f *fakeRBACRegistry) CheckClusterAccess(_ context.Context, _ uuid.UUID, cluster string, checks []store.ClusterAccessCheck) error {
+	*f.log = append(*f.log, "check-rbac:"+cluster)
+	f.gotCluster = cluster
+	f.gotChecks = append([]store.ClusterAccessCheck(nil), checks...)
+	return f.accessErr
+}
+
 func (f *fakeRegistry) EnsureEnvironment(_ context.Context, _ uuid.UUID, _ string) (uuid.UUID, error) {
 	*f.log = append(*f.log, "ensure-env")
 	return f.envID, f.ensureErr
@@ -180,6 +194,95 @@ func TestRegister_HappyPath_OrderAndFields(t *testing.T) {
 	// Register returns the canonical target (no read-back needed by the caller).
 	if tgt.Environment != "production" || tgt.Namespace != "argocd" || tgt.Cluster != "prod-gke" || tgt.SyncMode != "trigger" {
 		t.Errorf("Register returned = %+v, want the canonical target", tgt)
+	}
+}
+
+func TestRegister_PreflightsApplicationRBAC(t *testing.T) {
+	tests := []struct {
+		name     string
+		syncMode string
+		wantVerb []string
+	}{
+		{name: "trigger checks get and patch", syncMode: "trigger", wantVerb: []string{"get", "patch"}},
+		{name: "observe checks get only", syncMode: "observe", wantVerb: []string{"get"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := &[]string{}
+			p := &fakeProvider{log: log}
+			base := &fakeRegistry{envID: uuid.New(), log: log}
+			reg := &fakeRBACRegistry{fakeRegistry: base}
+			r := New(p, reg)
+
+			in := validInput()
+			in.SyncMode = tt.syncMode
+			if _, err := r.Register(context.Background(), in); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			if want := []string{"check-rbac:prod-gke", "validate-source", "ensure-env", "upsert"}; !equal(*log, want) {
+				t.Fatalf("call order = %v, want %v", *log, want)
+			}
+			if reg.gotCluster != "prod-gke" {
+				t.Fatalf("rbac cluster = %q, want prod-gke", reg.gotCluster)
+			}
+			gotVerb := make([]string, 0, len(reg.gotChecks))
+			for _, c := range reg.gotChecks {
+				if c.Group != "argoproj.io" || c.Resource != "applications" ||
+					c.Namespace != "argocd" || c.Name != "checkout" {
+					t.Fatalf("rbac check = %+v, want the target Application", c)
+				}
+				gotVerb = append(gotVerb, c.Verb)
+			}
+			if !equal(gotVerb, tt.wantVerb) {
+				t.Fatalf("verbs = %v, want %v", gotVerb, tt.wantVerb)
+			}
+		})
+	}
+}
+
+func TestRegister_RBACDeniedFailsBeforeFetchOrWrite(t *testing.T) {
+	log := &[]string{}
+	p := &fakeProvider{log: log}
+	base := &fakeRegistry{envID: uuid.New(), log: log}
+	reg := &fakeRBACRegistry{
+		fakeRegistry: base,
+		accessErr: &store.ClusterAccessDeniedError{
+			Cluster: "prod-gke",
+			Check: store.ClusterAccessCheck{
+				Group: "argoproj.io", Resource: "applications", Verb: "patch",
+				Namespace: "argocd", Name: "checkout",
+			},
+		},
+	}
+	r := New(p, reg)
+
+	if kindOf(t, regErr(t, r, validInput())) != FaultForbidden {
+		t.Fatalf("want FaultForbidden for RBAC denial")
+	}
+	if want := []string{"check-rbac:prod-gke"}; !equal(*log, want) {
+		t.Fatalf("call log = %v, want %v (no fetch or write after explicit RBAC denial)", *log, want)
+	}
+}
+
+func TestRegister_RBACReviewUnavailableFallsBackToExistingValidation(t *testing.T) {
+	log := &[]string{}
+	p := &fakeProvider{log: log}
+	base := &fakeRegistry{envID: uuid.New(), log: log}
+	reg := &fakeRBACRegistry{
+		fakeRegistry: base,
+		accessErr: &store.ClusterAccessReviewUnavailableError{
+			Cluster: "prod-gke",
+			Check:   store.ClusterAccessCheck{Group: "argoproj.io", Resource: "applications", Verb: "patch"},
+			Err:     "authorization webhook timed out",
+		},
+	}
+	r := New(p, reg)
+
+	if _, err := r.Register(context.Background(), validInput()); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if want := []string{"check-rbac:prod-gke", "validate-source", "ensure-env", "upsert"}; !equal(*log, want) {
+		t.Fatalf("call log = %v, want %v (existing validation continues after review-unavailable)", *log, want)
 	}
 }
 
