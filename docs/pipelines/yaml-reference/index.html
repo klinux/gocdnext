@@ -965,7 +965,9 @@ per-cluster <code dir="auto">allowed_projects</code> allow-list) is enforced at
 <strong>dispatch</strong>. Both errors name the cluster, never its credential.</p>
 <p>See <a href="/gocdnext/docs/concepts/clusters/">Cluster registry</a> for the
 three auth types (<code dir="auto">kubeconfig</code> / <code dir="auto">token</code> / <code dir="auto">in_cluster</code>), governance,
-and the in-cluster ServiceAccount setup.</p>
+and the ServiceAccount RBAC setup. Deploy jobs that prune or recreate
+immutable objects need the matching Kubernetes <code dir="auto">delete</code> verb, for
+example on <code dir="auto">jobs.batch</code> for versioned migration Jobs.</p>
 <h2 id="job-outputs-outputs">Job outputs (<code dir="auto">outputs:</code>)</h2>
 <p>A job declares structured values it promises to produce; downstream
 jobs reference them via <code dir="auto">${{ needs.&#x3C;job>.outputs.&#x3C;alias> }}</code>
