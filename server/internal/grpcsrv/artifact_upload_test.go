@@ -2,6 +2,8 @@ package grpcsrv_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"net"
@@ -277,6 +279,230 @@ func TestRequestArtifactUpload_DedupesPaths(t *testing.T) {
 	if distCount != 1 {
 		t.Fatalf("rows with path=dist = %d, want 1", distCount)
 	}
+}
+
+func TestRequestArtifactUpload_ReissuesPendingRowsOnRetry(t *testing.T) {
+	pool, client, _ := bootServerWithArtifacts(t)
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "runner-art-reissue")
+
+	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
+		AgentId: "runner-art-reissue", Token: "tok-art",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	flipJobRunning(t, pool, jobID, agentID)
+
+	first, err := client.RequestArtifactUpload(context.Background(), &gocdnextv1.RequestArtifactUploadRequest{
+		SessionId: resp.SessionId,
+		RunId:     runID.String(),
+		JobId:     jobID.String(),
+		Paths:     []string{"dist"},
+	})
+	if err != nil {
+		t.Fatalf("first upload request: %v", err)
+	}
+	second, err := client.RequestArtifactUpload(context.Background(), &gocdnextv1.RequestArtifactUploadRequest{
+		SessionId: resp.SessionId,
+		RunId:     runID.String(),
+		JobId:     jobID.String(),
+		Paths:     []string{"dist"},
+	})
+	if err != nil {
+		t.Fatalf("retry upload request: %v", err)
+	}
+	if first.Tickets[0].StorageKey != second.Tickets[0].StorageKey {
+		t.Fatalf("retry storage key = %q, want original %q", second.Tickets[0].StorageKey, first.Tickets[0].StorageKey)
+	}
+
+	rows, err := store.New(pool).ListArtifactsByJobRun(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Status != "pending" {
+		t.Fatalf("rows = %+v, want one pending row", rows)
+	}
+}
+
+func TestRequestArtifactUpload_DoesNotReopenReadyArtifact(t *testing.T) {
+	pool, client, _ := bootServerWithArtifacts(t)
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "runner-art-ready")
+
+	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
+		AgentId: "runner-art-ready", Token: "tok-art",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	flipJobRunning(t, pool, jobID, agentID)
+
+	first, err := client.RequestArtifactUpload(context.Background(), &gocdnextv1.RequestArtifactUploadRequest{
+		SessionId: resp.SessionId,
+		RunId:     runID.String(),
+		JobId:     jobID.String(),
+		Paths:     []string{"dist"},
+	})
+	if err != nil {
+		t.Fatalf("first upload request: %v", err)
+	}
+	if _, err := store.New(pool).MarkArtifactReady(context.Background(), first.Tickets[0].StorageKey, 1, strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("mark ready: %v", err)
+	}
+
+	_, err = client.RequestArtifactUpload(context.Background(), &gocdnextv1.RequestArtifactUploadRequest{
+		SessionId: resp.SessionId,
+		RunId:     runID.String(),
+		JobId:     jobID.String(),
+		Paths:     []string{"dist"},
+	})
+	if code := status.Code(err); code != codes.FailedPrecondition {
+		t.Fatalf("retry ready code = %s, want FailedPrecondition (err=%v)", code, err)
+	}
+}
+
+func TestHandleJobResult_VerifiesArtifactContentSHA(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	signer, err := artifacts.NewSigner([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	fs, err := artifacts.NewFilesystemStore(t.TempDir(), "http://unit-test", signer)
+	if err != nil {
+		t.Fatalf("fs store: %v", err)
+	}
+	sessions := grpcsrv.NewSessionStore()
+	svc := grpcsrv.NewAgentService(s, sessions,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), heartbeatSecs).
+		WithArtifactStore(fs, 5*time.Minute, 5*time.Minute, 24*time.Hour)
+
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "runner-art-confirm")
+	flipJobRunning(t, pool, jobID, agentID)
+	var attempt int32
+	if err := pool.QueryRow(ctx, `SELECT attempt FROM job_runs WHERE id=$1`, jobID).Scan(&attempt); err != nil {
+		t.Fatalf("attempt: %v", err)
+	}
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	sess.RecordAssignment(jobID, attempt)
+
+	pipelineID, projectID, _, err := s.JobRunParents(ctx, jobID, runID)
+	if err != nil {
+		t.Fatalf("parents: %v", err)
+	}
+	key := "run/" + runID.String() + "/job/" + jobID.String() + "/blob"
+	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+		RunID: runID, JobRunID: jobID, PipelineID: pipelineID, ProjectID: projectID,
+		Path: "dist", StorageKey: key,
+	}); err != nil {
+		t.Fatalf("insert pending: %v", err)
+	}
+	actual := "actual artifact bytes"
+	if _, err := fs.Put(ctx, key, strings.NewReader(actual)); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+
+	svc.HandleJobResultForTest(ctx, sess, &gocdnextv1.JobResult{
+		JobId:  jobID.String(),
+		Status: gocdnextv1.RunStatus_RUN_STATUS_SUCCESS,
+		Artifacts: []*gocdnextv1.ArtifactRef{{
+			Path:          "dist",
+			StorageKey:    key,
+			Size:          int64(len(actual)),
+			ContentSha256: shaHex("different same-size claim"),
+		}},
+	})
+
+	var jobStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&jobStatus); err != nil {
+		t.Fatalf("job status: %v", err)
+	}
+	if jobStatus != "failed" {
+		t.Fatalf("job status = %q, want failed", jobStatus)
+	}
+	row, err := s.GetArtifactByStorageKey(ctx, key)
+	if err != nil {
+		t.Fatalf("artifact row: %v", err)
+	}
+	if row.Status != "pending" || row.ContentSHA256 != "" {
+		t.Fatalf("artifact row = %+v, want still pending with no trusted sha", row)
+	}
+}
+
+func TestHandleJobResult_MarksArtifactReadyWithServerObservedDigest(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	signer, err := artifacts.NewSigner([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	fs, err := artifacts.NewFilesystemStore(t.TempDir(), "http://unit-test", signer)
+	if err != nil {
+		t.Fatalf("fs store: %v", err)
+	}
+	sessions := grpcsrv.NewSessionStore()
+	svc := grpcsrv.NewAgentService(s, sessions,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), heartbeatSecs).
+		WithArtifactStore(fs, 5*time.Minute, 5*time.Minute, 24*time.Hour)
+
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "runner-art-ready-confirm")
+	flipJobRunning(t, pool, jobID, agentID)
+	var attempt int32
+	if err := pool.QueryRow(ctx, `SELECT attempt FROM job_runs WHERE id=$1`, jobID).Scan(&attempt); err != nil {
+		t.Fatalf("attempt: %v", err)
+	}
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	sess.RecordAssignment(jobID, attempt)
+
+	pipelineID, projectID, _, err := s.JobRunParents(ctx, jobID, runID)
+	if err != nil {
+		t.Fatalf("parents: %v", err)
+	}
+	key := "run/" + runID.String() + "/job/" + jobID.String() + "/blob"
+	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+		RunID: runID, JobRunID: jobID, PipelineID: pipelineID, ProjectID: projectID,
+		Path: "dist", StorageKey: key,
+	}); err != nil {
+		t.Fatalf("insert pending: %v", err)
+	}
+	actual := "trusted artifact bytes"
+	if _, err := fs.Put(ctx, key, strings.NewReader(actual)); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+
+	svc.HandleJobResultForTest(ctx, sess, &gocdnextv1.JobResult{
+		JobId:  jobID.String(),
+		Status: gocdnextv1.RunStatus_RUN_STATUS_SUCCESS,
+		Artifacts: []*gocdnextv1.ArtifactRef{{
+			Path:          "dist",
+			StorageKey:    key,
+			Size:          int64(len(actual)),
+			ContentSha256: shaHex(actual),
+		}},
+	})
+
+	var jobStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&jobStatus); err != nil {
+		t.Fatalf("job status: %v", err)
+	}
+	if jobStatus != "success" {
+		t.Fatalf("job status = %q, want success", jobStatus)
+	}
+	row, err := s.GetArtifactByStorageKey(ctx, key)
+	if err != nil {
+		t.Fatalf("artifact row: %v", err)
+	}
+	if row.Status != "ready" || row.SizeBytes != int64(len(actual)) || row.ContentSHA256 != shaHex(actual) {
+		t.Fatalf("artifact row = %+v, want trusted server-observed metadata", row)
+	}
+}
+
+func shaHex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 func TestRequestArtifactUpload_RejectsBadSession(t *testing.T) {

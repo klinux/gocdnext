@@ -3,6 +3,8 @@ package artifacts
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"strings"
@@ -58,6 +60,28 @@ func TestFilesystem_PutGetHeadDelete(t *testing.T) {
 	}
 	if _, err := fs.Head(ctx, key); !errors.Is(err, ErrNotFound) {
 		t.Errorf("head after delete: want ErrNotFound, got %v", err)
+	}
+}
+
+func TestInspectObjectComputesContentIdentity(t *testing.T) {
+	fs := mustFS(t)
+	ctx := context.Background()
+	key := "run/abc/job/def/inspect"
+	payload := []byte("server-observed artifact bytes")
+
+	if _, err := fs.Put(ctx, key, bytes.NewReader(payload)); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, err := InspectObject(ctx, fs, key)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	sum := sha256.Sum256(payload)
+	if got.Size != int64(len(payload)) {
+		t.Errorf("size = %d, want %d", got.Size, len(payload))
+	}
+	if got.ContentSHA256 != hex.EncodeToString(sum[:]) {
+		t.Errorf("sha = %q, want %q", got.ContentSHA256, hex.EncodeToString(sum[:]))
 	}
 }
 
@@ -147,5 +171,32 @@ func TestFilesystem_AtomicPut(t *testing.T) {
 	}
 	if _, err := fs.Head(ctx, key); !errors.Is(err, ErrNotFound) {
 		t.Errorf("partial file must not exist; head err = %v", err)
+	}
+}
+
+func TestFilesystem_PutCreateOnlyAllowsIdenticalRetryAndRejectsOverwrite(t *testing.T) {
+	fs := mustFS(t)
+	ctx := context.Background()
+	key := "run/abc/job/def/write-once"
+
+	first := []byte("first artifact payload")
+	if _, err := fs.PutCreateOnly(ctx, key, bytes.NewReader(first)); err != nil {
+		t.Fatalf("first put: %v", err)
+	}
+	if _, err := fs.PutCreateOnly(ctx, key, bytes.NewReader(first)); err != nil {
+		t.Fatalf("identical retry should be accepted: %v", err)
+	}
+	if _, err := fs.PutCreateOnly(ctx, key, bytes.NewReader([]byte("different artifact payload"))); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("different replay err = %v, want ErrAlreadyExists", err)
+	}
+
+	rc, err := fs.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if !bytes.Equal(got, first) {
+		t.Errorf("object was overwritten: got %q", got)
 	}
 }
