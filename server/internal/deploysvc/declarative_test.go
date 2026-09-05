@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -99,6 +100,37 @@ func TestReconcileDeclarativeTarget_AuthorizationPrecedesTheFetch(t *testing.T) 
 	}
 	if slices.Contains(*log, "validate-source") {
 		t.Error("an unauthorized declaration paid for an ArgoCD fetch")
+	}
+}
+
+func TestReconcileDeclarativeTarget_RBACDeniedIsTerminalBeforeFetch(t *testing.T) {
+	log := &[]string{}
+	p := &fakeProvider{log: log}
+	base := &fakeRegistry{envID: uuid.New(), log: log}
+	reg := &fakeRBACRegistry{
+		fakeRegistry: base,
+		accessErr: &store.ClusterAccessDeniedError{
+			Cluster: "prod-hub",
+			Check: store.ClusterAccessCheck{
+				Group: "argoproj.io", Resource: "applications", Verb: "patch",
+				Namespace: "argocd", Name: "shop",
+			},
+		},
+	}
+	r := New(p, reg)
+
+	res, err := r.ReconcileDeclarativeTarget(context.Background(), declInput())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if res.Decision != ReconcileTerminalFault {
+		t.Fatalf("decision = %v, want TerminalFault", res.Decision)
+	}
+	if !strings.Contains(res.Public, "cannot patch applications.argoproj.io") {
+		t.Fatalf("public = %q, want actionable missing-RBAC message", res.Public)
+	}
+	if want := []string{"resolve-existing", "authorize-declarative:prod-hub", "check-rbac:prod-hub"}; !equal(*log, want) {
+		t.Fatalf("call log = %v, want no fetch/write after RBAC denial", *log)
 	}
 }
 

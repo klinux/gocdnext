@@ -878,7 +878,9 @@ per-cluster `allowed_projects` allow-list) is enforced at
 
 See [Cluster registry](/gocdnext/docs/concepts/clusters/) for the
 three auth types (`kubeconfig` / `token` / `in_cluster`), governance,
-and the in-cluster ServiceAccount setup.
+and the ServiceAccount RBAC setup. Deploy jobs that prune or recreate
+immutable objects need the matching Kubernetes `delete` verb, for
+example on `jobs.batch` for versioned migration Jobs.
 
 ## Job outputs (`outputs:`)
 

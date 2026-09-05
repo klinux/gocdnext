@@ -57,6 +57,7 @@ gocdnext apply [path]   --slug <slug>     [flags...]
 gocdnext secret set <NAME>  --slug <slug> [flags...]
 gocdnext secret list        --slug <slug> [flags...]
 gocdnext secret rm  <NAME>  --slug <slug> [flags...]
+gocdnext rbac deploy --namespace <ns> [flags...]
 gocdnext compliance frameworks list           [--server <url>]
 gocdnext compliance policies list             [--server <url>]
 gocdnext compliance effective-pipeline <slug> [--frameworks a,b] [--server <url>]
@@ -124,6 +125,37 @@ commit. Node uses the `node@v3` plugin (node version + manager come from
 `engines.node` / the lockfile); the image job appears only when a
 `Dockerfile` is present. Missing `test`/`build` scripts are reported as
 warnings, not guessed.
+
+## `rbac deploy` — print Kubernetes deploy RBAC
+
+Generates a starter ServiceAccount + Role/Binding manifest for jobs
+that use the pipeline `cluster:` key with kubectl/helm/kustomize
+plugins. It only prints YAML to stdout — it never talks to the cluster,
+applies the manifest, or grants gocdnext extra permissions.
+
+```bash
+# Namespaced deploy identity (preferred)
+gocdnext rbac deploy \
+  --namespace acme-app \
+  --service-account gocdnext-deployer \
+  --service-account-namespace gocdnext-deploy > deploy-rbac.yaml
+
+# Only when one deploy identity must span namespaces; trim before applying.
+gocdnext rbac deploy --cluster-wide > deploy-rbac-cluster-wide.yaml
+```
+
+The generated rules include `delete` and `batch/jobs`, which are needed
+for prune/recreate flows and immutable migration Jobs. Use
+`--no-secrets` when the deploy never applies Kubernetes Secret objects.
+
+| Flag | Required | Notes |
+|---|---|---|
+| `--namespace` | yes, unless `--cluster-wide` | target namespace for the namespaced Role |
+| `--cluster-wide` | no | emits ClusterRole/ClusterRoleBinding; use only for multi-namespace deploys |
+| `--name` | no | Role/Binding name; default `gocdnext-deployer` |
+| `--service-account` | no | ServiceAccount name; default `gocdnext-deployer` |
+| `--service-account-namespace` | no | ServiceAccount namespace; default `gocdnext-deploy` |
+| `--no-secrets` | no | omit `secrets` from the core resource rule |
 
 ## `apply` — upload pipelines
 

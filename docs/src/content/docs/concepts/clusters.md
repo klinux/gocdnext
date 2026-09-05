@@ -205,6 +205,15 @@ gocdnext does not widen the agent SA for you.
 Grant the agent namespace SA permission on whatever the deploy job
 applies. For a kustomize/kubectl apply into an app namespace:
 
+```bash
+gocdnext rbac deploy \
+  --namespace acme-app \
+  --service-account gocdnext-agent \
+  --service-account-namespace gocdnext > deploy-rbac.yaml
+```
+
+Or write the equivalent manifest directly:
+
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -214,10 +223,13 @@ metadata:
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
-    verbs: ["get", "list", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["services", "configmaps", "secrets"]
-    verbs: ["get", "list", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -234,11 +246,31 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ```
 
-Scope the verbs to what the pipeline actually applies — a kustomize
-deploy that only touches Deployments and Services doesn't need
-cluster-wide `*`. If the deploy spans namespaces, use a
-`ClusterRole` + `ClusterRoleBinding` instead, but keep the rules
-tight.
+Scope the resources to what the pipeline actually applies — a
+kustomize deploy that only touches Deployments and Services doesn't
+need cluster-wide `*`. Keep `delete` when the job may prune dropped
+objects (`kubectl apply --prune`), recreate immutable resources, or
+apply version-named migration `Job`s. Kubernetes `batch/jobs` are
+immutable in common fields, so a redeploy often needs delete + create
+rather than patch alone. If the deploy spans namespaces, use a
+`ClusterRole` + `ClusterRoleBinding` instead, but keep the rules tight.
+Before registering the cluster credential, test the exact ServiceAccount
+context:
+
+```bash
+KUBECONFIG=./gocdnext-deployer.kubeconfig \
+  kubectl auth can-i delete jobs.batch -n acme-app
+KUBECONFIG=./gocdnext-deployer.kubeconfig \
+  kubectl auth can-i patch deployments.apps -n acme-app
+```
+
+gocdnext never auto-creates these bindings or grants itself broader
+cluster permissions; it uses only the credential the operator
+registered. For arbitrary `cluster:` jobs, gocdnext cannot infer every
+resource a shell command will touch, so the operator-owned manifest and
+`kubectl auth can-i` checks are the source of truth. Native ArgoCD
+targets do get an additional server-side RBAC preflight for the fixed
+Application `get`/`patch` operations gocdnext performs.
 
 ## Setting up a ServiceAccount token (for `token` auth)
 
@@ -267,10 +299,13 @@ metadata:
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
-    verbs: ["get", "list", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["services", "configmaps", "secrets"]
-    verbs: ["get", "list", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -150,4 +151,56 @@ func TestDoClusterAPIWrite(t *testing.T) {
 			t.Fatal("expected an error for a non-HTTPS api_server, got nil")
 		}
 	})
+}
+
+func TestDoClusterAPIAccessReview(t *testing.T) {
+	const tok = "rbac-token-xyz"
+	var sawBody struct {
+		Spec struct {
+			ResourceAttributes struct {
+				Group     string `json:"group"`
+				Resource  string `json:"resource"`
+				Verb      string `json:"verb"`
+				Namespace string `json:"namespace"`
+				Name      string `json:"name"`
+			} `json:"resourceAttributes"`
+		} `json:"spec"`
+	}
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != selfSubjectAccessReviewPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+tok {
+			t.Errorf("auth = %q, want bearer token", r.Header.Get("Authorization"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&sawBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"status":{"allowed":false,"reason":"RBAC: denied by role"}}`))
+	}))
+	defer ts.Close()
+
+	res, err := doClusterAPIAccessReview(context.Background(), kubeEndpoint{
+		server: ts.URL, bearer: tok, caPEM: caPEMof(t, ts),
+	}, ClusterAccessCheck{
+		Group: "argoproj.io", Resource: "applications", Verb: "patch", Namespace: "argocd", Name: "checkout",
+	})
+	if err != nil {
+		t.Fatalf("doClusterAPIAccessReview: %v", err)
+	}
+	if res.Status.Allowed {
+		t.Fatal("allowed = true, want false")
+	}
+	if sawBody.Spec.ResourceAttributes.Group != "argoproj.io" ||
+		sawBody.Spec.ResourceAttributes.Resource != "applications" ||
+		sawBody.Spec.ResourceAttributes.Verb != "patch" ||
+		sawBody.Spec.ResourceAttributes.Namespace != "argocd" ||
+		sawBody.Spec.ResourceAttributes.Name != "checkout" {
+		t.Fatalf("resourceAttributes = %+v, want Application patch check", sawBody.Spec.ResourceAttributes)
+	}
 }
