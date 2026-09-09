@@ -342,7 +342,7 @@ func TestStoreFromPod_DefangsLeadingDashPath(t *testing.T) {
 	}
 	c := NewCacheClient(stub, "sess", nil)
 
-	size, err := c.StoreFromPod(context.Background(), exec,
+	st, err := c.StoreFromPod(context.Background(), exec,
 		"p", "hk", "/workspace", "r", "j",
 		&gocdnextv1.CacheEntry{Key: "k", Paths: []string{"-dist"}})
 	if err != nil {
@@ -350,8 +350,8 @@ func TestStoreFromPod_DefangsLeadingDashPath(t *testing.T) {
 	}
 	// A real tarball was uploaded — the size must propagate back so
 	// the runner can report it in the store log line.
-	if size <= 0 {
-		t.Errorf("StoreFromPod size = %d, want > 0", size)
+	if st.Bytes <= 0 {
+		t.Errorf("StoreFromPod size = %d, want > 0", st.Bytes)
 	}
 
 	exec.mu.Lock()
