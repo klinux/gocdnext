@@ -37,6 +37,56 @@ type CacheClient struct {
 	client    gocdnextv1.AgentServiceClient
 	sessionID string
 	http      *http.Client
+	// compression is the STORE-side codec ("gzip" default, "zstd" opt-in
+	// via GOCDNEXT_CACHE_COMPRESSION). Restore is always codec-agnostic
+	// (it sniffs the blob), so this only decides how NEW blobs are
+	// written — the writer half of the reader-first zstd rollout (#274).
+	compression string
+}
+
+// Cache compression codecs. gzip is the historical default and the fail-safe
+// fallback; zstd is opt-in and requires the housekeeper image to carry the
+// `zstd` binary (the dedicated image does).
+const (
+	codecGzip = "gzip"
+	codecZstd = "zstd"
+)
+
+// UseCompression sets the store codec from an operator string, falling back
+// to gzip for empty/unknown values so a typo never selects a codec the pod
+// can't run. Called once per (re)connect from the agent's env.
+func (c *CacheClient) UseCompression(codec string) {
+	if strings.EqualFold(strings.TrimSpace(codec), codecZstd) {
+		c.compression = codecZstd
+		return
+	}
+	c.compression = codecGzip
+}
+
+// cacheTarScript returns the shell the housekeeper execs to produce the cache
+// tarball on stdout. gzip is byte-identical to the pre-zstd script; zstd pipes
+// tar into `zstd -T0` under pipefail (so a decompressor/compressor failure on
+// a truncated stream isn't masked by tar's exit 0). $1 = workDir; the
+// remaining positional args are the already-probed paths, written to a
+// tempfile fed to `tar -T` (preserves spaces; `-`-leading paths were defanged
+// by the probe).
+func cacheTarScript(codec string) string {
+	const prefix = `cd "$1" || exit 1; shift; ` +
+		`tmp=$(mktemp) || exit 1; trap "rm -f $tmp" EXIT; ` +
+		`for p in "$@"; do printf '%s\n' "$p" >> "$tmp"; done; `
+	if codec == codecZstd {
+		return `set -o pipefail; ` + prefix + `tar -cf - -T "$tmp" | zstd -T0 -3 -c`
+	}
+	return prefix + `exec tar -czf - -T "$tmp"`
+}
+
+// cacheContentType is the Content-Type for the signed PUT, matched to the
+// codec. S3/GCS don't act on it, but it keeps the stored object honest.
+func cacheContentType(codec string) string {
+	if codec == codecZstd {
+		return "application/zstd"
+	}
+	return "application/gzip"
 }
 
 // NewCacheClient wires the concrete cache client. Shares the same
@@ -47,7 +97,7 @@ func NewCacheClient(client gocdnextv1.AgentServiceClient, sessionID string, http
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Minute}
 	}
-	return &CacheClient{client: client, sessionID: sessionID, http: httpClient}
+	return &CacheClient{client: client, sessionID: sessionID, http: httpClient, compression: codecGzip}
 }
 
 // Fetch implements runner.CacheClient.Fetch.
@@ -189,13 +239,10 @@ func (c *CacheClient) StoreFromPod(
 	// starting with `-` were defanged to `./-foo` by the probe,
 	// so tar can't read them as options. No need to re-filter
 	// existence — probe already did it.
-	const tarScript = `cd "$1" || exit 1; shift; ` +
-		`tmp=$(mktemp) || exit 1; trap "rm -f $tmp" EXIT; ` +
-		`for p in "$@"; do printf '%s\n' "$p" >> "$tmp"; done; ` +
-		`exec tar -czf - -T "$tmp"`
-	cmd := append([]string{"sh", "-c", tarScript, "_", podWorkDir}, existing...)
-	// Compress = the in-pod `tar -czf` exec + stream into the agent temp; this
-	// is the single-threaded system gzip the #274 pigz work targets.
+	cmd := append([]string{"sh", "-c", cacheTarScript(c.compression), "_", podWorkDir}, existing...)
+	// Compress = the in-pod tar+compress exec streamed into the agent temp.
+	// Single-threaded gzip by default; zstd -T0 when GOCDNEXT_CACHE_COMPRESSION
+	// selects it and the housekeeper image carries zstd (#274).
 	compressStart := time.Now()
 	if err := exec.Exec(ctx, podName, containerName, cmd, nil, mw, io.Discard); err != nil {
 		_ = tmp.Close()
@@ -224,7 +271,7 @@ func (c *CacheClient) StoreFromPod(
 		return runner.CacheStoreStats{}, fmt.Errorf("build PUT: %w", err)
 	}
 	req.ContentLength = size
-	req.Header.Set("Content-Type", "application/gzip")
+	req.Header.Set("Content-Type", cacheContentType(c.compression))
 
 	resp, err := c.http.Do(req)
 	if err != nil {
