@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.103.0 — 2026-09-09
+
+### Fixed
+
+- **`gravitee` plugin — recognize the real empty-lookup signal (#275).**
+  v0.102.0 matched only `No Api(s) found` (gio's empty-*environment* message),
+  but the common first-publish signal is `No result` — what `apis list` prints
+  when the `-q` name filter matches nothing (no API by that name yet, even in a
+  populated environment), which made a real first publish fail loud. The plugin
+  now treats both signals as first-publish → create, matching the **whole
+  trimmed output** (not a substring) so a banner/garbled response that merely
+  contains one of them still fails loud instead of guessing a create.
+
 ## v0.102.0 — 2026-09-09
 
 ### Fixed
