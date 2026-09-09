@@ -288,8 +288,14 @@ ids_json="$(gio apim apis list -q "[?name=='${PLUGIN_API_NAME}'].id" -o json)"
 # stdout, a partial/garbled response) is unexpected and must fail loud rather
 # than be guessed into a duplicating create.
 if ! printf '%s' "$ids_json" | jq -e . >/dev/null 2>&1; then
-    if printf '%s' "$ids_json" | grep -qiF 'No result' \
-       || printf '%s' "$ids_json" | grep -qiF 'No Api(s) found'; then
+    # Match the WHOLE output exactly (after trimming surrounding whitespace),
+    # never a substring: this branch decides to CREATE an API, so a banner or
+    # garbled response that merely CONTAINS "No result" (e.g. a warning line
+    # followed by it) must still fail loud, not be guessed into a create.
+    lookup_trimmed="$ids_json"
+    lookup_trimmed="${lookup_trimmed#"${lookup_trimmed%%[![:space:]]*}"}"
+    lookup_trimmed="${lookup_trimmed%"${lookup_trimmed##*[![:space:]]}"}"
+    if [ "$lookup_trimmed" = "No result" ] || [ "$lookup_trimmed" = "No Api(s) found" ]; then
         echo "gocdnext/gravitee: no API named '${PLUGIN_API_NAME}' yet — proceeding as first publish" >&2
         ids_json='[]'
     else

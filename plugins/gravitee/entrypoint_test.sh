@@ -224,6 +224,17 @@ PLUGIN_PATH="$FX" PLUGIN_DEFAULTS="$FX/defaults.yml" PLUGIN_TEMPLATE="$FX/tmpl.j
 grep -q 'unexpected non-JSON lookup response' "$TMP/out" || fail "unexpected non-JSON error message missing"
 grep -q 'definition create --with-start' "$TMP/calls" && fail "unexpected non-JSON must NOT fall through to create"
 
+# ── 1h. garbled output that merely CONTAINS an empty signal as a SUBSTRING
+#        (a warning line followed by "No result") must fail LOUD — the match is
+#        the whole trimmed output, not a substring, since this decides create ──
+setup_fx
+GIO_FAKE_LIST_JSON=$'WARNING: deprecated list endpoint\nNo result' \
+PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test/mgmt" PLUGIN_TOKEN="tok" \
+PLUGIN_PATH="$FX" PLUGIN_DEFAULTS="$FX/defaults.yml" PLUGIN_TEMPLATE="$FX/tmpl.j2" \
+  run >"$TMP/out" 2>&1 && fail "substring-only empty signal should have failed"
+grep -q 'unexpected non-JSON lookup response' "$TMP/out" || fail "substring-only empty signal error message missing"
+grep -q 'definition create --with-start' "$TMP/calls" && fail "substring-only empty signal must NOT fall through to create"
+
 # ── 2. update path: existing id → apply --api <id> --with-deploy, plans
 #       stripped from the payload BY DEFAULT (manage_plans_on_update=false
 #       → the import never touches existing plans) ──
