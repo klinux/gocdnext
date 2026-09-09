@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.105.0 — 2026-09-09
+
 ### Added
 
 - **Cache reader learns zstd; store gains an opt-in zstd codec (#274, release
