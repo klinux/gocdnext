@@ -1,0 +1,21 @@
+{{- if and .Values.agent.enabled .Values.agent.metrics.enabled }}
+# Metrics Service for the agent StatefulSet. Separate from the headless
+# service (which exists only to satisfy serviceName) because a ServiceMonitor
+# needs a real Service with a named port to select. Created only when the
+# metrics endpoint is enabled — otherwise there is nothing to scrape.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gocdnext.agent.fullname" . }}-metrics
+  labels:
+    {{- include "gocdnext.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ .Values.agent.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector: {{- include "gocdnext.agent.selectorLabels" . | nindent 4 }}
+{{- end }}
