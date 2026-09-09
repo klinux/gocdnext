@@ -7,6 +7,12 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
+// Cache-codec test handles (#274): let the external round-trip test drive the
+// real store script + codec constant without exporting them in production.
+const CodecZstdForTest = codecZstd
+
+func CacheTarScriptForTest(codec string) string { return cacheTarScript(codec) }
+
 // EnqueueRunCleanupForTest is the test-only handle into the
 // coalescing dispatcher. Production code reaches it through the
 // recv-loop's ServerMessage_CleanupRunServices switch — exposing

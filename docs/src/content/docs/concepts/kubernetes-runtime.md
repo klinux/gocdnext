@@ -56,7 +56,7 @@ Pod (job-<run>-<job>)
 ├── containers:
 │   ├── task: <user/plugin image>
 │   │   command: existing (plugin or user script)
-│   └── housekeeper: alpine
+│   └── housekeeper: alpine / gocdnext-housekeeper
 │       command: ["sleep", "infinity"]
 │       — keeps the pod alive while the agent execs `tar` to stream
 │         artefacts + caches out, then the pod is deleted
@@ -78,6 +78,33 @@ Trade-offs:
 - Materials are cloned **inside** the prep init container, not in the
   agent. Materials that need network egress need the cluster's egress
   policy to allow it from the job namespace.
+
+## Cache compression (gzip / zstd)
+
+In isolated mode the cache tarball is compressed **inside the housekeeper
+sidecar** (`tar` piped through a compressor), and restored the same way in the
+`cache-fetch` init container. For large caches (a populated Gradle or Go cache
+is hundreds of MB to GBs) compression, not upload, dominates the store time —
+single-threaded gzip caps around 20–25 MB/s.
+
+Three chart knobs tune this:
+
+- `agent.workspace.housekeeperImage` — point at **`gocdnext-housekeeper`**
+  (alpine + `zstd` + pipefail-capable `sh`) to unlock zstd. The default
+  `alpine` image has only gzip.
+- `agent.cache.compression` — `gzip` (default) or `zstd`. zstd `-T0`
+  compresses several times faster and smaller.
+- `agent.workspace.housekeeperCPULimit` — raise (e.g. `"4"`) so zstd `-T0`
+  can use multiple cores. The idle CPU **request** stays tiny, so pod
+  scheduling is unchanged; the limit only lets the burst happen.
+
+**Restore always auto-detects the codec by the blob's magic bytes**, so a
+cache written as gzip and one written as zstd both restore through the same
+path. That makes the switch safe for existing caches — but flip
+`compression: zstd` only **after** every agent in the fleet runs a version
+whose housekeeper image can read zstd (reader-before-writer). Rolling back the
+codec is instant (set it back to `gzip`); new stores revert while old zstd
+blobs still restore.
 
 ## Choosing
 

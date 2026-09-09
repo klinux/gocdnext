@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -397,6 +398,10 @@ func (c *Client) Run(ctx context.Context, drainTrigger <-chan struct{}) error {
 
 	uploader := NewArtifactUploader(cli, reg.SessionId, nil)
 	cache := NewCacheClient(cli, reg.SessionId, nil)
+	// Store-side codec: gzip by default, zstd when the operator opts in AND
+	// the housekeeper image carries zstd (#274). Restore auto-detects, so
+	// this is safe to flip independently once the fleet can read zstd.
+	cache.UseCompression(os.Getenv("GOCDNEXT_CACHE_COMPRESSION"))
 	outcome, err := c.runStream(streamCtx, cancelEst, drainTrigger, stream, hb, uploader, cache)
 	select {
 	case <-drainTrigger:
