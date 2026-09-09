@@ -1,4 +1,39 @@
 {{- if .Values.agent.enabled }}
+{{- /*
+  Drain lifecycle guard (#178): terminationGracePeriodSeconds MUST outlast the
+  whole drain (job wait + flush + cleanup-worker drain + margin), or Kubernetes
+  SIGKILLs the agent mid-drain and the running jobs are lost + requeued.
+  values.schema.json already pins these to integers with budget>=0, flush>=1,
+  grace>=1 (so a typo like "oops" fails validation instead of silently coercing
+  to 0). These template guards are the cross-field backstop — the floor is a
+  RELATION between three fields that JSON Schema can't express, and they still
+  fire under --skip-schema-validation. Only 0 opts out of the job wait; a
+  NEGATIVE budget is rejected so it can never shrink the floor below flush+40.
+*/ -}}
+{{- $budget := int .Values.agent.drain.budgetSeconds }}
+{{- $flush := int .Values.agent.drain.flushSeconds }}
+{{- $grace := int .Values.agent.drain.gracePeriodSeconds }}
+{{- /* 9223372036 = floor(maxInt64 ns / 1e9): the largest whole-second Go duration.
+       Bounding budget+flush here keeps the `add` below int64 max (no wrap-to-
+       negative that would sneak past the floor check) AND keeps the value a
+       parseable duration for the binary (a bigger one crashloops on ParseDuration). */}}
+{{- $maxDurSec := 9223372036 }}
+{{- if lt $budget 0 }}
+{{- fail (printf "agent.drain.budgetSeconds (%d) must be >= 0 (use exactly 0 to opt out of the job wait)" $budget) }}
+{{- end }}
+{{- if gt $budget $maxDurSec }}
+{{- fail (printf "agent.drain.budgetSeconds (%d) exceeds the max Go duration in seconds (%d)" $budget $maxDurSec) }}
+{{- end }}
+{{- if le $flush 0 }}
+{{- fail (printf "agent.drain.flushSeconds (%d) must be > 0" $flush) }}
+{{- end }}
+{{- if gt $flush $maxDurSec }}
+{{- fail (printf "agent.drain.flushSeconds (%d) exceeds the max Go duration in seconds (%d)" $flush $maxDurSec) }}
+{{- end }}
+{{- $floor := add $budget $flush 40 }}
+{{- if le $grace $floor }}
+{{- fail (printf "agent.drain.gracePeriodSeconds (%d) must exceed budgetSeconds (%d) + flushSeconds (%d) + 40 = %d, or Kubernetes will SIGKILL the agent mid-drain" $grace $budget $flush $floor) }}
+{{- end }}
 # Headless service satisfies the StatefulSet's serviceName contract.
 # We never DNS-resolve agents from outside (gRPC is outbound from
 # the agent to the server), but the Service still has to exist for
@@ -25,10 +60,22 @@ spec:
 # StatefulSet gives stable names — agent-0, agent-1 — that match a
 # durable row.
 #
-# `podManagementPolicy: Parallel` so scale + rollout run concurrent
-# on every replica. Default OrderedReady would scale up serially,
-# which is fine for databases but pointless for agents (no
-# election, no leader, each replica is independent).
+# `podManagementPolicy: Parallel` so SCALE-UP/DOWN and initial
+# creation run concurrently on every replica (default OrderedReady
+# does those serially — fine for databases, pointless for agents:
+# no election, no leader, each replica is independent).
+#
+# It does NOT parallelise a ROLLOUT (image/config bump). Updates use
+# the default `updateStrategy: RollingUpdate` with `maxUnavailable: 1`,
+# so a bump replaces ONE pod at a time, each paying up to
+# `drain.gracePeriodSeconds` while its graceful drain (#178) finishes.
+# With 10 replicas at grace=400 the worst-case rollout is ~66 min —
+# accepted on purpose: it preserves fleet capacity (only one agent
+# down at a time) over rollout speed. Concurrent rollout would need
+# `maxUnavailable > 1`, which depends on the MaxUnavailableStatefulSet
+# feature gate; don't set it without confirming cluster support AND
+# the capacity hit. In `helm upgrade --wait`, raise `--timeout` above
+# the worst-case (default is 5m).
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -38,7 +85,12 @@ metadata:
     app.kubernetes.io/component: agent
 spec:
   serviceName: {{ include "gocdnext.agent.fullname" . }}-headless
+  {{- if not .Values.agent.autoscaling.enabled }}
   replicas: {{ .Values.agent.replicas }}
+  {{- else }}
+  # replicas omitted on purpose: KEDA's HPA owns the count (#185). Templating it
+  # here would make every helm/ArgoCD sync fight the autoscaler.
+  {{- end }}
   podManagementPolicy: Parallel
   selector:
     matchLabels: {{- include "gocdnext.agent.selectorLabels" . | nindent 6 }}
@@ -47,6 +99,9 @@ spec:
       labels: {{- include "gocdnext.agent.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "gocdnext.agent.fullname" . }}
+      # Long enough for the graceful drain (#178) to finish before SIGKILL — the
+      # render-time guard above enforces grace > budget + flush + 40.
+      terminationGracePeriodSeconds: {{ .Values.agent.drain.gracePeriodSeconds }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -72,6 +127,21 @@ spec:
               value: {{ .Values.agent.capacity | quote }}
             - name: GOCDNEXT_AGENT_ENGINE
               value: {{ .Values.agent.engine | quote }}
+            # Graceful drain knobs (#178), rendered as Go durations. budgetSeconds:0
+            # renders "0s" (a valid opt-out); flushSeconds is guarded > 0 above.
+            - name: GOCDNEXT_DRAIN_BUDGET
+              value: {{ printf "%ds" (int .Values.agent.drain.budgetSeconds) | quote }}
+            - name: GOCDNEXT_DRAIN_FLUSH_TIMEOUT
+              value: {{ printf "%ds" (int .Values.agent.drain.flushSeconds) | quote }}
+            # Always rendered as a real env var: the binary uses LookupEnv, so
+            # an OMITTED var means "loopback default" and would leave a listener
+            # running in the pod. An explicit "" is what disables it.
+            - name: GOCDNEXT_METRICS_ADDR
+              {{- if .Values.agent.metrics.enabled }}
+              value: {{ printf ":%d" (int .Values.agent.metrics.port) | quote }}
+              {{- else }}
+              value: ""
+              {{- end }}
             {{- if eq .Values.agent.engine "kubernetes" }}
             - name: GOCDNEXT_K8S_NAMESPACE
               valueFrom:
@@ -167,6 +237,11 @@ spec:
               value: {{ toJson . | quote }}
             {{- end }}
             {{- end }}
+          {{- if .Values.agent.metrics.enabled }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.agent.metrics.port }}
+          {{- end }}
           {{- if and (eq .Values.agent.engine "kubernetes") (eq .Values.agent.workspace.accessMode "ReadWriteMany") }}
           volumeMounts:
             - name: workspace

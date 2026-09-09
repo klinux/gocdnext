@@ -8,6 +8,18 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Chart: agent autoscaling, metrics/observability, and drain plumbing.** The
+  Helm chart now wires the agent-side features whose Go support already shipped
+  but whose chart templates lived only in a downstream deployment (drift): KEDA
+  fleet autoscaling (`agent.autoscaling.*`, opt-in ScaledObject — omits the
+  StatefulSet `replicas` so the HPA owns the count), the agent Prometheus
+  `/metrics` Service + ServiceMonitor + a fail-closed metrics NetworkPolicy
+  (`agent.metrics.*`, `agent.serviceMonitor.*`), and graceful-drain sizing
+  (`agent.drain.*` → `terminationGracePeriodSeconds` with a render-time
+  cross-field guard). All default off/safe; existing installs are unaffected.
+
 ## v0.105.0 — 2026-09-09
 
 ### Added
