@@ -432,6 +432,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// When only the task container died, the housekeeper may still be
 		// alive, so scan test_reports for diagnostic signal (best-effort).
 		if status != gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED {
+			if hasPostJobWork(a, false, false) {
+				r.emitSection(a, &seq, "POST-JOB")
+			}
 			r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 			r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 		}
