@@ -155,6 +155,15 @@ type KubernetesConfig struct {
 	// "alpine:3.19".
 	HousekeeperImage string
 
+	// HousekeeperCPULimit / HousekeeperMemLimit cap the housekeeper
+	// sidecar. The cache tar+compress runs IN here; with zstd -T0
+	// (#274) more cores directly cut compress time, so the CPU LIMIT
+	// (not the request — that stays tiny for schedulability) is the
+	// knob operators raise. Empty defaults to "1" / "512Mi" (the
+	// historical hardcoded values, single-thread-gzip-sized).
+	HousekeeperCPULimit string
+	HousekeeperMemLimit string
+
 	// AgentImage is the image used for the "prep" init container in
 	// isolated mode — must be the same gocdnext-agent binary the
 	// agent itself runs so `gocdnext-agent prep` is on PATH. Empty
@@ -267,6 +276,11 @@ func applyKubernetesDefaults(cfg *KubernetesConfig) {
 	if cfg.HousekeeperImage == "" {
 		cfg.HousekeeperImage = "alpine:3.19"
 	}
+	// Validate the housekeeper limits here (not at pod-build time via
+	// MustParse, which would panic the dispatch goroutine on a bad env).
+	// A garbage value falls back to the historical default, fail-safe.
+	cfg.HousekeeperCPULimit = validQuantityOr(cfg.HousekeeperCPULimit, "1")
+	cfg.HousekeeperMemLimit = validQuantityOr(cfg.HousekeeperMemLimit, "512Mi")
 	if cfg.WorkspaceMode == "" {
 		cfg.WorkspaceMode = WorkspaceModeShared
 	}
@@ -279,6 +293,16 @@ func applyKubernetesDefaults(cfg *KubernetesConfig) {
 	if cfg.StartupTimeout <= 0 {
 		cfg.StartupTimeout = 5 * time.Minute
 	}
+}
+
+// validQuantityOr returns v if it parses as a Kubernetes resource.Quantity,
+// otherwise fallback. Keeps a malformed operator-supplied CPU/memory limit
+// from panicking MustParse deep in pod construction (#274).
+func validQuantityOr(v, fallback string) string {
+	if _, err := resource.ParseQuantity(v); err != nil {
+		return fallback
+	}
+	return v
 }
 
 // TCP port the DinD sidecar listens on. localhost-only (same Pod =

@@ -20,6 +20,7 @@
 package runner
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -240,16 +241,26 @@ func streamCacheIntoPod(
 	}
 
 	hasher := sha256.New()
-	tee := io.TeeReader(resp.Body, hasher)
+	// bufio lets us peek the compression magic without consuming it; the
+	// decoder in the pod still sees the full stream, and the hasher (via
+	// the tee) still sums every byte, so sha256 verification is unaffected.
+	br := bufio.NewReaderSize(io.TeeReader(resp.Body, hasher), 512)
+	magic, perr := br.Peek(4)
+	if perr != nil && len(magic) < 2 {
+		return fmt.Errorf("peek cache blob magic: %w", perr)
+	}
+	cmd, cerr := podUntarCmd(magic, workDir)
+	if cerr != nil {
+		return fmt.Errorf("cache blob %w", cerr)
+	}
 
-	// Exec into cache-fetch container, pipe the tee'd body in as
-	// stdin to tar.
+	// Exec into cache-fetch container, pipe the peeked body in as
+	// stdin to the codec-appropriate untar command.
 	var stderr bytes.Buffer
 	if err := exec.Exec(ctx, podName, engine.CacheFetchInitContainerName,
-		[]string{"tar", "-xzf", "-", "-C", workDir},
-		tee, io.Discard, &stderr,
+		cmd, br, io.Discard, &stderr,
 	); err != nil {
-		return fmt.Errorf("exec tar in cache-fetch: %w (stderr=%q)", err, stderr.String())
+		return fmt.Errorf("exec untar in cache-fetch: %w (stderr=%q)", err, stderr.String())
 	}
 
 	if expectedSha != "" {

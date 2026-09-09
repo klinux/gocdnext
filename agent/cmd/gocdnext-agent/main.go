@@ -301,13 +301,15 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 		return engine.NewDocker(cfg, fallback), nil
 	case "kubernetes":
 		cfg := engine.KubernetesConfig{
-			Namespace:          os.Getenv("GOCDNEXT_K8S_NAMESPACE"),
-			KubeconfigPath:     os.Getenv("GOCDNEXT_KUBECONFIG"),
-			WorkspacePVCName:   os.Getenv("GOCDNEXT_K8S_WORKSPACE_PVC"),
-			WorkspaceMountPath: os.Getenv("GOCDNEXT_K8S_WORKSPACE_PATH"),
-			DefaultImage:       os.Getenv("GOCDNEXT_K8S_DEFAULT_IMAGE"),
-			AgentImage:         os.Getenv("GOCDNEXT_K8S_AGENT_IMAGE"),
-			HousekeeperImage:   os.Getenv("GOCDNEXT_K8S_HOUSEKEEPER_IMAGE"),
+			Namespace:           os.Getenv("GOCDNEXT_K8S_NAMESPACE"),
+			KubeconfigPath:      os.Getenv("GOCDNEXT_KUBECONFIG"),
+			WorkspacePVCName:    os.Getenv("GOCDNEXT_K8S_WORKSPACE_PVC"),
+			WorkspaceMountPath:  os.Getenv("GOCDNEXT_K8S_WORKSPACE_PATH"),
+			DefaultImage:        os.Getenv("GOCDNEXT_K8S_DEFAULT_IMAGE"),
+			AgentImage:          os.Getenv("GOCDNEXT_K8S_AGENT_IMAGE"),
+			HousekeeperImage:    os.Getenv("GOCDNEXT_K8S_HOUSEKEEPER_IMAGE"),
+			HousekeeperCPULimit: os.Getenv("GOCDNEXT_K8S_HOUSEKEEPER_CPU_LIMIT"),
+			HousekeeperMemLimit: os.Getenv("GOCDNEXT_K8S_HOUSEKEEPER_MEM_LIMIT"),
 		}
 		// Job-pod scheduling baseline. Names use the JOB_ prefix
 		// to avoid confusion with the agent's own pod nodeSelector

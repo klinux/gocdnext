@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Cache reader learns zstd; store gains an opt-in zstd codec (#274, release
+  A of 2).** Cache restore now auto-detects gzip vs zstd by magic bytes, in
+  both the Go (shared) path and the in-pod isolated `cache-fetch` restore — so
+  a cache written either way restores through the same code and existing gzip
+  caches are untouched. A new dedicated **`gocdnext-housekeeper`** image
+  (alpine + `zstd`) backs the housekeeper and `cache-fetch` containers. The
+  isolated store can now write zstd via `agent.cache.compression: zstd`
+  (default `gzip`), and the housekeeper CPU/memory limits are configurable
+  (`agent.workspace.housekeeperCPULimit` / `housekeeperMemLimit`) so `zstd -T0`
+  can parallelise. Compression is the store bottleneck for large caches
+  (single-thread gzip ~23 MB/s); this is the reader-first half — flip the codec
+  to zstd only once the whole fleet can read it.
+
 ## v0.104.0 — 2026-09-09
 
 ### Added

@@ -307,8 +307,8 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 				corev1.ResourceMemory: resource.MustParse("32Mi"),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("1"),
-				corev1.ResourceMemory: resource.MustParse("512Mi"),
+				corev1.ResourceCPU:    resource.MustParse(k.cfg.HousekeeperCPULimit),
+				corev1.ResourceMemory: resource.MustParse(k.cfg.HousekeeperMemLimit),
 			},
 		},
 	}

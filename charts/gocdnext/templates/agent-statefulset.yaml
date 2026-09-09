@@ -127,7 +127,21 @@ spec:
             - name: GOCDNEXT_K8S_HOUSEKEEPER_IMAGE
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.agent.workspace.housekeeperCPULimit }}
+            - name: GOCDNEXT_K8S_HOUSEKEEPER_CPU_LIMIT
+              value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.agent.workspace.housekeeperMemLimit }}
+            - name: GOCDNEXT_K8S_HOUSEKEEPER_MEM_LIMIT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.agent.cache }}{{ with .compression }}
+            # Cache store codec (#274). Restore auto-detects; flip to
+            # "zstd" only once the whole fleet can read it.
+            - name: GOCDNEXT_CACHE_COMPRESSION
+              value: {{ . | quote }}
+            {{- end }}{{- end }}
             - name: GOCDNEXT_K8S_DEFAULT_IMAGE
               value: {{ .Values.agent.defaultJobImage | quote }}
             - name: GOCDNEXT_K8S_CLEANUP_ON_SUCCESS

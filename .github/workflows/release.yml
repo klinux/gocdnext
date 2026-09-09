@@ -100,6 +100,11 @@ jobs:
           - name: agent
             context: .
             dockerfile: agent/Dockerfile
+          - name: housekeeper
+            # Isolated-mode cache/artifact sidecar (alpine + zstd). Same
+            # image backs the cache-fetch init container. #274.
+            context: .
+            dockerfile: agent/housekeeper.Dockerfile
           - name: web
             # Root context so the in-app /docs page can ship the
             # repo's root-level markdowns. The Dockerfile pulls

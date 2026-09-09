@@ -264,13 +264,17 @@ func UntarGz(dest string, src io.Reader, wantSHA string) error {
 	hasher := sha256.New()
 	tee := io.TeeReader(src, hasher)
 
-	gz, err := gzip.NewReader(tee)
+	// Auto-detect gzip vs zstd by magic bytes (#274): a cache blob may
+	// now arrive zstd-compressed from the isolated store, while every
+	// artifact and pre-existing cache is still gzip. Detection is by
+	// content so old blobs restore unchanged.
+	dc, err := decompressReader(tee)
 	if err != nil {
-		return fmt.Errorf("artifact: gzip reader: %w", err)
+		return fmt.Errorf("artifact: decompress: %w", err)
 	}
-	defer func() { _ = gz.Close() }()
+	defer func() { _ = dc.Close() }()
 
-	tr := tar.NewReader(gz)
+	tr := tar.NewReader(dc)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
