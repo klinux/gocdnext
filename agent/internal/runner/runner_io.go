@@ -24,8 +24,16 @@ func (r *Runner) emitSection(a *gocdnextv1.JobAssignment, seq *atomic.Int64, nam
 // honouring "an empty phase emits nothing", on both the success and failure
 // paths. Cache store only runs on success; artifact upload is gated by
 // `artifacts.when` against the success/failure outcome.
+// hasScanWork reports whether the test-report / coverage scans will run. It's
+// the post-job predicate for paths that ONLY scan and do NOT upload artifacts
+// (the isolated wait-error branch): gating those on hasPostJobWork would front
+// an empty POST-JOB when only an `artifacts.when: on_failure` is declared.
+func hasScanWork(a *gocdnextv1.JobAssignment) bool {
+	return len(a.GetTestReports()) > 0 || a.GetCoverageReport() != nil
+}
+
 func hasPostJobWork(a *gocdnextv1.JobAssignment, success, cacheWired bool) bool {
-	if len(a.GetTestReports()) > 0 || a.GetCoverageReport() != nil {
+	if hasScanWork(a) {
 		return true
 	}
 	if success && cacheWired && len(a.GetCaches()) > 0 {

@@ -64,3 +64,15 @@ func TestHasPostJobWork(t *testing.T) {
 		})
 	}
 }
+
+// The isolated wait-error branch scans but never uploads, so it gates on
+// hasScanWork — which must ignore an on_failure-only artifact (else it fronts
+// an empty POST-JOB there).
+func TestHasScanWork_IgnoresArtifacts(t *testing.T) {
+	if hasScanWork(&gocdnextv1.JobAssignment{ArtifactPaths: []string{"dist/*"}, ArtifactsWhen: "on_failure"}) {
+		t.Error("hasScanWork counted an on_failure artifact as scan work")
+	}
+	if !hasScanWork(&gocdnextv1.JobAssignment{TestReports: []string{"**/TEST-*.xml"}}) {
+		t.Error("hasScanWork missed declared test reports")
+	}
+}
