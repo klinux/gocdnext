@@ -51,7 +51,7 @@ func NewCacheClient(client gocdnextv1.AgentServiceClient, sessionID string, http
 }
 
 // Fetch implements runner.CacheClient.Fetch.
-func (c *CacheClient) Fetch(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (bool, error) {
+func (c *CacheClient) Fetch(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (runner.CacheFetchStats, error) {
 	resp, err := c.client.RequestCacheGet(ctx, &gocdnextv1.RequestCacheGetRequest{
 		SessionId: c.sessionID,
 		RunId:     runID,
@@ -64,17 +64,19 @@ func (c *CacheClient) Fetch(ctx context.Context, workDir, runID, jobID string, e
 		// cold start the same whether the server returned miss
 		// via found=false OR via a legacy NotFound code.
 		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
-			return false, nil
+			return runner.CacheFetchStats{}, nil
 		}
-		return false, fmt.Errorf("request cache get: %w", err)
+		return runner.CacheFetchStats{}, fmt.Errorf("request cache get: %w", err)
 	}
 	if !resp.GetFound() {
-		return false, nil
+		return runner.CacheFetchStats{}, nil
 	}
-	if err := runner.DownloadAndUntar(ctx, c.http, resp.GetGetUrl(), workDir, resp.GetContentSha256()); err != nil {
-		return false, fmt.Errorf("download+untar: %w", err)
+	restoreStart := time.Now()
+	bytes, err := runner.DownloadAndUntar(ctx, c.http, resp.GetGetUrl(), workDir, resp.GetContentSha256())
+	if err != nil {
+		return runner.CacheFetchStats{}, fmt.Errorf("download+untar: %w", err)
 	}
-	return true, nil
+	return runner.CacheFetchStats{Found: true, Bytes: bytes, Restore: time.Since(restoreStart)}, nil
 }
 
 // ResolveGet calls RequestCacheGet and returns the signed URL
@@ -130,20 +132,22 @@ func (c *CacheClient) StoreFromPod(
 	podName, containerName, podWorkDir string,
 	runID, jobID string,
 	entry *gocdnextv1.CacheEntry,
-) (int64, error) {
+) (runner.CacheStoreStats, error) {
 	if len(entry.GetPaths()) == 0 {
-		return 0, errors.New("cache: entry has no paths")
+		return runner.CacheStoreStats{}, errors.New("cache: entry has no paths")
 	}
 	if exec == nil {
-		return 0, errors.New("cache: nil executor")
+		return runner.CacheStoreStats{}, errors.New("cache: nil executor")
 	}
 
 	// 1. Probe — list existing paths (defanged for leading-dash)
 	//    INSIDE the pod. Single round-trip per cache entry.
+	probeStart := time.Now()
 	existing, err := c.probeCachePaths(ctx, exec, podName, containerName, podWorkDir, entry.GetPaths())
 	if err != nil {
-		return 0, fmt.Errorf("probe paths: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("probe paths: %w", err)
 	}
+	probeDur := time.Since(probeStart)
 	if len(existing) == 0 {
 		// Mirror shared-mode semantics: TarGzPaths(workDir, nil)
 		// produces a valid empty tar.gz (~23 bytes), which Store
@@ -153,7 +157,9 @@ func (c *CacheClient) StoreFromPod(
 		// would silently keep a stale ready blob from an earlier
 		// run when the job DID produce the path — a divergence
 		// from shared mode that surprises operators.
-		return c.storeEmptyCacheBlob(ctx, runID, jobID, entry.GetKey())
+		stats, err := c.storeEmptyCacheBlob(ctx, runID, jobID, entry.GetKey())
+		stats.Probe = probeDur
+		return stats, err
 	}
 
 	// 2. RPC + tar + PUT + ready — only when there's content.
@@ -164,12 +170,12 @@ func (c *CacheClient) StoreFromPod(
 		Key:       entry.GetKey(),
 	})
 	if err != nil {
-		return 0, fmt.Errorf("request cache put: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("request cache put: %w", err)
 	}
 
 	tmp, err := os.CreateTemp("", "gocdnext-cache-pod-*.tar.gz")
 	if err != nil {
-		return 0, fmt.Errorf("tempfile: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("tempfile: %w", err)
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
@@ -188,9 +194,12 @@ func (c *CacheClient) StoreFromPod(
 		`for p in "$@"; do printf '%s\n' "$p" >> "$tmp"; done; ` +
 		`exec tar -czf - -T "$tmp"`
 	cmd := append([]string{"sh", "-c", tarScript, "_", podWorkDir}, existing...)
+	// Compress = the in-pod `tar -czf` exec + stream into the agent temp; this
+	// is the single-threaded system gzip the #274 pigz work targets.
+	compressStart := time.Now()
 	if err := exec.Exec(ctx, podName, containerName, cmd, nil, mw, io.Discard); err != nil {
 		_ = tmp.Close()
-		return 0, fmt.Errorf("exec tar %q: %w", entry.GetKey(), err)
+		return runner.CacheStoreStats{}, fmt.Errorf("exec tar %q: %w", entry.GetKey(), err)
 	}
 
 	info, statErr := tmp.Stat()
@@ -198,41 +207,51 @@ func (c *CacheClient) StoreFromPod(
 		statErr = cerr
 	}
 	if statErr != nil {
-		return 0, fmt.Errorf("stat tar tmp: %w", statErr)
+		return runner.CacheStoreStats{}, fmt.Errorf("stat tar tmp: %w", statErr)
 	}
+	compressDur := time.Since(compressStart)
 	size := info.Size()
 
 	body, err := os.Open(tmpName)
 	if err != nil {
-		return 0, fmt.Errorf("open tar: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("open tar: %w", err)
 	}
 	defer func() { _ = body.Close() }()
 
+	uploadStart := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, put.GetPutUrl(), body)
 	if err != nil {
-		return 0, fmt.Errorf("build PUT: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("build PUT: %w", err)
 	}
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/gzip")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("http PUT: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("http PUT: %w", err)
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
-		return 0, fmt.Errorf("PUT returned %s", resp.Status)
+		return runner.CacheStoreStats{}, fmt.Errorf("PUT returned %s", resp.Status)
 	}
+	uploadDur := time.Since(uploadStart)
 
+	markStart := time.Now()
 	if _, err := c.client.MarkCacheReady(ctx, &gocdnextv1.MarkCacheReadyRequest{
 		SessionId:     c.sessionID,
 		CacheId:       put.GetCacheId(),
 		SizeBytes:     size,
 		ContentSha256: hex.EncodeToString(hasher.Sum(nil)),
 	}); err != nil {
-		return 0, fmt.Errorf("mark cache ready: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("mark cache ready: %w", err)
 	}
-	return size, nil
+	return runner.CacheStoreStats{
+		Bytes:     size,
+		Probe:     probeDur,
+		Compress:  compressDur,
+		Upload:    uploadDur,
+		MarkReady: time.Since(markStart),
+	}, nil
 }
 
 // storeEmptyCacheBlob uploads a valid-but-empty tar.gz under
@@ -244,11 +263,11 @@ func (c *CacheClient) StoreFromPod(
 //
 // runner.TarGzPaths is reused for the encoding so any sha/size
 // drift between the empty and non-empty paths stays impossible.
-func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key string) (int64, error) {
+func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key string) (runner.CacheStoreStats, error) {
 	var buf bytes.Buffer
 	sha, size, err := runner.TarGzPaths("", nil, &buf)
 	if err != nil {
-		return 0, fmt.Errorf("empty tar: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("empty tar: %w", err)
 	}
 
 	put, err := c.client.RequestCachePut(ctx, &gocdnextv1.RequestCachePutRequest{
@@ -258,23 +277,23 @@ func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key
 		Key:       key,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("request cache put: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("request cache put: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, put.GetPutUrl(), bytes.NewReader(buf.Bytes()))
 	if err != nil {
-		return 0, fmt.Errorf("build PUT: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("build PUT: %w", err)
 	}
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/gzip")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("http PUT: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("http PUT: %w", err)
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
-		return 0, fmt.Errorf("PUT returned %s", resp.Status)
+		return runner.CacheStoreStats{}, fmt.Errorf("PUT returned %s", resp.Status)
 	}
 
 	if _, err := c.client.MarkCacheReady(ctx, &gocdnextv1.MarkCacheReadyRequest{
@@ -283,9 +302,10 @@ func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key
 		SizeBytes:     size,
 		ContentSha256: sha,
 	}); err != nil {
-		return 0, fmt.Errorf("mark cache ready: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("mark cache ready: %w", err)
 	}
-	return size, nil
+	// Empty blob is ~23 bytes — negligible, so no per-phase split here.
+	return runner.CacheStoreStats{Bytes: size}, nil
 }
 
 // probeCachePaths runs a quick `[ -e ]` test inside the pod for
@@ -348,13 +368,13 @@ func (c *CacheClient) probeCachePaths(
 
 // Store implements runner.CacheClient.Store. Returns the uploaded
 // blob size so the runner can report it in the store log line.
-func (c *CacheClient) Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (int64, error) {
+func (c *CacheClient) Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (runner.CacheStoreStats, error) {
 	if len(entry.GetPaths()) == 0 {
 		// A key with no paths has no tarball to upload. The parser
 		// already rejects this shape at pipeline apply time, but
 		// guard here too — defence in depth against a future
 		// assignment builder that forgets to copy paths through.
-		return 0, errors.New("cache: entry has no paths")
+		return runner.CacheStoreStats{}, errors.New("cache: entry has no paths")
 	}
 
 	put, err := c.client.RequestCachePut(ctx, &gocdnextv1.RequestCachePutRequest{
@@ -364,21 +384,27 @@ func (c *CacheClient) Store(ctx context.Context, workDir, runID, jobID string, e
 		Key:       entry.GetKey(),
 	})
 	if err != nil {
-		return 0, fmt.Errorf("request cache put: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("request cache put: %w", err)
 	}
 
-	sha, size, err := runner.TarAndUpload(ctx, c.http, put.GetPutUrl(), workDir, entry.GetPaths())
+	sha, size, compress, upload, err := runner.TarAndUpload(ctx, c.http, put.GetPutUrl(), workDir, entry.GetPaths())
 	if err != nil {
-		return 0, fmt.Errorf("tar+upload: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("tar+upload: %w", err)
 	}
 
+	markStart := time.Now()
 	if _, err := c.client.MarkCacheReady(ctx, &gocdnextv1.MarkCacheReadyRequest{
 		SessionId:     c.sessionID,
 		CacheId:       put.GetCacheId(),
 		SizeBytes:     size,
 		ContentSha256: sha,
 	}); err != nil {
-		return 0, fmt.Errorf("mark cache ready: %w", err)
+		return runner.CacheStoreStats{}, fmt.Errorf("mark cache ready: %w", err)
 	}
-	return size, nil
+	return runner.CacheStoreStats{
+		Bytes:     size,
+		Compress:  compress,
+		Upload:    upload,
+		MarkReady: time.Since(markStart),
+	}, nil
 }

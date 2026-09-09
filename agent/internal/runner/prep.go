@@ -111,14 +111,19 @@ func Prep(ctx context.Context, a *gocdnextv1.JobAssignment, workspaceDir string,
 			// final hit/miss state on the job log.
 			continue
 		}
-		if err := DownloadAndUntar(ctx, nil, entry.GetFetchUrl(), scriptWorkDir, entry.GetFetchSha256()); err != nil {
+		restoreStart := time.Now()
+		bytes, err := DownloadAndUntar(ctx, nil, entry.GetFetchUrl(), scriptWorkDir, entry.GetFetchSha256())
+		if err != nil {
 			// Cache is acceleration, never correctness: log + carry on.
 			prepLog(logWriter, "prep: cache %q: fetch failed (%v) — continuing without",
 				entry.GetKey(), err)
 			continue
 		}
-		prepLog(logWriter, "prep: cache %q: restored %d path(s)",
-			entry.GetKey(), len(entry.GetPaths()))
+		// #274 instrumentation: restore bytes + throughput (prep is on the
+		// critical path to the task starting).
+		restore := time.Since(restoreStart)
+		prepLog(logWriter, "prep: cache %q: restored %d path(s) (%s in %s, %s)",
+			entry.GetKey(), len(entry.GetPaths()), humanizeBytes(bytes), restore.Round(time.Millisecond), mbps(bytes, restore))
 	}
 
 	// Outputs (issue #10 isolated parity): when the job declares

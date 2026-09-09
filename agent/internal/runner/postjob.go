@@ -165,7 +165,7 @@ func (r *Runner) PostJob(
 			r.emitLog(a, seq, "stdout", fmt.Sprintf(
 				"cache %q: storing %d path(s)…", entry.GetKey(), len(entry.GetPaths())))
 			start := time.Now()
-			size, err := cfg.Cache.StoreFromPod(ctx, cfg.Executor,
+			st, err := cfg.Cache.StoreFromPod(ctx, cfg.Executor,
 				cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
 				a.GetRunId(), a.GetJobId(), entry)
 			if err != nil {
@@ -177,8 +177,15 @@ func (r *Runner) PostJob(
 					entry.GetKey(), err))
 				continue
 			}
+			// #274 instrumentation: probe/compress/upload split. Compress here is
+			// the in-pod `tar -czf` (single-thread system gzip) — the pigz target.
 			r.emitLog(a, seq, "stdout", fmt.Sprintf(
-				"cache %q: stored (%s in %s)", entry.GetKey(), humanizeBytes(size), phaseDur(start)))
+				"cache %q: stored (%s in %s | probe %s, compress %s %s, upload %s %s, mark %s)",
+				entry.GetKey(), humanizeBytes(st.Bytes), phaseDur(start),
+				st.Probe.Round(time.Millisecond),
+				st.Compress.Round(time.Millisecond), mbps(st.Bytes, st.Compress),
+				st.Upload.Round(time.Millisecond), mbps(st.Bytes, st.Upload),
+				st.MarkReady.Round(time.Millisecond)))
 		}
 	}
 

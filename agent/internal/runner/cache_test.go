@@ -48,29 +48,29 @@ type cacheCall struct {
 	Paths   []string
 }
 
-func (f *fakeCache) Fetch(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (bool, error) {
+func (f *fakeCache) Fetch(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (runner.CacheFetchStats, error) {
 	f.mu.Lock()
 	f.fetchCalls = append(f.fetchCalls, cacheCall{workDir, entry.GetKey(), entry.GetPaths()})
 	f.mu.Unlock()
 	if f.fetchErr != nil {
-		return false, f.fetchErr
+		return runner.CacheFetchStats{}, f.fetchErr
 	}
 	if f.fetchFound && f.fetchWrite != nil {
 		if err := f.fetchWrite(workDir); err != nil {
-			return false, err
+			return runner.CacheFetchStats{}, err
 		}
 	}
-	return f.fetchFound, nil
+	return runner.CacheFetchStats{Found: f.fetchFound}, nil
 }
 
-func (f *fakeCache) Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (int64, error) {
+func (f *fakeCache) Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (runner.CacheStoreStats, error) {
 	f.mu.Lock()
 	f.storeCalls = append(f.storeCalls, cacheCall{workDir, entry.GetKey(), entry.GetPaths()})
 	f.mu.Unlock()
 	if f.storeErr != nil {
-		return 0, f.storeErr
+		return runner.CacheStoreStats{}, f.storeErr
 	}
-	return f.storeSize, nil
+	return runner.CacheStoreStats{Bytes: f.storeSize}, nil
 }
 
 // newRunnerWithCache is newRunner + an injected CacheClient. Kept
@@ -359,7 +359,7 @@ func TestDownloadAndUntar_RoundTripsBytes(t *testing.T) {
 	dest := t.TempDir()
 	url, cleanup := serveBytes(t, payload.Bytes())
 	defer cleanup()
-	if err := runner.DownloadAndUntar(context.Background(), nil, url, dest, sha); err != nil {
+	if _, err := runner.DownloadAndUntar(context.Background(), nil, url, dest, sha); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "file.txt"))
