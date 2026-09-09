@@ -79,6 +79,66 @@ agent:
   # tenant's fleet, off by default for multi-tenant clusters that
   # need per-agent provisioning.
   autoRegister: true
+  # Graceful drain (#178): how the agent winds down on SIGTERM (rollout,
+  # scale-down, node drain) without abandoning in-flight jobs. gracePeriodSeconds
+  # becomes terminationGracePeriodSeconds; the chart FAILS the render if it is
+  # <= budgetSeconds + flushSeconds + 40 (or k8s would SIGKILL mid-drain).
+  drain:
+    # How long to wait for in-flight jobs before abandoning them to the server's
+    # reaper (which requeues them exactly once). 0 = opt out of the wait.
+    budgetSeconds: 300
+    # Single deadline for the whole post-wait flush (abort -> cleanup -> deliver
+    # buffered results -> CloseSend -> server EOF). Must be > 0.
+    flushSeconds: 45
+    # Must exceed budget + flush + cleanup-worker drain (~30s) + margin.
+    gracePeriodSeconds: 400
+  # autoscaling: opt-in KEDA-driven fleet scaling (#185). Renders a
+  # keda.sh/v1alpha1 ScaledObject, so it REQUIRES KEDA (https://keda.sh) in the
+  # cluster and a server >= v0.77.0 (emits the dispatchable queue-depth series).
+  # The graceful drain above is what makes scale-DOWN safe. When enabled, the
+  # StatefulSet's replicas field is NOT rendered (KEDA's HPA owns the count; add
+  # an ArgoCD ignoreDifferences on /spec/replicas).
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    # Prometheus KEDA queries for the signal. REQUIRED when enabled (render fails
+    # without it). Point at the Prometheus that scrapes the agent ServiceMonitor.
+    prometheusAddress: ""
+    # Skip TLS verification of prometheusAddress (internal CA). Prefer trusting
+    # the CA in KEDA where you can.
+    unsafeSsl: false
+    # Extra request headers, comma-separated key=value (e.g. a multi-tenant
+    # Prometheus/Mimir tenant header "X-Scope-OrgID=team-ci").
+    customHeaders: ""
+    # The scale signal: dispatchable backlog + running jobs. `or vector(0)` keeps
+    # scale-from-zero working (absent series would otherwise never trigger).
+    query: 'max(gocdnext_queue_depth{stage_status="dispatchable"} or vector(0)) + sum(gocdnext_agent_jobs_running or vector(0))'
+    # Jobs per replica (the HPA divisor). "" defaults to agent.capacity.
+    threshold: ""
+    pollingInterval: 30
+    cooldownPeriod: 300
+    # Optional HPA scale-down damping (s). "" = HPA default (300).
+    scaleDownStabilizationSeconds: ""
+  # metrics: the agent's Prometheus /metrics endpoint + its scrape Service.
+  metrics:
+    enabled: false
+    port: 9464
+    # networkPolicy restricts who may reach the UNAUTHENTICATED metrics port.
+    # Recommended wherever metrics.enabled on a shared cluster. Empty `from` with
+    # the policy enabled denies all ingress to the port (fail-closed).
+    networkPolicy:
+      enabled: false
+      from: []
+  # serviceMonitor: Prometheus Operator scrape config for the agent. Requires
+  # metrics.enabled (there is no endpoint/Service to scrape otherwise).
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
   workspace:
     storageClass: ""        # "" = cluster default
     size: 20Gi

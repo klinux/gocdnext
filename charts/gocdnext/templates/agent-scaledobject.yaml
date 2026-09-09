@@ -1,0 +1,75 @@
+{{- if and .Values.agent.enabled .Values.agent.autoscaling.enabled }}
+{{- /*
+  KEDA-driven agent fleet autoscaling (#185). Opt-in: renders nothing unless
+  agent.autoscaling.enabled. Requires KEDA in the cluster (keda.sh/v1alpha1) and a
+  server on gocdnext >= v0.77.0 (emits gocdnext_queue_depth{stage_status="dispatchable"}).
+
+  Cross-field validation JSON Schema can't express: prometheusAddress is required
+  (KEDA can't query without it) and min <= max. When this renders, the StatefulSet
+  omits spec.replicas so KEDA's HPA owns the count — see agent-statefulset.yaml.
+*/ -}}
+{{- $as := .Values.agent.autoscaling }}
+{{- if not $as.prometheusAddress }}
+{{- fail "agent.autoscaling.enabled=true requires agent.autoscaling.prometheusAddress (the Prometheus KEDA queries for gocdnext_queue_depth)" }}
+{{- end }}
+{{- $min := int $as.minReplicas }}
+{{- $max := int $as.maxReplicas }}
+{{- if gt $min $max }}
+{{- fail (printf "agent.autoscaling.minReplicas (%d) must be <= maxReplicas (%d)" $min $max) }}
+{{- end }}
+{{- $threshold := $as.threshold | toString | default (.Values.agent.capacity | toString) }}
+{{- /* threshold is the HPA divisor — a zero divides-by-zero and a typo like
+       "oops" would silently coerce to 0 under `int`. Require a positive integer;
+       empty already fell back to agent.capacity above. */}}
+{{- if not (regexMatch "^[1-9][0-9]*$" $threshold) }}
+{{- fail (printf "agent.autoscaling.threshold (%q) must be a positive integer (jobs per replica); leave it empty to default to agent.capacity" $threshold) }}
+{{- end }}
+{{- /* scaleDownStabilizationSeconds: normalize to a string ONCE and gate on
+       ne "" — NOT on truthiness, or a numeric 0 (falsy) would skip the block
+       while the string "0" would render it, making behaviour depend on the YAML
+       type. "" = unset (HPA default); any set value must be a non-negative
+       integer (rejects a typo `int` would otherwise coerce to 0). */}}
+{{- $sd := $as.scaleDownStabilizationSeconds | toString }}
+{{- if and (ne $sd "") (not (regexMatch "^[0-9]+$" $sd)) }}
+{{- fail (printf "agent.autoscaling.scaleDownStabilizationSeconds (%q) must be a non-negative integer of seconds, or empty for the HPA default" $sd) }}
+{{- end }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "gocdnext.agent.fullname" . }}
+  labels:
+    {{- include "gocdnext.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  scaleTargetRef:
+    kind: StatefulSet
+    name: {{ include "gocdnext.agent.fullname" . }}
+  minReplicaCount: {{ $min }}
+  maxReplicaCount: {{ $max }}
+  pollingInterval: {{ int $as.pollingInterval }}
+  cooldownPeriod: {{ int $as.cooldownPeriod }}
+  {{- if ne $sd "" }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: {{ int $sd }}
+  {{- end }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ $as.prometheusAddress | quote }}
+        query: {{ $as.query | quote }}
+        threshold: {{ $threshold | quote }}
+        {{- /* unsafeSsl for an internal TLS endpoint (e.g. Mimir behind an
+               internal CA KEDA doesn't trust). eq (toString ...) "true" so a
+               string "false" can't sneak through as truthy. */}}
+        {{- if eq (toString $as.unsafeSsl) "true" }}
+        unsafeSsl: "true"
+        {{- end }}
+        {{- /* customHeaders for a multi-tenant backend, e.g. Mimir's
+               "X-Scope-OrgID=<tenant>" (comma-separated key=value pairs). */}}
+        {{- with $as.customHeaders }}
+        customHeaders: {{ . | quote }}
+        {{- end }}
+{{- end }}
