@@ -63,6 +63,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// cloned. Multi-material pipelines reach sibling checkouts via
 	// `../<other-target>` — the first is the de-facto "primary".
 	scriptWorkDir := workDir
+	if len(a.GetCheckouts()) > 0 {
+		r.emitSection(a, &seq, "CHECKOUT")
+	}
 	for i, co := range a.GetCheckouts() {
 		if err := r.checkout(ctx, workDir, co, a, &seq); err != nil {
 			// The URL can carry an injected bearer; redact it before it lands in
@@ -108,6 +111,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// flows into ScriptSpec downstream — Network for docker, the
 	// hostAliases list for k8s. Cleanup is deferred so it runs on
 	// task failure, cancel, or successful exit alike.
+	if len(a.GetServices()) > 0 {
+		r.emitSection(a, &seq, "SERVICES")
+	}
 	servicesPhase, svcErr := r.startServices(ctx, a, &seq)
 	if svcErr != nil {
 		log.Warn("runner: services startup failed", "err", svcErr)
@@ -139,6 +145,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// dirs the scripts are about to touch. Misses and transport
 	// errors log but never escalate: cache is acceleration, not
 	// correctness.
+	if len(a.GetCaches()) > 0 {
+		r.emitSection(a, &seq, "CACHE")
+	}
 	r.fetchCaches(ctx, scriptWorkDir, a, &seq)
 
 	// Outputs (issue #10): when the job's YAML declared an
@@ -173,6 +182,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	}
 
 	pt.enter("task")
+	if len(a.GetTasks()) > 0 {
+		r.emitSection(a, &seq, "RUN")
+	}
 	tasksStart := time.Now()
 	for i, task := range a.GetTasks() {
 		var (
@@ -205,6 +217,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			// to render the per-case breakdown. Scan before reporting
 			// so failed runs surface their evidence.
 			r.emitPhase(a, &seq, fmt.Sprintf("tasks failed after %s (task %d: error)", phaseDur(tasksStart), i))
+			if hasPostJobWork(a, false, false) {
+				r.emitSection(a, &seq, "POST-JOB")
+			}
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.scanCoverage(scriptWorkDir, a, &seq)
 			// artifacts.when: on_failure/always still ship on a red job so a
@@ -217,6 +232,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		if exitCode != 0 {
 			log.Info("runner: task exited non-zero", "task", i, "exit", exitCode)
 			r.emitPhase(a, &seq, fmt.Sprintf("tasks failed after %s (task %d, exit %d)", phaseDur(tasksStart), i, exitCode))
+			if hasPostJobWork(a, false, false) {
+				r.emitSection(a, &seq, "POST-JOB")
+			}
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.scanCoverage(scriptWorkDir, a, &seq)
 			refs := r.uploadArtifactsOnFailure(ctx, scriptWorkDir, a, &seq)
@@ -236,6 +254,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// post_job = test-report scan + coverage + cache store + artifact upload.
 	// One aggregate span (matching isolated mode, which cannot separate them).
 	pt.enter("post_job")
+	if hasPostJobWork(a, true, r.cfg.Cache != nil) {
+		r.emitSection(a, &seq, "POST-JOB")
+	}
 
 	// Successful task loop — scan any declared test_reports and
 	// ship them before the artifact upload so the server has the

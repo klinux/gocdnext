@@ -10,6 +10,40 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
+// emitSection prints a phase divider so a long run log reads as clear
+// timeline sections (#277) — CHECKOUT / CACHE / RUN / POST-JOB … — instead of
+// one undifferentiated stream. Readability only: a single ordinary stdout line
+// (no embedded newline, so it stays one row and survives raw export and
+// `grep '────'`), with no collapsing and no schema change.
+func (r *Runner) emitSection(a *gocdnextv1.JobAssignment, seq *atomic.Int64, name string) {
+	r.emitLog(a, seq, "stdout", "──────── "+name+" ────────")
+}
+
+// hasPostJobWork reports whether the post-task phase will actually emit
+// anything, so the POST-JOB divider (#277) doesn't front an empty phase —
+// honouring "an empty phase emits nothing", on both the success and failure
+// paths. Cache store only runs on success; artifact upload is gated by
+// `artifacts.when` against the success/failure outcome.
+// hasScanWork reports whether the test-report / coverage scans will run. It's
+// the post-job predicate for paths that ONLY scan and do NOT upload artifacts
+// (the isolated wait-error branch): gating those on hasPostJobWork would front
+// an empty POST-JOB when only an `artifacts.when: on_failure` is declared.
+func hasScanWork(a *gocdnextv1.JobAssignment) bool {
+	return len(a.GetTestReports()) > 0 || a.GetCoverageReport() != nil
+}
+
+func hasPostJobWork(a *gocdnextv1.JobAssignment, success, cacheWired bool) bool {
+	if hasScanWork(a) {
+		return true
+	}
+	if success && cacheWired && len(a.GetCaches()) > 0 {
+		return true
+	}
+	hasArtifacts := len(a.GetArtifactPaths()) > 0 || len(a.GetOptionalArtifactPaths()) > 0
+	// shouldUploadArtifacts's second arg is taskFailed, i.e. the inverse of success.
+	return hasArtifacts && shouldUploadArtifacts(a.GetArtifactsWhen(), !success)
+}
+
 func (r *Runner) emitLog(a *gocdnextv1.JobAssignment, seq *atomic.Int64, stream, text string) {
 	n := seq.Add(1)
 	r.cfg.Send(&gocdnextv1.AgentMessage{
