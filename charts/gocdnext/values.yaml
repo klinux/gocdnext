@@ -113,9 +113,9 @@ agent:
     # mode (default alpine:3.19 — must have `sh` + `tar`). The
     # housekeeper container stays alive after the task terminates so
     # the agent can `kubectl exec`-equivalent in to tar artefacts.
-    # Point at gocdnext-housekeeper (alpine + zstd) to enable zstd
-    # cache compression (#274) — its restore also reads gzip, so the
-    # switch is safe for existing caches.
+    # Point at gocdnext-housekeeper (alpine + zstd + pipefail-capable sh)
+    # to enable zstd cache compression (#274) — its restore also reads
+    # gzip, so the switch is safe for existing caches.
     housekeeperImage: ""
     # housekeeperCPULimit / housekeeperMemLimit cap the housekeeper
     # sidecar. The cache tar+compress runs in here; raise the CPU
@@ -132,9 +132,10 @@ agent:
   cache:
     # compression: "gzip" (default) or "zstd". zstd is much faster to
     # compress (the store bottleneck, #274) but REQUIRES housekeeperImage
-    # to carry the zstd binary (gocdnext-housekeeper does). Restore always
-    # auto-detects the codec, so flip this to "zstd" only AFTER the whole
-    # agent fleet is on an image/version that can read zstd (reader-first).
+    # to carry zstd plus a pipefail-capable sh (gocdnext-housekeeper does).
+    # Restore always auto-detects the codec, so flip this to "zstd" only
+    # AFTER the whole agent fleet is on an image/version that can read zstd
+    # (reader-first).
     compression: "gzip"
   defaultJobImage: alpine:3.19
   jobCleanup:

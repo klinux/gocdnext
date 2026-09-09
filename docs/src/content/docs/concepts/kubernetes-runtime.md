@@ -56,7 +56,7 @@ Pod (job-<run>-<job>)
 ├── containers:
 │   ├── task: <user/plugin image>
 │   │   command: existing (plugin or user script)
-│   └── housekeeper: alpine
+│   └── housekeeper: alpine / gocdnext-housekeeper
 │       command: ["sleep", "infinity"]
 │       — keeps the pod alive while the agent execs `tar` to stream
 │         artefacts + caches out, then the pod is deleted
@@ -87,10 +87,11 @@ sidecar** (`tar` piped through a compressor), and restored the same way in the
 is hundreds of MB to GBs) compression, not upload, dominates the store time —
 single-threaded gzip caps around 20–25 MB/s.
 
-Two chart knobs tune this:
+Three chart knobs tune this:
 
 - `agent.workspace.housekeeperImage` — point at **`gocdnext-housekeeper`**
-  (alpine + `zstd`) to unlock zstd. The default `alpine` image has only gzip.
+  (alpine + `zstd` + pipefail-capable `sh`) to unlock zstd. The default
+  `alpine` image has only gzip.
 - `agent.cache.compression` — `gzip` (default) or `zstd`. zstd `-T0`
   compresses several times faster and smaller.
 - `agent.workspace.housekeeperCPULimit` — raise (e.g. `"4"`) so zstd `-T0`
