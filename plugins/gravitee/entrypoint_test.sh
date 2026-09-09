@@ -192,6 +192,18 @@ PLUGIN_PATH="$FX" PLUGIN_DEFAULTS="$FX/defaults.yml" PLUGIN_TEMPLATE="$FX/tmpl.j
 grep -q 'definition create --with-start' "$TMP/calls" || fail "empty-env lookup did not fall through to create"
 grep -q 'proceeding as first publish' "$TMP/out"      || fail "first-publish note missing from output"
 
+# ── 1e2. first publish of a NEW name in a POPULATED environment: the `-q`
+#         name filter matches nothing, so gio prints the literal "No result"
+#         (exit 0, non-JSON). This is the common production case and must fall
+#         through to create just like the empty-environment message ──
+setup_fx
+GIO_FAKE_LIST_JSON='No result' \
+PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test/mgmt" PLUGIN_TOKEN="tok" \
+PLUGIN_PATH="$FX" PLUGIN_DEFAULTS="$FX/defaults.yml" PLUGIN_TEMPLATE="$FX/tmpl.j2" \
+  run >"$TMP/out" 2>&1 || fail "no-result lookup run errored: $(cat "$TMP/out")"
+grep -q 'definition create --with-start' "$TMP/calls" || fail "no-result lookup did not fall through to create"
+grep -q 'proceeding as first publish' "$TMP/out"      || fail "first-publish note missing from output"
+
 # ── 1f. lookup returns valid JSON that is NOT an array (an API error
 #        body) — refuse loudly rather than guessing create-vs-update ──
 setup_fx

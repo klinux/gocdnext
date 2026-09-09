@@ -277,16 +277,20 @@ fi
 # duplicated. More than one match is ambiguous — refuse rather than
 # silently update the wrong API.
 ids_json="$(gio apim apis list -q "[?name=='${PLUGIN_API_NAME}'].id" -o json)"
-# gio ignores `-o json` and prints the literal "No Api(s) found" (still exit 0)
-# when the target environment has NO APIs at all — the legitimate first-publish
-# signal. A hard gio failure (auth, network, non-2xx, undecodable body) already
-# raises and aborts via set -e on the assignment above, so it can never reach
-# here. We therefore match the empty-environment message SPECIFICALLY: any OTHER
-# non-JSON (a warning/banner mixed onto stdout, a partial/garbled response) is
-# unexpected and must fail loud rather than be guessed into a duplicating create.
+# gio ignores `-o json` and prints a plain-text line (still exit 0) instead of
+# `[]` for an empty lookup — TWO known signals: "No result" when the `-q` name
+# filter matches nothing (an API by that name does not exist yet; the common
+# first-publish case, even in a populated environment) and "No Api(s) found"
+# when the environment has NO APIs at all. Both mean "create". A hard gio
+# failure (auth, network, non-2xx, undecodable body) already raises and aborts
+# via set -e on the assignment above, so it can never reach here. We match those
+# empty signals SPECIFICALLY: any OTHER non-JSON (a warning/banner mixed onto
+# stdout, a partial/garbled response) is unexpected and must fail loud rather
+# than be guessed into a duplicating create.
 if ! printf '%s' "$ids_json" | jq -e . >/dev/null 2>&1; then
-    if printf '%s' "$ids_json" | grep -qiF 'No Api(s) found'; then
-        echo "gocdnext/gravitee: environment has no APIs yet — proceeding as first publish of '${PLUGIN_API_NAME}'" >&2
+    if printf '%s' "$ids_json" | grep -qiF 'No result' \
+       || printf '%s' "$ids_json" | grep -qiF 'No Api(s) found'; then
+        echo "gocdnext/gravitee: no API named '${PLUGIN_API_NAME}' yet — proceeding as first publish" >&2
         ids_json='[]'
     else
         die "unexpected non-JSON lookup response for '${PLUGIN_API_NAME}': $(printf '%.120s' "$ids_json")"
