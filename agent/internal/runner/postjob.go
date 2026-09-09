@@ -180,11 +180,12 @@ func (r *Runner) PostJob(
 			// #274 instrumentation: probe/compress/upload split. Compress here is
 			// the in-pod `tar -czf` (single-thread system gzip) — the pigz target.
 			r.emitLog(a, seq, "stdout", fmt.Sprintf(
-				"cache %q: stored (%s in %s | probe %s, compress %s %s, upload %s %s)",
+				"cache %q: stored (%s in %s | probe %s, compress %s %s, upload %s %s, mark %s)",
 				entry.GetKey(), humanizeBytes(st.Bytes), phaseDur(start),
 				st.Probe.Round(time.Millisecond),
 				st.Compress.Round(time.Millisecond), mbps(st.Bytes, st.Compress),
-				st.Upload.Round(time.Millisecond), mbps(st.Bytes, st.Upload)))
+				st.Upload.Round(time.Millisecond), mbps(st.Bytes, st.Upload),
+				st.MarkReady.Round(time.Millisecond)))
 		}
 	}
 

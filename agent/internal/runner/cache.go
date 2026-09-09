@@ -160,10 +160,11 @@ func (r *Runner) storeCaches(
 		// #274 instrumentation: split compress vs upload — this is the number
 		// that decides whether pigz/more-CPU helps (compress-bound) or the
 		// bottleneck is transport (upload-bound).
-		r.emitLog(a, seq, "stdout", fmt.Sprintf("cache %q: stored (%s in %s | compress %s %s, upload %s %s)",
+		r.emitLog(a, seq, "stdout", fmt.Sprintf("cache %q: stored (%s in %s | compress %s %s, upload %s %s, mark %s)",
 			e.GetKey(), humanizeBytes(st.Bytes), phaseDur(start),
 			st.Compress.Round(time.Millisecond), mbps(st.Bytes, st.Compress),
-			st.Upload.Round(time.Millisecond), mbps(st.Bytes, st.Upload)))
+			st.Upload.Round(time.Millisecond), mbps(st.Bytes, st.Upload),
+			st.MarkReady.Round(time.Millisecond)))
 	}
 }
 
