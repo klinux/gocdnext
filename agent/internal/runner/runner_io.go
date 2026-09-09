@@ -19,6 +19,23 @@ func (r *Runner) emitSection(a *gocdnextv1.JobAssignment, seq *atomic.Int64, nam
 	r.emitLog(a, seq, "stdout", "──────── "+name+" ────────")
 }
 
+// hasPostJobWork reports whether the post-task phase will actually emit
+// anything, so the POST-JOB divider (#277) doesn't front an empty phase —
+// honouring "an empty phase emits nothing", on both the success and failure
+// paths. Cache store only runs on success; artifact upload is gated by
+// `artifacts.when` against the success/failure outcome.
+func hasPostJobWork(a *gocdnextv1.JobAssignment, success, cacheWired bool) bool {
+	if len(a.GetTestReports()) > 0 || a.GetCoverageReport() != nil {
+		return true
+	}
+	if success && cacheWired && len(a.GetCaches()) > 0 {
+		return true
+	}
+	hasArtifacts := len(a.GetArtifactPaths()) > 0 || len(a.GetOptionalArtifactPaths()) > 0
+	// shouldUploadArtifacts's second arg is taskFailed, i.e. the inverse of success.
+	return hasArtifacts && shouldUploadArtifacts(a.GetArtifactsWhen(), !success)
+}
+
 func (r *Runner) emitLog(a *gocdnextv1.JobAssignment, seq *atomic.Int64, stream, text string) {
 	n := seq.Add(1)
 	r.cfg.Send(&gocdnextv1.AgentMessage{

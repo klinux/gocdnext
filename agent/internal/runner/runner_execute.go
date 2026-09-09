@@ -217,6 +217,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			// to render the per-case breakdown. Scan before reporting
 			// so failed runs surface their evidence.
 			r.emitPhase(a, &seq, fmt.Sprintf("tasks failed after %s (task %d: error)", phaseDur(tasksStart), i))
+			if hasPostJobWork(a, false, false) {
+				r.emitSection(a, &seq, "POST-JOB")
+			}
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.scanCoverage(scriptWorkDir, a, &seq)
 			// artifacts.when: on_failure/always still ship on a red job so a
@@ -229,6 +232,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		if exitCode != 0 {
 			log.Info("runner: task exited non-zero", "task", i, "exit", exitCode)
 			r.emitPhase(a, &seq, fmt.Sprintf("tasks failed after %s (task %d, exit %d)", phaseDur(tasksStart), i, exitCode))
+			if hasPostJobWork(a, false, false) {
+				r.emitSection(a, &seq, "POST-JOB")
+			}
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.scanCoverage(scriptWorkDir, a, &seq)
 			refs := r.uploadArtifactsOnFailure(ctx, scriptWorkDir, a, &seq)
@@ -248,7 +254,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// post_job = test-report scan + coverage + cache store + artifact upload.
 	// One aggregate span (matching isolated mode, which cannot separate them).
 	pt.enter("post_job")
-	r.emitSection(a, &seq, "POST-JOB")
+	if hasPostJobWork(a, true, r.cfg.Cache != nil) {
+		r.emitSection(a, &seq, "POST-JOB")
+	}
 
 	// Successful task loop — scan any declared test_reports and
 	// ship them before the artifact upload so the server has the

@@ -482,6 +482,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// (Post-task artifact upload still doesn't run on failure.)
 		var failRefs []*gocdnextv1.ArtifactRef
 		if !skipScans {
+			if hasPostJobWork(a, false, false) {
+				r.emitSection(a, &seq, "POST-JOB")
+			}
 			r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 			r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 			// artifacts.when: on_failure/always still ship on a red job so a
@@ -503,7 +506,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// ran (review-round MEDIUM: the early returns below used to
 	// skip both scans, diverging from shared mode's scan-first
 	// order in runner.go).
-	r.emitSection(a, &seq, "POST-JOB")
+	if hasPostJobWork(a, true, r.cfg.IsolatedCache != nil) {
+		r.emitSection(a, &seq, "POST-JOB")
+	}
 	r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 	if gateFailed, reason := r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq); gateFailed {
 		// fail_under: green build under the declared floor — job fails before

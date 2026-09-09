@@ -36,3 +36,31 @@ func TestEmitSection_DividerCarriesNameOnStdout(t *testing.T) {
 		t.Errorf("divider text %q missing the rule so it can't be grepped as a boundary", line.GetText())
 	}
 }
+
+func TestHasPostJobWork(t *testing.T) {
+	tests := []struct {
+		name       string
+		a          *gocdnextv1.JobAssignment
+		success    bool
+		cacheWired bool
+		want       bool
+	}{
+		{"empty job → no post-job divider", &gocdnextv1.JobAssignment{}, true, true, false},
+		{"test reports", &gocdnextv1.JobAssignment{TestReports: []string{"**/TEST-*.xml"}}, true, false, true},
+		{"coverage", &gocdnextv1.JobAssignment{CoverageReport: &gocdnextv1.CoverageReportSpec{}}, true, false, true},
+		{"cache only + wired, success", &gocdnextv1.JobAssignment{Caches: []*gocdnextv1.CacheEntry{{Key: "k"}}}, true, true, true},
+		{"cache only, NOT wired", &gocdnextv1.JobAssignment{Caches: []*gocdnextv1.CacheEntry{{Key: "k"}}}, true, false, false},
+		{"cache only, wired but FAILURE (no store)", &gocdnextv1.JobAssignment{Caches: []*gocdnextv1.CacheEntry{{Key: "k"}}}, false, true, false},
+		{"artifacts default when, success", &gocdnextv1.JobAssignment{ArtifactPaths: []string{"dist/*"}}, true, false, true},
+		{"artifacts default when, FAILURE (no ship)", &gocdnextv1.JobAssignment{ArtifactPaths: []string{"dist/*"}}, false, false, false},
+		{"artifacts on_failure, FAILURE (ships)", &gocdnextv1.JobAssignment{ArtifactPaths: []string{"dist/*"}, ArtifactsWhen: "on_failure"}, false, false, true},
+		{"artifacts always, FAILURE (ships)", &gocdnextv1.JobAssignment{ArtifactPaths: []string{"dist/*"}, ArtifactsWhen: "always"}, false, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasPostJobWork(tt.a, tt.success, tt.cacheWired); got != tt.want {
+				t.Errorf("hasPostJobWork = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
