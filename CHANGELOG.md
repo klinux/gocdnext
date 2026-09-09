@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.102.0 — 2026-09-09
+
+### Fixed
+
+- **`gravitee` plugin — first publish to an empty environment (#273).** The
+  create-or-update-by-name lookup died on `jq` when `gio apim apis list`
+  printed the literal `No Api(s) found` (it ignores `-o json`, still exits 0)
+  against a Gravitee environment with no APIs yet, so the very first publish
+  never reached the create branch. The plugin now recognizes that empty-
+  environment signal and falls through to create, while any *other* non-JSON
+  from the lookup fails loud (never guessed into a duplicating create) and
+  hard `gio` failures still abort via `set -e`.
+
 ## v0.101.0 — 2026-09-05
 
 ### Fixed
