@@ -317,6 +317,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// while we wait for it to terminate. Init logs go through the
 	// same emit pipeline as task logs but with a "init.prep"
 	// stream tag the UI can group on.
+	// #277: prep bundles checkout + artifact download + literal-cache
+	// restore inside the init container; one PREPARE divider fronts them.
+	r.emitSection(a, &seq, "PREPARE")
 	prepDone := make(chan struct{})
 	go func() {
 		defer close(prepDone)
@@ -399,6 +402,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 
 	pt.enter("task")
+	r.emitSection(a, &seq, "RUN")
 	taskStart := time.Now()
 
 	// Stream task logs.
@@ -428,6 +432,12 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// When only the task container died, the housekeeper may still be
 		// alive, so scan test_reports for diagnostic signal (best-effort).
 		if status != gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED {
+			// This branch ONLY scans (no artifact upload), so gate on scan work —
+			// hasPostJobWork would front an empty POST-JOB for an on_failure-only
+			// artifact that never ships here.
+			if hasScanWork(a) {
+				r.emitSection(a, &seq, "POST-JOB")
+			}
 			r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 			r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 		}
@@ -478,6 +488,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// (Post-task artifact upload still doesn't run on failure.)
 		var failRefs []*gocdnextv1.ArtifactRef
 		if !skipScans {
+			if hasPostJobWork(a, false, false) {
+				r.emitSection(a, &seq, "POST-JOB")
+			}
 			r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 			r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 			// artifacts.when: on_failure/always still ship on a red job so a
@@ -499,6 +512,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// ran (review-round MEDIUM: the early returns below used to
 	// skip both scans, diverging from shared mode's scan-first
 	// order in runner.go).
+	if hasPostJobWork(a, true, r.cfg.IsolatedCache != nil) {
+		r.emitSection(a, &seq, "POST-JOB")
+	}
 	r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 	if gateFailed, reason := r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq); gateFailed {
 		// fail_under: green build under the declared floor — job fails before
