@@ -10,6 +10,15 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
+// emitSection prints a phase divider so a long run log reads as clear
+// timeline sections (#277) — CHECKOUT / CACHE / RUN / POST-JOB … — instead of
+// one undifferentiated stream. Readability only: a single ordinary stdout line
+// (no embedded newline, so it stays one row and survives raw export and
+// `grep '────'`), with no collapsing and no schema change.
+func (r *Runner) emitSection(a *gocdnextv1.JobAssignment, seq *atomic.Int64, name string) {
+	r.emitLog(a, seq, "stdout", "──────── "+name+" ────────")
+}
+
 func (r *Runner) emitLog(a *gocdnextv1.JobAssignment, seq *atomic.Int64, stream, text string) {
 	n := seq.Add(1)
 	r.cfg.Send(&gocdnextv1.AgentMessage{

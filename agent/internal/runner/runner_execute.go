@@ -63,6 +63,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// cloned. Multi-material pipelines reach sibling checkouts via
 	// `../<other-target>` — the first is the de-facto "primary".
 	scriptWorkDir := workDir
+	if len(a.GetCheckouts()) > 0 {
+		r.emitSection(a, &seq, "CHECKOUT")
+	}
 	for i, co := range a.GetCheckouts() {
 		if err := r.checkout(ctx, workDir, co, a, &seq); err != nil {
 			// The URL can carry an injected bearer; redact it before it lands in
@@ -108,6 +111,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// flows into ScriptSpec downstream — Network for docker, the
 	// hostAliases list for k8s. Cleanup is deferred so it runs on
 	// task failure, cancel, or successful exit alike.
+	if len(a.GetServices()) > 0 {
+		r.emitSection(a, &seq, "SERVICES")
+	}
 	servicesPhase, svcErr := r.startServices(ctx, a, &seq)
 	if svcErr != nil {
 		log.Warn("runner: services startup failed", "err", svcErr)
@@ -139,6 +145,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// dirs the scripts are about to touch. Misses and transport
 	// errors log but never escalate: cache is acceleration, not
 	// correctness.
+	if len(a.GetCaches()) > 0 {
+		r.emitSection(a, &seq, "CACHE")
+	}
 	r.fetchCaches(ctx, scriptWorkDir, a, &seq)
 
 	// Outputs (issue #10): when the job's YAML declared an
@@ -173,6 +182,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	}
 
 	pt.enter("task")
+	if len(a.GetTasks()) > 0 {
+		r.emitSection(a, &seq, "RUN")
+	}
 	tasksStart := time.Now()
 	for i, task := range a.GetTasks() {
 		var (
@@ -236,6 +248,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// post_job = test-report scan + coverage + cache store + artifact upload.
 	// One aggregate span (matching isolated mode, which cannot separate them).
 	pt.enter("post_job")
+	r.emitSection(a, &seq, "POST-JOB")
 
 	// Successful task loop — scan any declared test_reports and
 	// ship them before the artifact upload so the server has the

@@ -317,6 +317,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// while we wait for it to terminate. Init logs go through the
 	// same emit pipeline as task logs but with a "init.prep"
 	// stream tag the UI can group on.
+	// #277: prep bundles checkout + artifact download + literal-cache
+	// restore inside the init container; one PREPARE divider fronts them.
+	r.emitSection(a, &seq, "PREPARE")
 	prepDone := make(chan struct{})
 	go func() {
 		defer close(prepDone)
@@ -399,6 +402,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 
 	pt.enter("task")
+	r.emitSection(a, &seq, "RUN")
 	taskStart := time.Now()
 
 	// Stream task logs.
@@ -499,6 +503,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// ran (review-round MEDIUM: the early returns below used to
 	// skip both scans, diverging from shared mode's scan-first
 	// order in runner.go).
+	r.emitSection(a, &seq, "POST-JOB")
 	r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 	if gateFailed, reason := r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq); gateFailed {
 		// fail_under: green build under the declared floor — job fails before
