@@ -8,6 +8,24 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.104.0 — 2026-09-09
+
+### Added
+
+- **Phase section dividers in the run log (#277).** The agent now prints a
+  readable divider at each phase boundary — `CHECKOUT` / `SERVICES` / `CACHE` /
+  `RUN` / `POST-JOB` (shared) and `PREPARE` / `RUN` / `POST-JOB` (isolated) — so
+  a long run reads as clear timeline sections instead of one flat stream. A
+  single stdout line per boundary, conditional (an empty phase emits nothing),
+  no collapsing and no schema change — survives raw export and `grep '────'`.
+
+### Changed
+
+- **Cache store/restore phase instrumentation (#274 slice).** Cache log lines
+  now break the store into `probe` / `compress` / `upload` / `mark` and the
+  restore into a download+untar phase, each with bytes and a MB/s figure — the
+  compress-vs-upload split needed to size the next cache-performance work.
+
 ## v0.103.0 — 2026-09-09
 
 ### Fixed
