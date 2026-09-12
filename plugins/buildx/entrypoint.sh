@@ -38,6 +38,18 @@ tags_raw="$(trim "${PLUGIN_TAGS:-latest}")"
 tags_raw="${tags_raw//,/ }"
 read -ra TAGS <<<"${tags_raw}"
 
+# Layer compression codec (optional). Validated by whitelist up front so a
+# typo fails fast — before the 60s daemon wait + buildkit boot — and can never
+# be interpolated into the --output arg as anything but a known token.
+COMPRESSION="$(trim "${PLUGIN_COMPRESSION:-}")"
+case "${COMPRESSION}" in
+    ""|gzip|zstd|uncompressed|estargz) ;;
+    *)
+        echo "gocdnext/buildx: unknown compression '${COMPRESSION}' — use gzip, zstd, uncompressed, or estargz" >&2
+        exit 2
+        ;;
+esac
+
 # Wait for the Docker daemon before issuing any `docker run` /
 # `docker buildx` against it. The agent's k8s engine adds a DinD
 # sidecar when the YAML job declares `docker: true`, and DinD takes
@@ -263,9 +275,21 @@ fi
 # land in the legacy docker image store. That's intentional —
 # users who want `PLUGIN_PUSH=false` get a free "does it build"
 # check on both architectures without registry writes.
+#
+# `COMPRESSION` (validated up front) sets the layer codec. `--push` is just
+# shorthand for `--output type=image,push=true`, so to pick a codec we expand
+# it to the explicit output form and append compression=. zstd/uncompressed
+# kill the single-thread gzip export cost on large incompressible layers. Only
+# applied when pushing — a build-only run has no image export to compress. The
+# `-t` tags still supply the image name(s); we don't put name= in the output.
 push_args=()
 if [ "${PUSH}" = "true" ]; then
-    push_args+=("--push")
+    if [ -n "${COMPRESSION}" ] && [ "${COMPRESSION}" != "gzip" ]; then
+        push_args+=("--output" "type=image,compression=${COMPRESSION},push=true")
+        echo "==> layer compression: ${COMPRESSION}"
+    else
+        push_args+=("--push")
+    fi
 fi
 
 # Layer cache wiring. Two surfaces:
