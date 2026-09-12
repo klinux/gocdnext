@@ -79,32 +79,44 @@ Trade-offs:
   agent. Materials that need network egress need the cluster's egress
   policy to allow it from the job namespace.
 
-## Cache compression (gzip / zstd)
+## Cache & artifact compression (gzip / zstd)
 
-In isolated mode the cache tarball is compressed **inside the housekeeper
-sidecar** (`tar` piped through a compressor), and restored the same way in the
-`cache-fetch` init container. For large caches (a populated Gradle or Go cache
-is hundreds of MB to GBs) compression, not upload, dominates the store time —
-single-threaded gzip caps around 20–25 MB/s.
+In isolated mode both the cache tarball AND build artifacts are compressed
+**inside the housekeeper sidecar** (`tar` piped through a compressor), and
+restored the same way. For large payloads (a populated Gradle/Go cache, or an
+artifact that is a big SDK bundle / image tarball) compression, not upload,
+dominates the store time — single-threaded gzip caps around 20–25 MB/s.
+Worse, gzipping an **already-compressed** artifact (a `.zip`, a `.jar`, an
+image layer) burns that CPU for essentially zero size win.
 
-Three chart knobs tune this:
+Chart knobs:
 
 - `agent.workspace.housekeeperImage` — point at **`gocdnext-housekeeper`**
   (alpine + `zstd` + pipefail-capable `sh`) to unlock zstd. The default
   `alpine` image has only gzip.
 - `agent.cache.compression` — `gzip` (default) or `zstd`. zstd `-T0`
   compresses several times faster and smaller.
+- `agent.artifacts.compression` — same, for the artifact store. zstd is
+  especially worth it for already-compressed artifacts: its fast path stores
+  incompressible blocks near memcpy speed instead of grinding through deflate.
 - `agent.workspace.housekeeperCPULimit` — raise (e.g. `"4"`) so zstd `-T0`
   can use multiple cores. The idle CPU **request** stays tiny, so pod
   scheduling is unchanged; the limit only lets the burst happen.
 
-**Restore always auto-detects the codec by the blob's magic bytes**, so a
-cache written as gzip and one written as zstd both restore through the same
-path. That makes the switch safe for existing caches — but flip
-`compression: zstd` only **after** every agent in the fleet runs a version
-whose housekeeper image can read zstd (reader-before-writer). Rolling back the
-codec is instant (set it back to `gzip`); new stores revert while old zstd
-blobs still restore.
+**Restore always auto-detects the codec by the blob's magic bytes** (the same
+`UntarGz` path backs both cache and artifact download), so a blob written as
+gzip and one written as zstd both restore through the same code. That makes the
+switch safe for existing caches/artifacts — but flip `compression: zstd` only
+**after** every agent in the fleet runs a version whose housekeeper image can
+read zstd (reader-before-writer). Rolling back the codec is instant (set it
+back to `gzip`); new stores revert while old zstd blobs still restore.
+
+> **Artifact caveat:** `agent.artifacts.compression: zstd` is safe for
+> **job→job** restore (auto-detected), but the **manual UI/API download** path
+> is not codec-aware yet — it labels the file `.tar.gz` and serves
+> `application/gzip` regardless, so a hand-downloaded zstd artifact would fail
+> `tar xzf`. Keep artifacts on `gzip` until the download path learns the codec.
+> Cache has no such caveat (caches are never downloaded by hand).
 
 ## Choosing
 
