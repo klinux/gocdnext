@@ -15,11 +15,14 @@ convention that minor bumps may carry breaking changes until 1.0).
   default `gzip`), mirroring the cache codec. This kills a real waste:
   gzipping an already-compressed artifact (a `.zip`, `.jar`, image tarball)
   costs ~80s of CPU on a couple GB for zero size win, while zstd's fast path
-  stores incompressible blocks near memcpy speed. Restore is unchanged —
-  `runner.UntarGz` (shared by cache and artifact download) already auto-detects
-  the codec since v0.105.0, so the fleet reads zstd already: flipping the store
-  codec is a one-release, reader-first-safe change. Rollback is a one-line
-  revert to `gzip`; old zstd artifacts keep restoring.
+  stores incompressible blocks near memcpy speed. **Job→job restore** is
+  codec-agnostic — `runner.UntarGz` (shared by cache and artifact download)
+  already auto-detects gzip vs zstd since v0.105.0 — so that path is safe today.
+  **Not yet flippable:** the manual UI/API download path still names the file
+  `.tar.gz` and (filesystem backend) serves `application/gzip` regardless of
+  codec, so a zstd artifact downloaded by hand would fail `tar xzf`. This ships
+  the capability only (default `gzip`, no behavior change); do not set `zstd`
+  until the manual-download path learns the codec (follow-up issue).
 
 - **Chart: agent autoscaling, metrics/observability, and drain plumbing.** The
   Helm chart now wires the agent-side features whose Go support already shipped

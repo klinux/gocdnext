@@ -202,9 +202,14 @@ agent:
     # compression: "gzip" (default) or "zstd". Same tradeoff as cache above,
     # and especially worth zstd when artifacts are already-compressed (zips,
     # jars, image tarballs): gzip burns CPU for ~no size win, while zstd's
-    # fast path stores incompressible blocks near memcpy speed. Restore
-    # auto-detects (shared with cache), so it is reader-first-safe once the
-    # fleet runs an image/version that reads zstd.
+    # fast path stores incompressible blocks near memcpy speed.
+    #
+    # ⚠️ Job→job restore auto-detects the codec (shared with cache), so that
+    # path is safe. Manual download via the UI/API is NOT codec-aware yet —
+    # it names the file `.tar.gz` and (filesystem backend) serves
+    # application/gzip regardless. Flipping to "zstd" would make a manually
+    # downloaded artifact fail `tar xzf`. Do NOT set "zstd" until the manual
+    # download path learns the codec (tracked in the repo issues).
     compression: "gzip"
   defaultJobImage: alpine:3.19
   jobCleanup:
