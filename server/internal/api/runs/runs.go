@@ -253,7 +253,7 @@ func (h *Handler) Artifacts(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:     a.ExpiresAt,
 		}
 		if a.Status == "ready" {
-			if url, expires := h.signDownload(r.Context(), a.StorageKey, a.Path); url != "" {
+			if url, expires := h.signDownload(r.Context(), a.StorageKey, a.Path, a.ContentType); url != "" {
 				resp.DownloadURL = url
 				resp.DownloadURLExpiresAt = &expires
 			}
@@ -275,9 +275,9 @@ func (h *Handler) Artifacts(w http.ResponseWriter, r *http.Request) {
 // S3/GCS bake it into the pre-signed URL's ResponseContentDisposition
 // so browsers save the blob with a useful name instead of the raw
 // token. Without this, users had to gunzip+untar as two steps.
-func (h *Handler) signDownload(ctx context.Context, storageKey, artifactPath string) (string, time.Time) {
+func (h *Handler) signDownload(ctx context.Context, storageKey, artifactPath, contentType string) (string, time.Time) {
 	var opts []artifacts.GetOption
-	if name := downloadFilename(artifactPath); name != "" {
+	if name := downloadFilename(artifactPath, contentType); name != "" {
 		opts = append(opts, artifacts.WithContentDisposition(name))
 	}
 	signed, err := h.artifactStore.SignedGetURL(ctx, storageKey, downloadTTL, opts...)
@@ -289,20 +289,27 @@ func (h *Handler) signDownload(ctx context.Context, storageKey, artifactPath str
 }
 
 // downloadFilename picks a sensible saved-as name from the artifact's
-// source path. File artifacts land as "<basename>.tar.gz"; directory
-// artifacts as "<dirname>.tar.gz". Empty input yields "artifact.tar.gz".
-func downloadFilename(artifactPath string) string {
+// source path. File artifacts land as "<basename>.tar.<ext>"; directory
+// artifacts as "<dirname>.tar.<ext>". Empty input yields "artifact.tar.<ext>".
+// The extension follows the stored codec (#283) so a zstd artifact downloads
+// as `.tar.zst` (extracts with `tar xf` / `--zstd`), not a `.tar.gz` that
+// would fail `tar xzf`. Unknown/empty content type falls back to gzip.
+func downloadFilename(artifactPath, contentType string) string {
+	ext := ".tar.gz"
+	if contentType == "application/zstd" {
+		ext = ".tar.zst"
+	}
 	p := strings.TrimRight(artifactPath, "/")
 	if p == "" {
-		return "artifact.tar.gz"
+		return "artifact" + ext
 	}
 	if i := strings.LastIndex(p, "/"); i >= 0 {
 		p = p[i+1:]
 	}
 	if p == "" {
-		return "artifact.tar.gz"
+		return "artifact" + ext
 	}
-	return p + ".tar.gz"
+	return p + ext
 }
 
 // parseSinceQuery turns `?since=<uuid>:<seq>&since=<uuid>:<seq>`

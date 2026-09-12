@@ -184,6 +184,7 @@ func (q *Queries) ExpireOldestInProjectByExcess(ctx context.Context, arg ExpireO
 const getArtifactByStorageKey = `-- name: GetArtifactByStorageKey :one
 SELECT id, run_id, job_run_id, pipeline_id, project_id,
        path, storage_key, status, size_bytes, content_sha256,
+       content_type,
        expires_at, pinned_at, deleted_at, created_at
 FROM artifacts
 WHERE storage_key = $1
@@ -200,6 +201,7 @@ type GetArtifactByStorageKeyRow struct {
 	Status        string
 	SizeBytes     int64
 	ContentSha256 string
+	ContentType   string
 	ExpiresAt     pgtype.Timestamptz
 	PinnedAt      pgtype.Timestamptz
 	DeletedAt     pgtype.Timestamptz
@@ -222,6 +224,7 @@ func (q *Queries) GetArtifactByStorageKey(ctx context.Context, storageKey string
 		&i.Status,
 		&i.SizeBytes,
 		&i.ContentSha256,
+		&i.ContentType,
 		&i.ExpiresAt,
 		&i.PinnedAt,
 		&i.DeletedAt,
@@ -376,6 +379,7 @@ func (q *Queries) InsertPendingArtifact(ctx context.Context, arg InsertPendingAr
 const listArtifactsByJobRun = `-- name: ListArtifactsByJobRun :many
 SELECT id, run_id, job_run_id, pipeline_id, project_id,
        path, storage_key, status, size_bytes, content_sha256,
+       content_type,
        expires_at, pinned_at, deleted_at, created_at
 FROM artifacts
 WHERE job_run_id = $1
@@ -393,6 +397,7 @@ type ListArtifactsByJobRunRow struct {
 	Status        string
 	SizeBytes     int64
 	ContentSha256 string
+	ContentType   string
 	ExpiresAt     pgtype.Timestamptz
 	PinnedAt      pgtype.Timestamptz
 	DeletedAt     pgtype.Timestamptz
@@ -422,6 +427,7 @@ func (q *Queries) ListArtifactsByJobRun(ctx context.Context, jobRunID pgtype.UUI
 			&i.Status,
 			&i.SizeBytes,
 			&i.ContentSha256,
+			&i.ContentType,
 			&i.ExpiresAt,
 			&i.PinnedAt,
 			&i.DeletedAt,
@@ -440,6 +446,7 @@ func (q *Queries) ListArtifactsByJobRun(ctx context.Context, jobRunID pgtype.UUI
 const listArtifactsByRun = `-- name: ListArtifactsByRun :many
 SELECT id, run_id, job_run_id, pipeline_id, project_id,
        path, storage_key, status, size_bytes, content_sha256,
+       content_type,
        expires_at, pinned_at, deleted_at, created_at
 FROM artifacts
 WHERE run_id = $1 AND status = 'ready'
@@ -458,6 +465,7 @@ type ListArtifactsByRunRow struct {
 	Status        string
 	SizeBytes     int64
 	ContentSha256 string
+	ContentType   string
 	ExpiresAt     pgtype.Timestamptz
 	PinnedAt      pgtype.Timestamptz
 	DeletedAt     pgtype.Timestamptz
@@ -487,6 +495,7 @@ func (q *Queries) ListArtifactsByRun(ctx context.Context, runID pgtype.UUID) ([]
 			&i.Status,
 			&i.SizeBytes,
 			&i.ContentSha256,
+			&i.ContentType,
 			&i.ExpiresAt,
 			&i.PinnedAt,
 			&i.DeletedAt,
@@ -505,6 +514,7 @@ func (q *Queries) ListArtifactsByRun(ctx context.Context, runID pgtype.UUID) ([]
 const listArtifactsWithJobByRun = `-- name: ListArtifactsWithJobByRun :many
 SELECT a.id, a.run_id, a.job_run_id, a.pipeline_id, a.project_id,
        a.path, a.storage_key, a.status, a.size_bytes, a.content_sha256,
+       a.content_type,
        a.expires_at, a.pinned_at, a.deleted_at, a.created_at,
        jr.name AS job_name
 FROM artifacts a
@@ -524,6 +534,7 @@ type ListArtifactsWithJobByRunRow struct {
 	Status        string
 	SizeBytes     int64
 	ContentSha256 string
+	ContentType   string
 	ExpiresAt     pgtype.Timestamptz
 	PinnedAt      pgtype.Timestamptz
 	DeletedAt     pgtype.Timestamptz
@@ -554,6 +565,7 @@ func (q *Queries) ListArtifactsWithJobByRun(ctx context.Context, runID pgtype.UU
 			&i.Status,
 			&i.SizeBytes,
 			&i.ContentSha256,
+			&i.ContentType,
 			&i.ExpiresAt,
 			&i.PinnedAt,
 			&i.DeletedAt,
@@ -612,6 +624,7 @@ func (q *Queries) ListProjectsOverArtifactQuota(ctx context.Context, dollar_1 in
 const listReadyArtifactsByRunAndJobName = `-- name: ListReadyArtifactsByRunAndJobName :many
 SELECT a.id, a.run_id, a.job_run_id, a.pipeline_id, a.project_id,
        a.path, a.storage_key, a.status, a.size_bytes, a.content_sha256,
+       a.content_type,
        a.expires_at, a.pinned_at, a.deleted_at, a.created_at,
        jr.name AS job_name
 FROM artifacts a
@@ -641,6 +654,7 @@ type ListReadyArtifactsByRunAndJobNameRow struct {
 	Status        string
 	SizeBytes     int64
 	ContentSha256 string
+	ContentType   string
 	ExpiresAt     pgtype.Timestamptz
 	PinnedAt      pgtype.Timestamptz
 	DeletedAt     pgtype.Timestamptz
@@ -672,6 +686,7 @@ func (q *Queries) ListReadyArtifactsByRunAndJobName(ctx context.Context, arg Lis
 			&i.Status,
 			&i.SizeBytes,
 			&i.ContentSha256,
+			&i.ContentType,
 			&i.ExpiresAt,
 			&i.PinnedAt,
 			&i.DeletedAt,
@@ -692,7 +707,8 @@ const markArtifactReady = `-- name: MarkArtifactReady :execrows
 UPDATE artifacts
 SET status = 'ready',
     size_bytes = $2,
-    content_sha256 = $3
+    content_sha256 = $3,
+    content_type = $4
 WHERE storage_key = $1 AND status = 'pending'
 `
 
@@ -700,6 +716,7 @@ type MarkArtifactReadyParams struct {
 	StorageKey    string
 	SizeBytes     int64
 	ContentSha256 string
+	ContentType   string
 }
 
 // Called after the server reads the storage object and verifies the bytes
@@ -707,7 +724,12 @@ type MarkArtifactReadyParams struct {
 // size/sha. Safe to call once; subsequent calls update nothing (status
 // already 'ready'), returning 0 rows.
 func (q *Queries) MarkArtifactReady(ctx context.Context, arg MarkArtifactReadyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markArtifactReady, arg.StorageKey, arg.SizeBytes, arg.ContentSha256)
+	result, err := q.db.Exec(ctx, markArtifactReady,
+		arg.StorageKey,
+		arg.SizeBytes,
+		arg.ContentSha256,
+		arg.ContentType,
+	)
 	if err != nil {
 		return 0, err
 	}

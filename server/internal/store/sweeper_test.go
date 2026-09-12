@@ -1244,7 +1244,7 @@ func TestArtifact_PathNormalization(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, err := s.MarkArtifactReady(ctx, key, 100, "deadbeef"); err != nil {
+	if _, err := s.MarkArtifactReady(ctx, key, 100, "deadbeef", "application/gzip"); err != nil {
 		t.Fatalf("mark ready: %v", err)
 	}
 
@@ -1327,7 +1327,7 @@ func TestArtifact_PartialUniqueIndex_ReissuesPendingAndBlocksReady(t *testing.T)
 		t.Fatalf("reissue = %+v, want same row/key as %+v", second, first)
 	}
 
-	if _, err := s.MarkArtifactReady(ctx, firstKey, 1, "abc"); err != nil {
+	if _, err := s.MarkArtifactReady(ctx, firstKey, 1, "abc", "application/gzip"); err != nil {
 		t.Fatalf("mark ready: %v", err)
 	}
 	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{

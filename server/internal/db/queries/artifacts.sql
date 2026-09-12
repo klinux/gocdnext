@@ -25,7 +25,8 @@ RETURNING id, run_id, job_run_id, pipeline_id, project_id,
 UPDATE artifacts
 SET status = 'ready',
     size_bytes = $2,
-    content_sha256 = $3
+    content_sha256 = $3,
+    content_type = $4
 WHERE storage_key = $1 AND status = 'pending';
 
 -- name: ListArtifactsByJobRun :many
@@ -34,6 +35,7 @@ WHERE storage_key = $1 AND status = 'pending';
 -- downloads to downstream jobs in the same run.
 SELECT id, run_id, job_run_id, pipeline_id, project_id,
        path, storage_key, status, size_bytes, content_sha256,
+       content_type,
        expires_at, pinned_at, deleted_at, created_at
 FROM artifacts
 WHERE job_run_id = $1
@@ -44,6 +46,7 @@ ORDER BY created_at;
 -- ErrNoRows if the agent invented a key or the row was swept.
 SELECT id, run_id, job_run_id, pipeline_id, project_id,
        path, storage_key, status, size_bytes, content_sha256,
+       content_type,
        expires_at, pinned_at, deleted_at, created_at
 FROM artifacts
 WHERE storage_key = $1;
@@ -54,6 +57,7 @@ WHERE storage_key = $1;
 -- dependable to downstream jobs.
 SELECT id, run_id, job_run_id, pipeline_id, project_id,
        path, storage_key, status, size_bytes, content_sha256,
+       content_type,
        expires_at, pinned_at, deleted_at, created_at
 FROM artifacts
 WHERE run_id = $1 AND status = 'ready'
@@ -66,6 +70,7 @@ ORDER BY created_at;
 -- per-artifact lookup. Returns ALL statuses — callers filter as needed.
 SELECT a.id, a.run_id, a.job_run_id, a.pipeline_id, a.project_id,
        a.path, a.storage_key, a.status, a.size_bytes, a.content_sha256,
+       a.content_type,
        a.expires_at, a.pinned_at, a.deleted_at, a.created_at,
        jr.name AS job_name
 FROM artifacts a
@@ -80,6 +85,7 @@ ORDER BY jr.name, a.path;
 -- array returns all of that job's artefacts.
 SELECT a.id, a.run_id, a.job_run_id, a.pipeline_id, a.project_id,
        a.path, a.storage_key, a.status, a.size_bytes, a.content_sha256,
+       a.content_type,
        a.expires_at, a.pinned_at, a.deleted_at, a.created_at,
        jr.name AS job_name
 FROM artifacts a

@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -105,21 +106,23 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = rc.Close() }()
 
-	// application/gzip is accurate (the agent always wraps artifacts
-	// in tar+gzip before PUT) and hints to `file`/curl/browsers what
-	// the blob is. octet-stream used to be the default; the downside
-	// was users saving a nameless binary and having to `file` it to
-	// guess the format.
-	w.Header().Set("Content-Type", "application/gzip")
+	// Content-Type follows the object's actual codec, sniffed from the leading
+	// magic bytes of the same stream we're about to serve (#283). Before zstd
+	// this was hardcoded application/gzip; a zstd artifact served as gzip would
+	// mislead `file`/curl and pair with a `.tar.gz` name the client can't
+	// `tar xzf`. bufio.Peek doesn't consume — io.Copy still streams every byte.
+	br := bufio.NewReaderSize(rc, 512)
+	magic, _ := br.Peek(4)
+	w.Header().Set("Content-Type", detectContentType(magic))
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	if fn := sanitizeDownloadName(r.URL.Query().Get("filename")); fn != "" {
 		// Content-Disposition gives the browser a sensible save-as
-		// name so users can `tar xzf <name>.tar.gz` directly —
-		// previously the link downloaded as the raw token (no
-		// extension), forcing `gunzip` + `tar xf` as two steps.
+		// name (`<name>.tar.gz` or `.tar.zst`) so the download extracts
+		// directly — previously the link downloaded as the raw token
+		// (no extension), forcing `gunzip` + `tar xf` as two steps.
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fn))
 	}
-	if _, err := io.Copy(w, rc); err != nil {
+	if _, err := io.Copy(w, br); err != nil {
 		h.log.Warn("artifact stream aborted", "key", key, "err", err)
 	}
 }

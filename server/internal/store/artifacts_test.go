@@ -80,7 +80,7 @@ func TestMarkArtifactReady_FlipsStatus(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	updated, err := s.MarkArtifactReady(ctx, key, 1024, "deadbeef")
+	updated, err := s.MarkArtifactReady(ctx, key, 1024, "deadbeef", "application/gzip")
 	if err != nil {
 		t.Fatalf("mark ready: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestMarkArtifactReady_FlipsStatus(t *testing.T) {
 	}
 
 	// Second call must be a no-op (already ready).
-	updated2, err := s.MarkArtifactReady(ctx, key, 9999, "cafebabe")
+	updated2, err := s.MarkArtifactReady(ctx, key, 9999, "cafebabe", "application/gzip")
 	if err != nil {
 		t.Fatalf("mark ready 2: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestListReadyArtifactsByRun_OnlyReady(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.MarkArtifactReady(ctx, readyKey, 10, "abc"); err != nil {
+	if _, err := s.MarkArtifactReady(ctx, readyKey, 10, "abc", "application/gzip"); err != nil {
 		t.Fatal(err)
 	}
 	// second row stays pending

@@ -345,7 +345,7 @@ func TestRequestArtifactUpload_DoesNotReopenReadyArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first upload request: %v", err)
 	}
-	if _, err := store.New(pool).MarkArtifactReady(context.Background(), first.Tickets[0].StorageKey, 1, strings.Repeat("a", 64)); err != nil {
+	if _, err := store.New(pool).MarkArtifactReady(context.Background(), first.Tickets[0].StorageKey, 1, strings.Repeat("a", 64), "application/gzip"); err != nil {
 		t.Fatalf("mark ready: %v", err)
 	}
 

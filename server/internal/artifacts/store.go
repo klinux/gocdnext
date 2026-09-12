@@ -10,6 +10,7 @@
 package artifacts
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -63,11 +64,17 @@ type Store interface {
 type ObjectInfo struct {
 	Size          int64
 	ContentSHA256 string
+	// ContentType is the compression codec detected from the object's leading
+	// magic bytes ("application/gzip" | "application/zstd"). Server-observed —
+	// never trusted from the agent — so the manual download path can name the
+	// file + set the header correctly (#283).
+	ContentType string
 }
 
 // InspectObject reads an object once and computes the content identity
 // gocdnext stores in the DB. It intentionally uses the Store interface's
 // existing Get path so every backend gets the same verification semantics.
+// The codec is sniffed from the leading bytes of the SAME read — no extra I/O.
 func InspectObject(ctx context.Context, st Store, key string) (ObjectInfo, error) {
 	rc, err := st.Get(ctx, key)
 	if err != nil {
@@ -75,15 +82,33 @@ func InspectObject(ctx context.Context, st Store, key string) (ObjectInfo, error
 	}
 	defer func() { _ = rc.Close() }()
 
+	// Peek the first 4 bytes for the codec magic without perturbing the sha:
+	// a bufio.Reader hands the same bytes to io.Copy afterwards.
+	br := bufio.NewReaderSize(rc, 512)
+	magic, _ := br.Peek(4) // short object → short magic; detectContentType handles it
+
 	h := sha256.New()
-	n, err := io.Copy(h, rc)
+	n, err := io.Copy(h, br)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
 	return ObjectInfo{
 		Size:          n,
 		ContentSHA256: hex.EncodeToString(h.Sum(nil)),
+		ContentType:   detectContentType(magic),
 	}, nil
+}
+
+// Compression magic bytes: gzip = 1f 8b (RFC 1952); zstd = 28 b5 2f fd
+// (RFC 8878). Anything else defaults to gzip — the only two codecs the
+// artifact store ever writes, and gzip is the safe legacy assumption.
+func detectContentType(magic []byte) string {
+	switch {
+	case len(magic) >= 4 && magic[0] == 0x28 && magic[1] == 0xb5 && magic[2] == 0x2f && magic[3] == 0xfd:
+		return "application/zstd"
+	default:
+		return "application/gzip"
+	}
 }
 
 // SignedURL is what SignedPutURL / SignedGetURL return. The URL is what

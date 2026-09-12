@@ -15,14 +15,21 @@ convention that minor bumps may carry breaking changes until 1.0).
   default `gzip`), mirroring the cache codec. This kills a real waste:
   gzipping an already-compressed artifact (a `.zip`, `.jar`, image tarball)
   costs ~80s of CPU on a couple GB for zero size win, while zstd's fast path
-  stores incompressible blocks near memcpy speed. **Job→job restore** is
-  codec-agnostic — `runner.UntarGz` (shared by cache and artifact download)
-  already auto-detects gzip vs zstd since v0.105.0 — so that path is safe today.
-  **Not yet flippable:** the manual UI/API download path still names the file
-  `.tar.gz` and (filesystem backend) serves `application/gzip` regardless of
-  codec, so a zstd artifact downloaded by hand would fail `tar xzf`. This ships
-  the capability only (default `gzip`, no behavior change); do not set `zstd`
-  until the manual-download path learns the codec (#283).
+  stores incompressible blocks near memcpy speed. Both job→job restore
+  (`runner.UntarGz` auto-detects the codec) and the manual UI/API download
+  (#283, below) are codec-aware, so the codec is safe to flip. Default stays
+  `gzip` (no behavior change) until an operator opts in.
+
+- **Artifact manual download is codec-aware (#283).** The server now records
+  each artifact's compression codec — sniffed from the object's magic bytes at
+  mark-ready (server-observed, never trusted from the agent; piggybacked on the
+  read that already computes size+sha256, so no extra I/O) — in a new
+  `content_type` column (additive migration, old rows default to gzip). The
+  UI/API download names the file `.tar.gz` / `.tar.zst` and sets
+  `application/gzip` / `application/zstd` accordingly (filesystem handler sniffs
+  the served stream; S3/GCS keep serving the object's stored Content-Type). This
+  unblocks flipping `agent.artifacts.compression: zstd`: a hand-downloaded zstd
+  artifact now extracts instead of failing `tar xzf`.
 
 - **Chart: agent autoscaling, metrics/observability, and drain plumbing.** The
   Helm chart now wires the agent-side features whose Go support already shipped
