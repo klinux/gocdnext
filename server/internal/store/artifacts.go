@@ -36,10 +36,14 @@ type Artifact struct {
 	Status        string
 	SizeBytes     int64
 	ContentSHA256 string
-	ExpiresAt     *time.Time
-	PinnedAt      *time.Time
-	DeletedAt     *time.Time
-	CreatedAt     time.Time
+	// ContentType is the artifact's compression codec, sniffed server-side at
+	// mark-ready ("application/gzip" | "application/zstd"). Drives the manual
+	// download filename + header (#283). Old rows default to gzip.
+	ContentType string
+	ExpiresAt   *time.Time
+	PinnedAt    *time.Time
+	DeletedAt   *time.Time
+	CreatedAt   time.Time
 }
 
 // InsertPendingArtifact is what the gRPC RequestArtifactUpload handler
@@ -201,11 +205,15 @@ func (s *Store) RetireArtifactsByJobRun(ctx context.Context, jobRunID uuid.UUID)
 // object and verified its content identity. Returns whether the row was
 // updated (false = already ready, or swept, or never existed). Callers
 // decide whether a non-update is an error.
-func (s *Store) MarkArtifactReady(ctx context.Context, storageKey string, size int64, sha256 string) (bool, error) {
+func (s *Store) MarkArtifactReady(ctx context.Context, storageKey string, size int64, sha256, contentType string) (bool, error) {
+	if contentType == "" {
+		contentType = "application/gzip" // fail-safe: never write an empty codec
+	}
 	n, err := s.q.MarkArtifactReady(ctx, db.MarkArtifactReadyParams{
 		StorageKey:    storageKey,
 		SizeBytes:     size,
 		ContentSha256: sha256,
+		ContentType:   contentType,
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: mark artifact ready: %w", err)
@@ -285,6 +293,7 @@ func (s *Store) ListArtifactsWithJobByRun(ctx context.Context, runID uuid.UUID) 
 				Status:        r.Status,
 				SizeBytes:     r.SizeBytes,
 				ContentSHA256: r.ContentSha256,
+				ContentType:   r.ContentType,
 				ExpiresAt:     pgTimePtr(r.ExpiresAt),
 				PinnedAt:      pgTimePtr(r.PinnedAt),
 				DeletedAt:     pgTimePtr(r.DeletedAt),
@@ -334,6 +343,7 @@ func (s *Store) ListReadyArtifactsByRunAndJob(ctx context.Context, runID uuid.UU
 				Status:        r.Status,
 				SizeBytes:     r.SizeBytes,
 				ContentSHA256: r.ContentSha256,
+				ContentType:   r.ContentType,
 				ExpiresAt:     pgTimePtr(r.ExpiresAt),
 				PinnedAt:      pgTimePtr(r.PinnedAt),
 				DeletedAt:     pgTimePtr(r.DeletedAt),
@@ -522,6 +532,7 @@ func artifactFromGetRow(r db.GetArtifactByStorageKeyRow) Artifact {
 		Status:        r.Status,
 		SizeBytes:     r.SizeBytes,
 		ContentSHA256: r.ContentSha256,
+		ContentType:   r.ContentType,
 		ExpiresAt:     pgTimePtr(r.ExpiresAt),
 		PinnedAt:      pgTimePtr(r.PinnedAt),
 		DeletedAt:     pgTimePtr(r.DeletedAt),
@@ -541,6 +552,7 @@ func artifactFromListJobRunRow(r db.ListArtifactsByJobRunRow) Artifact {
 		Status:        r.Status,
 		SizeBytes:     r.SizeBytes,
 		ContentSHA256: r.ContentSha256,
+		ContentType:   r.ContentType,
 		ExpiresAt:     pgTimePtr(r.ExpiresAt),
 		PinnedAt:      pgTimePtr(r.PinnedAt),
 		DeletedAt:     pgTimePtr(r.DeletedAt),
@@ -560,6 +572,7 @@ func artifactFromListRunRow(r db.ListArtifactsByRunRow) Artifact {
 		Status:        r.Status,
 		SizeBytes:     r.SizeBytes,
 		ContentSHA256: r.ContentSha256,
+		ContentType:   r.ContentType,
 		ExpiresAt:     pgTimePtr(r.ExpiresAt),
 		PinnedAt:      pgTimePtr(r.PinnedAt),
 		DeletedAt:     pgTimePtr(r.DeletedAt),

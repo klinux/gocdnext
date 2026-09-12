@@ -216,7 +216,7 @@ func seedReadyArtifact(t *testing.T, s *store.Store, ctx context.Context, runID,
 	}); err != nil {
 		t.Fatalf("insert artifact: %v", err)
 	}
-	if _, err := s.MarkArtifactReady(ctx, key, 100, ""); err != nil {
+	if _, err := s.MarkArtifactReady(ctx, key, 100, "", "application/gzip"); err != nil {
 		t.Fatalf("mark ready: %v", err)
 	}
 }

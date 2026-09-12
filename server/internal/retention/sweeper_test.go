@@ -115,7 +115,7 @@ func seedArtifact(t *testing.T, pool *pgxpool.Pool, key string, expiresAt time.T
 	}
 	switch status {
 	case "ready":
-		if _, err := s.MarkArtifactReady(ctx, key, 512, "deadbeef"); err != nil {
+		if _, err := s.MarkArtifactReady(ctx, key, 512, "deadbeef", "application/gzip"); err != nil {
 			t.Fatalf("mark ready: %v", err)
 		}
 	case "deleting":
@@ -320,7 +320,7 @@ func TestSweeper_KeepLast_DemotesOlderRuns(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.MarkArtifactReady(ctx, keys[i], 1024, "abc"); err != nil {
+		if _, err := s.MarkArtifactReady(ctx, keys[i], 1024, "abc", "application/gzip"); err != nil {
 			t.Fatal(err)
 		}
 		_ = row
@@ -403,7 +403,7 @@ func TestSweeper_ProjectQuota_DemotesOldestUntilUnderCap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.MarkArtifactReady(ctx, keys[i], 1024, "abc"); err != nil {
+		if _, err := s.MarkArtifactReady(ctx, keys[i], 1024, "abc", "application/gzip"); err != nil {
 			t.Fatal(err)
 		}
 		// Ensure created_at ordering reflects insertion order.
@@ -503,7 +503,7 @@ func TestSweeper_GlobalQuota_DemotesOldestAcrossProjects(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.MarkArtifactReady(ctx, keys[i], 1024, "abc"); err != nil {
+		if _, err := s.MarkArtifactReady(ctx, keys[i], 1024, "abc", "application/gzip"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := pool.Exec(ctx,
