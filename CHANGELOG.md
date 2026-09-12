@@ -22,7 +22,7 @@ convention that minor bumps may carry breaking changes until 1.0).
   `.tar.gz` and (filesystem backend) serves `application/gzip` regardless of
   codec, so a zstd artifact downloaded by hand would fail `tar xzf`. This ships
   the capability only (default `gzip`, no behavior change); do not set `zstd`
-  until the manual-download path learns the codec (follow-up issue).
+  until the manual-download path learns the codec (#283).
 
 - **Chart: agent autoscaling, metrics/observability, and drain plumbing.** The
   Helm chart now wires the agent-side features whose Go support already shipped

@@ -209,7 +209,7 @@ agent:
     # it names the file `.tar.gz` and (filesystem backend) serves
     # application/gzip regardless. Flipping to "zstd" would make a manually
     # downloaded artifact fail `tar xzf`. Do NOT set "zstd" until the manual
-    # download path learns the codec (tracked in the repo issues).
+    # download path learns the codec (#283).
     compression: "gzip"
   defaultJobImage: alpine:3.19
   jobCleanup:
