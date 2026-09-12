@@ -68,6 +68,7 @@ type Artifact struct {
 	DeletedAt     pgtype.Timestamptz
 	ExpiresAt     pgtype.Timestamptz
 	CreatedAt     pgtype.Timestamptz
+	ContentType   string
 }
 
 type AuditEvent struct {

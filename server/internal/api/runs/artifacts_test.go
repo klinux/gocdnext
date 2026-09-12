@@ -117,7 +117,7 @@ func TestArtifacts_ListsPendingAndReady_WithDownloadOnlyForReady(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.MarkArtifactReady(ctx, readyKey, 1024, "deadbeef"); err != nil {
+	if _, err := s.MarkArtifactReady(ctx, readyKey, 1024, "deadbeef", "application/gzip"); err != nil {
 		t.Fatal(err)
 	}
 

@@ -1169,7 +1169,7 @@ func (a *AgentService) confirmArtifacts(ctx context.Context, log logger, jobID u
 			continue
 		}
 
-		updated, err := a.store.MarkArtifactReady(ctx, key, info.Size, info.ContentSHA256)
+		updated, err := a.store.MarkArtifactReady(ctx, key, info.Size, info.ContentSHA256, info.ContentType)
 		if err != nil {
 			bad = append(bad, ref.GetPath()+" (mark ready: "+err.Error()+")")
 			continue
