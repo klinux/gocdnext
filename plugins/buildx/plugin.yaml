@@ -59,6 +59,27 @@ inputs:
     description: >
       Registry token/password. Populate via the job's
       `secrets:` list so the plaintext stays out of the log.
+  compression:
+    required: false
+    description: >
+      Layer compression codec for the pushed image. One of:
+        - "" / "gzip" → BuildKit default (single-thread gzip).
+        - "zstd"      → much faster to produce and smaller; the
+          registry (Harbor 2.7+) + puller (containerd 1.5+) must
+          understand zstd layers, which modern stacks do.
+        - "uncompressed" → store layers raw. Best for ALREADY-
+          compressed payloads (a bundled SDK of native libs / ML
+          models, image tarballs): gzip burns ~minutes of single-
+          thread CPU on the export for zero size win, while
+          uncompressed skips it entirely and uses the universal
+          `+tar` media type (no registry/puller codec support
+          needed). Same pushed byte count as gzip for incompressible
+          data.
+        - "estargz"   → lazy-pullable gzip (advanced; needs an
+          estargz-aware runtime to benefit).
+      Only NEW layers this build produces take the codec; cached
+      base layers are untouched. Applied only when push: true
+      (a build-only run leaves output in the builder cache).
   cache:
     required: false
     description: >

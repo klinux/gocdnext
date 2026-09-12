@@ -8,6 +8,18 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **buildx plugin: `compression` codec input.** New `compression:` option on
+  `gocdnext/buildx` — `gzip` (default, unchanged), `zstd`, `uncompressed`, or
+  `estargz`. For an image whose big layer is already-compressed (a bundled SDK
+  of native libs / ML models, image tarballs), BuildKit's single-thread gzip
+  export burns minutes of CPU for zero size win; `uncompressed` skips it with
+  the universal `+tar` media type (no registry/puller codec support needed),
+  and `zstd` produces layers fast where the registry (Harbor 2.7+) and puller
+  (containerd 1.5+) understand them. Only new layers take the codec; applied on
+  `push: true`.
+
 ## v0.106.0 — 2026-09-11
 
 ### Added
