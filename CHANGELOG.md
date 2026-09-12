@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.106.0 — 2026-09-11
+
 ### Added
 
 - **Artifact store gains the opt-in zstd codec (#274).** The isolated-mode
