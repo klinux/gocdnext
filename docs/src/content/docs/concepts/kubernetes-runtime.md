@@ -111,12 +111,11 @@ switch safe for existing caches/artifacts — but flip `compression: zstd` only
 read zstd (reader-before-writer). Rolling back the codec is instant (set it
 back to `gzip`); new stores revert while old zstd blobs still restore.
 
-> **Artifact caveat:** `agent.artifacts.compression: zstd` is safe for
-> **job→job** restore (auto-detected), but the **manual UI/API download** path
-> is not codec-aware yet — it labels the file `.tar.gz` and serves
-> `application/gzip` regardless, so a hand-downloaded zstd artifact would fail
-> `tar xzf`. Keep artifacts on `gzip` until the download path learns the codec.
-> Cache has no such caveat (caches are never downloaded by hand).
+> **Artifacts, both paths:** `agent.artifacts.compression: zstd` is safe
+> end-to-end. Job→job restore auto-detects the codec, and the manual UI/API
+> download is codec-aware too (since v0.106.0) — it names a zstd artifact
+> `.tar.zst` and serves `application/zstd`, so a hand-downloaded artifact
+> extracts cleanly. Existing gzip artifacts keep downloading as `.tar.gz`.
 
 ## Choosing
 
