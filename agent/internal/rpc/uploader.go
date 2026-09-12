@@ -31,6 +31,40 @@ type ArtifactUploader struct {
 	client    gocdnextv1.AgentServiceClient
 	sessionID string
 	http      *http.Client
+	// compression is the STORE-side codec for the isolated in-pod tar
+	// ("gzip" default, "zstd" opt-in via GOCDNEXT_ARTIFACT_COMPRESSION).
+	// Restore is codec-agnostic — runner.UntarGz sniffs the blob — so this
+	// only decides how NEW artifacts are written. gzip on already-compressed
+	// artifacts (a .zip, a tar.gz, an image layer) is pure CPU waste; zstd's
+	// fast path stores incompressible blocks near memcpy speed (#274).
+	compression string
+}
+
+// UseCompression sets the store codec from an operator string, falling back
+// to gzip for empty/unknown values so a typo never selects a codec the
+// housekeeper image can't run. Reuses the cache codec constants + Content-Type
+// helper (pure codec→value, not cache-specific).
+func (u *ArtifactUploader) UseCompression(codec string) {
+	if strings.EqualFold(strings.TrimSpace(codec), codecZstd) {
+		u.compression = codecZstd
+		return
+	}
+	u.compression = codecGzip
+}
+
+// artifactTarCmd builds the in-pod tar command for one declared path's files.
+// gzip is byte-identical to the pre-zstd direct exec (`tar -czf`, no shell);
+// zstd pipes tar into `zstd -T0` under a pipefail shell so a tar failure on a
+// truncated stream isn't masked by zstd exiting 0. podWorkDir + files reach the
+// shell as positional args ($1 = dir, $@ = files after shift), never
+// interpolated into the script — an operator-controlled path can't inject.
+func (u *ArtifactUploader) artifactTarCmd(podWorkDir string, files []string) []string {
+	if u.compression == codecZstd {
+		const script = `set -o pipefail; dir="$1"; shift; ` +
+			`tar -cf - -C "$dir" -- "$@" | zstd -T0 -3 -c`
+		return append([]string{"sh", "-c", script, "_", podWorkDir}, files...)
+	}
+	return append([]string{"tar", "-czf", "-", "-C", podWorkDir, "--"}, files...)
 }
 
 // NewArtifactUploader wires the concrete uploader. http is optional;
@@ -40,7 +74,7 @@ func NewArtifactUploader(client gocdnextv1.AgentServiceClient, sessionID string,
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Minute}
 	}
-	return &ArtifactUploader{client: client, sessionID: sessionID, http: httpClient}
+	return &ArtifactUploader{client: client, sessionID: sessionID, http: httpClient, compression: codecGzip}
 }
 
 // canonicalPath strips trailing slashes so `dist` and `dist/`
@@ -330,7 +364,7 @@ func (u *ArtifactUploader) uploadOneFromPod(
 	// `-` (e.g. an operator path like `-dist`) isn't reinterpreted
 	// as a tar option. Combined with the agent-side dedupe + the
 	// server validating paths, but cheap belt-and-suspenders.
-	cmd := append([]string{"tar", "-czf", "-", "-C", podWorkDir, "--"}, files...)
+	cmd := u.artifactTarCmd(podWorkDir, files)
 	if err := exec.Exec(ctx, podName, containerName, cmd, nil, mw, io.Discard); err != nil {
 		_ = tmp.Close()
 		return nil, fmt.Errorf("exec tar %q: %w", tkt.GetPath(), err)
@@ -356,7 +390,7 @@ func (u *ArtifactUploader) uploadOneFromPod(
 		return nil, fmt.Errorf("build PUT: %w", err)
 	}
 	req.ContentLength = size
-	req.Header.Set("Content-Type", "application/gzip")
+	req.Header.Set("Content-Type", cacheContentType(u.compression))
 
 	resp, err := u.http.Do(req)
 	if err != nil {

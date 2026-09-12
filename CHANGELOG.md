@@ -10,6 +10,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Added
 
+- **Artifact store gains the opt-in zstd codec (#274).** The isolated-mode
+  artifact upload can now write zstd (`agent.artifacts.compression: zstd`,
+  default `gzip`), mirroring the cache codec. This kills a real waste:
+  gzipping an already-compressed artifact (a `.zip`, `.jar`, image tarball)
+  costs ~80s of CPU on a couple GB for zero size win, while zstd's fast path
+  stores incompressible blocks near memcpy speed. Restore is unchanged —
+  `runner.UntarGz` (shared by cache and artifact download) already auto-detects
+  the codec since v0.105.0, so the fleet reads zstd already: flipping the store
+  codec is a one-release, reader-first-safe change. Rollback is a one-line
+  revert to `gzip`; old zstd artifacts keep restoring.
+
 - **Chart: agent autoscaling, metrics/observability, and drain plumbing.** The
   Helm chart now wires the agent-side features whose Go support already shipped
   but whose chart templates lived only in a downstream deployment (drift): KEDA
