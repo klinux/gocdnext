@@ -212,6 +212,13 @@ spec:
             - name: GOCDNEXT_CACHE_COMPRESSION
               value: {{ . | quote }}
             {{- end }}{{- end }}
+            {{- with .Values.agent.artifacts }}{{ with .compression }}
+            # Artifact store codec (#274). gzip wastes CPU on already-
+            # compressed artifacts (zips, image layers); zstd stores them
+            # near memcpy speed. Restore auto-detects (shared UntarGz).
+            - name: GOCDNEXT_ARTIFACT_COMPRESSION
+              value: {{ . | quote }}
+            {{- end }}{{- end }}
             - name: GOCDNEXT_K8S_DEFAULT_IMAGE
               value: {{ .Values.agent.defaultJobImage | quote }}
             - name: GOCDNEXT_K8S_CLEANUP_ON_SUCCESS
