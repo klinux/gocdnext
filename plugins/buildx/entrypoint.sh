@@ -263,9 +263,30 @@ fi
 # land in the legacy docker image store. That's intentional —
 # users who want `PLUGIN_PUSH=false` get a free "does it build"
 # check on both architectures without registry writes.
+#
+# `compression` (optional) sets the layer codec. `--push` is just
+# shorthand for `--output type=image,push=true`, so to pick a codec
+# we expand it to the explicit output form and append compression=.
+# zstd/uncompressed kill the single-thread gzip export cost on large
+# incompressible layers (a bundled SDK). Only applied when pushing —
+# a build-only run has no image export to compress. The `-t` tags
+# still supply the image name(s); we don't put name= in the output.
+compression="$(trim "${PLUGIN_COMPRESSION:-}")"
+case "${compression}" in
+    ""|gzip|zstd|uncompressed|estargz) ;;
+    *)
+        echo "gocdnext/buildx: unknown compression '${compression}' — use gzip, zstd, uncompressed, or estargz" >&2
+        exit 2
+        ;;
+esac
 push_args=()
 if [ "${PUSH}" = "true" ]; then
-    push_args+=("--push")
+    if [ -n "${compression}" ] && [ "${compression}" != "gzip" ]; then
+        push_args+=("--output" "type=image,compression=${compression},push=true")
+        echo "==> layer compression: ${compression}"
+    else
+        push_args+=("--push")
+    fi
 fi
 
 # Layer cache wiring. Two surfaces:
