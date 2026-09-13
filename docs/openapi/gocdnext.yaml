@@ -2492,6 +2492,32 @@ components:
           example:
             AWS_ACCESS_KEY_ID: AWS_ACCESS_KEY_ID
             DB_PASSWORD: PROD_DB_PASSWORD
+        workspace_size:
+          type: string
+          description: |
+            Overrides the agent-global workspace ephemeral-PVC size for
+            jobs on this profile (Kubernetes isolated mode). Empty = agent
+            default. k8s quantity.
+          example: "100Gi"
+        workspace_storage_class:
+          type: string
+          description: |
+            Overrides the workspace PVC storage class. Empty = agent /
+            cluster default.
+          example: "premium-rwo"
+        dind_storage_size:
+          type: string
+          description: |
+            When set on a `docker: true` job, gives the DinD sidecar a
+            dedicated ephemeral PVC at /var/lib/docker (fast/large disk for
+            big-image layer export + push). Empty = node disk.
+          example: "300Gi"
+        dind_storage_class:
+          type: string
+          description: |
+            Storage class for the dedicated DinD PVC (e.g. a large
+            premium-rwo or a local-SSD class). Empty = cluster default.
+          example: "premium-rwo"
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -2579,6 +2605,34 @@ components:
             new value automatically. Templates can compose with
             literal text (`prefix-{{secret:DB_PASSWORD}}-suffix`).
             Unresolvable references fail the dispatch closed.
+        workspace_size:
+          type: string
+          description: |
+            Optional. Overrides the agent-global workspace ephemeral-PVC
+            size for jobs on this profile (Kubernetes isolated mode). Empty
+            = agent default. Validated as a positive k8s quantity.
+          example: "100Gi"
+        workspace_storage_class:
+          type: string
+          description: |
+            Optional. Workspace PVC storage class. Empty = agent / cluster
+            default. Validated as a DNS-1123 name.
+          example: "premium-rwo"
+        dind_storage_size:
+          type: string
+          description: |
+            Optional. When set on a `docker: true` job, gives the DinD
+            sidecar a dedicated ephemeral PVC at /var/lib/docker so the
+            big-image layer export + push runs on a fast/large disk instead
+            of the node's ephemeral disk. Empty = node disk. Validated as a
+            positive k8s quantity.
+          example: "300Gi"
+        dind_storage_class:
+          type: string
+          description: |
+            Optional. Storage class for the dedicated DinD PVC. Empty =
+            cluster default. Validated as a DNS-1123 name.
+          example: "premium-rwo"
 
     PreferredNodeAffinityTerm:
       type: object
