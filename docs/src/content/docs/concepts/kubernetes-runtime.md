@@ -117,6 +117,62 @@ back to `gzip`); new stores revert while old zstd blobs still restore.
 > `.tar.zst` and serves `application/zstd`, so a hand-downloaded artifact
 > extracts cleanly. Existing gzip artifacts keep downloading as `.tar.gz`.
 
+## Per-profile storage sizing
+
+The workspace PVC size/class above are **agent-global** defaults
+(`agent.workspace.size` / `storageClassName`). A single fleet often has
+one lightweight majority and a few heavy jobs — a big container-image
+build being the classic case. A [runner profile](/gocdnext/docs/concepts/runner-profiles/)
+can override storage **per job** so the heavy ones get a bigger/faster
+disk without inflating every pod:
+
+| Field | Overrides | Applies to |
+|---|---|---|
+| `workspace_size` | agent-global workspace PVC size | any isolated job on the profile |
+| `workspace_storage_class` | agent-global workspace PVC class | any isolated job on the profile |
+| `dind_storage_size` | — (adds a dedicated disk) | **`docker: true`** jobs on the profile |
+| `dind_storage_class` | — | **`docker: true`** jobs on the profile |
+
+All four are **optional**. Empty keeps today's behaviour: the agent-global
+workspace default, and DinD storing on the node's ephemeral disk.
+
+### Why `dind_storage_*` matters for big images
+
+A `docker: true` job runs a DinD sidecar; dockerd + buildkit keep the image
+layer store **and** the export/push staging area under `/var/lib/docker`.
+By default that directory lives on the DinD container's writable layer — the
+**node's ephemeral disk**. For a multi-GB image, `exporting layers` and
+`pushing layers` are dominated by that disk's throughput, not by CPU or the
+network. Setting `dind_storage_size` mounts a **dedicated ephemeral PVC** at
+`/var/lib/docker`, so the export/push run on a disk you sized for it. On GCE,
+PD throughput scales with the provisioned size (a 300Gi `premium-rwo` gives
+far more MB/s than a 20Gi one even if you only use a few GB); a `local-ssd`
+class is faster still where the node pool provides it.
+
+```yaml
+# runner profile (admin UI, or seeded via Helm runnerProfiles[])
+- name: image-build
+  engine: kubernetes
+  tags: [linux, docker]
+  workspace_size: 100Gi
+  dind_storage_size: 300Gi
+  dind_storage_class: premium-rwo
+```
+
+```yaml
+# pipeline job opts in
+build-image:
+  agent: { profile: image-build }
+  docker: true
+  uses: ghcr.io/you/plugin-buildx@v1
+  with: { ... }
+```
+
+Sizes are validated as positive Kubernetes quantities and classes as
+DNS-1123 names at write time, so a typo fails with a clear error instead of
+a pod stuck `Pending` on an unbindable PVC. Kubernetes **isolated** mode
+only — shared mode and the Shell/Docker engines ignore these fields.
+
 ## Choosing
 
 | If you have… | Pick |
