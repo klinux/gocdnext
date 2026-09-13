@@ -514,6 +514,24 @@ message JobAssignment {
   // pods (a service can override node_selector/tolerations per-service, but not
   // this affinity). Shell + Docker ignore it.
   repeated PreferredNodeAffinityTerm preferred_node_affinity = 27;
+
+  // WorkspaceSize / WorkspaceStorageClass OPTIONALLY override the agent-global
+  // workspace ephemeral-PVC sizing for this job, resolved from the runner
+  // profile. Empty => the agent falls back to its own configured default.
+  // Kubernetes ISOLATED mode only; shared mode + Shell/Docker ignore them.
+  // Lets a heavy-build profile ask for a larger/faster workspace disk without
+  // inflating every job.
+  string workspace_size = 28;
+  string workspace_storage_class = 29;
+
+  // DinDStorageSize / DinDStorageClass, when size is set AND docker (field 14)
+  // is true, give the DinD sidecar a DEDICATED ephemeral PVC mounted at
+  // /var/lib/docker (dockerd + buildkit layer store + image export/push
+  // staging). Without it that I/O lands on the node's ephemeral disk, whose
+  // throughput caps big-image builds. Resolved from the runner profile; empty
+  // => keep the node-disk behaviour. Kubernetes ISOLATED mode only.
+  string dind_storage_size = 30;
+  string dind_storage_class = 31;
 }
 
 // Toleration mirrors corev1.Toleration with concrete strings so

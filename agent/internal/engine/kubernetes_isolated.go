@@ -90,6 +90,26 @@ type IsolatedJobSpec struct {
 	// overrides NodeSelector.
 	PreferredNodeAffinity []corev1.PreferredSchedulingTerm
 
+	// WorkspaceSize / WorkspaceStorageClass OPTIONALLY override the
+	// agent-global workspace PVC sizing (KubernetesConfig) for this
+	// job, resolved from the runner profile. Empty => fall back to
+	// the agent default. Lets a heavy-build profile ask for a big /
+	// fast workspace disk without inflating every job.
+	WorkspaceSize         string
+	WorkspaceStorageClass string
+
+	// DinDStorageSize / DinDStorageClass, when DinDStorageSize is set
+	// AND Docker is true, give the DinD sidecar a DEDICATED ephemeral
+	// PVC mounted at /var/lib/docker. Without it dockerd/buildkit
+	// store image layers + the export/push staging area on the DinD
+	// container's writable layer (= the node's ephemeral disk), whose
+	// throughput caps big-image builds. A large premium-rwo (GCE PD
+	// throughput scales with size) or a local-SSD class moves the
+	// export/push off that bottleneck. Resolved from the runner
+	// profile; empty => keep the node-disk behaviour.
+	DinDStorageSize  string
+	DinDStorageClass string
+
 	// NeedsCacheFetchInit toggles the second init container —
 	// `cache-fetch` — that the agent uses to read workspace files
 	// for `{{ hash "..." }}` cache-key resolution in isolated mode.
@@ -189,12 +209,22 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 		pullSecrets = append(pullSecrets, corev1.LocalObjectReference{Name: n})
 	}
 
-	// Ephemeral PVC: lifetime tied to the pod. Storage class +
-	// size from KubernetesConfig. Each pod gets its own PVC; no
-	// cross-pod sharing (the whole point of isolated mode).
-	storageQty, err := resource.ParseQuantity(k.cfg.WorkspaceSize)
+	// Ephemeral PVC: lifetime tied to the pod. Each pod gets its own
+	// PVC; no cross-pod sharing (the whole point of isolated mode).
+	// Size + class default to KubernetesConfig, but a runner profile
+	// can override them per-job via spec.WorkspaceSize /
+	// WorkspaceStorageClass (empty => agent-global default).
+	workspaceSize := k.cfg.WorkspaceSize
+	if spec.WorkspaceSize != "" {
+		workspaceSize = spec.WorkspaceSize
+	}
+	workspaceClass := k.cfg.WorkspaceStorageClass
+	if spec.WorkspaceStorageClass != "" {
+		workspaceClass = spec.WorkspaceStorageClass
+	}
+	storageQty, err := resource.ParseQuantity(workspaceSize)
 	if err != nil {
-		return nil, fmt.Errorf("isolated pod: parse workspace size %q: %w", k.cfg.WorkspaceSize, err)
+		return nil, fmt.Errorf("isolated pod: parse workspace size %q: %w", workspaceSize, err)
 	}
 	pvcSpec := corev1.PersistentVolumeClaimSpec{
 		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -202,9 +232,8 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 			Requests: corev1.ResourceList{corev1.ResourceStorage: storageQty},
 		},
 	}
-	if k.cfg.WorkspaceStorageClass != "" {
-		scn := k.cfg.WorkspaceStorageClass
-		pvcSpec.StorageClassName = &scn
+	if workspaceClass != "" {
+		pvcSpec.StorageClassName = &workspaceClass
 	}
 	workspaceVolume := corev1.Volume{
 		Name: "workspace",
@@ -225,6 +254,14 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 				DefaultMode: ptr.To[int32](0o400),
 			},
 		},
+	}
+
+	// Optional dedicated DinD store volume (fast/large disk for
+	// dockerd + buildkit). Only for docker:true jobs whose profile
+	// set a size; nil otherwise (keeps the node-disk default).
+	dindStorageVolume, err := buildDinDStorageVolume(spec)
+	if err != nil {
+		return nil, err
 	}
 
 	workspaceMount := corev1.VolumeMount{
@@ -340,7 +377,7 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 				},
 			},
 		}
-		containers = append(containers, corev1.Container{
+		dindContainer := corev1.Container{
 			Name:  "dind",
 			Image: k.cfg.DinDImage,
 			Env: []corev1.EnvVar{
@@ -368,7 +405,17 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 				{Name: dindSocketVolumeName, MountPath: dindSharedSocketDir},
 			},
 			Lifecycle: dindLifecycle,
-		})
+		}
+		// Dedicated DinD store disk (profile opt-in): mount the
+		// ephemeral PVC at /var/lib/docker so dockerd + buildkit
+		// write layers and stage export/push there, not on the node
+		// disk. buildDinDStorageVolume only returns non-nil for
+		// docker:true, so this is the matching consumer.
+		if dindStorageVolume != nil {
+			dindContainer.VolumeMounts = append(dindContainer.VolumeMounts,
+				corev1.VolumeMount{Name: dindStorageVolumeName, MountPath: dindDataRoot})
+		}
+		containers = append(containers, dindContainer)
 		// Task container needs to mount the same shared dir so its
 		// `DOCKER_HOST=unix://…` actually finds the socket file
 		// dockerd wrote.
@@ -403,7 +450,7 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 			Tolerations:      concatTolerations(k.cfg.Tolerations, spec.Tolerations),
 			Affinity:         buildNodeAffinity(spec.PreferredNodeAffinity),
 			ImagePullSecrets: pullSecrets,
-			Volumes:          buildIsolatedVolumes(workspaceVolume, assignmentVolume, spec),
+			Volumes:          buildIsolatedVolumes(workspaceVolume, assignmentVolume, dindStorageVolume, spec),
 			InitContainers:   buildIsolatedInitContainers(prepContainer, spec, k.cfg.HousekeeperImage, workspaceMount),
 			Containers:       containers,
 			HostAliases:      hostAliases,
@@ -473,7 +520,7 @@ func CacheFetchMarkerPath(mountPath string) string {
 // volume is a tmpfs-backed emptyDir — sockets are file-system
 // entries but the bytes flowing through are kernel buffers; sizing
 // the volume large is wasted.
-func buildIsolatedVolumes(workspace, assignment corev1.Volume, spec IsolatedJobSpec) []corev1.Volume {
+func buildIsolatedVolumes(workspace, assignment corev1.Volume, dindStorage *corev1.Volume, spec IsolatedJobSpec) []corev1.Volume {
 	vols := []corev1.Volume{workspace, assignment}
 	if spec.Docker {
 		vols = append(vols, corev1.Volume{
@@ -485,7 +532,50 @@ func buildIsolatedVolumes(workspace, assignment corev1.Volume, spec IsolatedJobS
 			},
 		})
 	}
+	// Dedicated DinD store PVC — only present when the profile opted
+	// in (buildDinDStorageVolume returns non-nil). Appended after the
+	// socket volume so the volume list order stays stable for the
+	// common (no-store) case.
+	if dindStorage != nil {
+		vols = append(vols, *dindStorage)
+	}
 	return vols
+}
+
+// buildDinDStorageVolume returns the dedicated ephemeral-PVC volume
+// for dockerd's data root, or nil when the job doesn't opt in. It is
+// allocated ONLY when the job runs DinD (spec.Docker) AND the resolved
+// runner profile set a size (spec.DinDStorageSize) — a size without
+// docker:true would provision a PVC nothing mounts, so it's ignored.
+// The class is optional (empty => cluster default storage class).
+func buildDinDStorageVolume(spec IsolatedJobSpec) (*corev1.Volume, error) {
+	if !spec.Docker || spec.DinDStorageSize == "" {
+		return nil, nil
+	}
+	qty, err := resource.ParseQuantity(spec.DinDStorageSize)
+	if err != nil {
+		return nil, fmt.Errorf("isolated pod: parse dind storage size %q: %w", spec.DinDStorageSize, err)
+	}
+	pvcSpec := corev1.PersistentVolumeClaimSpec{
+		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+		Resources: corev1.VolumeResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceStorage: qty},
+		},
+	}
+	if spec.DinDStorageClass != "" {
+		scn := spec.DinDStorageClass
+		pvcSpec.StorageClassName = &scn
+	}
+	return &corev1.Volume{
+		Name: dindStorageVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Ephemeral: &corev1.EphemeralVolumeSource{
+				VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{
+					Spec: pvcSpec,
+				},
+			},
+		},
+	}, nil
 }
 
 func buildIsolatedInitContainers(

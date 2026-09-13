@@ -112,3 +112,69 @@ func TestBuildAssignment_ServiceSchedulingOverride(t *testing.T) {
 		t.Error("spot toleration missing on the wire")
 	}
 }
+
+// TestBuildAssignment_ProfileStorageThreaded proves the per-profile workspace
+// + DinD storage sizing survives the ResolvedProfile → JobAssignment proto hop.
+// The agent reads these to size the isolated-mode pod's PVCs
+// (feat/runner-profile-dind-storage).
+func TestBuildAssignment_ProfileStorageThreaded(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"ci"},
+		Jobs:   []domain.Job{{Name: "build", Stage: "ci", Image: "docker:24", Docker: true}},
+	}
+	defJSON, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal def: %v", err)
+	}
+	profile := store.ResolvedProfile{
+		WorkspaceSize:         "200Gi",
+		WorkspaceStorageClass: "local-ssd",
+		DinDStorageSize:       "300Gi",
+		DinDStorageClass:      "premium-rwo",
+	}
+	asg, _, err := scheduler.BuildAssignment(
+		store.RunForDispatch{Definition: defJSON},
+		store.DispatchableJob{Name: "build"},
+		nil, nil, nil, profile, nil, nil, nil, nil, "", nil,
+	)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if got := asg.GetWorkspaceSize(); got != "200Gi" {
+		t.Errorf("workspace_size = %q, want 200Gi", got)
+	}
+	if got := asg.GetWorkspaceStorageClass(); got != "local-ssd" {
+		t.Errorf("workspace_storage_class = %q, want local-ssd", got)
+	}
+	if got := asg.GetDindStorageSize(); got != "300Gi" {
+		t.Errorf("dind_storage_size = %q, want 300Gi", got)
+	}
+	if got := asg.GetDindStorageClass(); got != "premium-rwo" {
+		t.Errorf("dind_storage_class = %q, want premium-rwo", got)
+	}
+}
+
+// TestBuildAssignment_NoProfileStorageIsEmpty: a profile without storage
+// sizing leaves the assignment fields empty (agent falls back to its own
+// defaults / node-disk).
+func TestBuildAssignment_NoProfileStorageIsEmpty(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"ci"},
+		Jobs:   []domain.Job{{Name: "build", Stage: "ci", Image: "alpine:3.19"}},
+	}
+	defJSON, _ := json.Marshal(def)
+	asg, _, err := scheduler.BuildAssignment(
+		store.RunForDispatch{Definition: defJSON},
+		store.DispatchableJob{Name: "build"},
+		nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil,
+	)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if asg.GetWorkspaceSize() != "" || asg.GetDindStorageSize() != "" ||
+		asg.GetWorkspaceStorageClass() != "" || asg.GetDindStorageClass() != "" {
+		t.Errorf("expected empty storage fields; got ws=%q/%q dind=%q/%q",
+			asg.GetWorkspaceSize(), asg.GetWorkspaceStorageClass(),
+			asg.GetDindStorageSize(), asg.GetDindStorageClass())
+	}
+}

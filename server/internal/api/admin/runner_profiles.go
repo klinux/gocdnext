@@ -60,8 +60,16 @@ type runnerProfileDTO struct {
 	// here. UI uses this to render "→ globals.NAME" in place of
 	// the masked-value placeholder.
 	SecretRefs map[string]string `json:"secret_refs"`
-	CreatedAt  string            `json:"created_at"`
-	UpdatedAt  string            `json:"updated_at"`
+	// WorkspaceSize/StorageClass override the agent-global workspace
+	// PVC sizing per-profile; DinDStorageSize/Class give docker:true
+	// jobs a dedicated fast/large /var/lib/docker disk. All optional
+	// (empty = agent default / node-disk). Kubernetes isolated mode.
+	WorkspaceSize         string `json:"workspace_size"`
+	WorkspaceStorageClass string `json:"workspace_storage_class"`
+	DinDStorageSize       string `json:"dind_storage_size"`
+	DinDStorageClass      string `json:"dind_storage_class"`
+	CreatedAt             string `json:"created_at"`
+	UpdatedAt             string `json:"updated_at"`
 }
 
 type runnerProfilesResponse struct {
@@ -94,6 +102,10 @@ type runnerProfileWriteRequest struct {
 	PreferredNodeAffinity []store.PreferredNodeAffinityTerm `json:"preferred_node_affinity"`
 	Env                   map[string]string                 `json:"env"`
 	Secrets               map[string]string                 `json:"secrets"`
+	WorkspaceSize         string                            `json:"workspace_size"`
+	WorkspaceStorageClass string                            `json:"workspace_storage_class"`
+	DinDStorageSize       string                            `json:"dind_storage_size"`
+	DinDStorageClass      string                            `json:"dind_storage_class"`
 }
 
 // supportedEngines is the allow-list checked at write time. Mirrors
@@ -367,6 +379,26 @@ func decodeRunnerProfileWrite(w http.ResponseWriter, r *http.Request) (runnerPro
 		return req, false
 	}
 	req.PreferredNodeAffinity = affinity
+	// Storage sizing (optional). Validate here for a fixable 400; the
+	// store revalidates at Insert/Update (defence in depth).
+	for _, c := range []struct{ field, val string }{
+		{"workspace_size", req.WorkspaceSize},
+		{"dind_storage_size", req.DinDStorageSize},
+	} {
+		if err := store.ValidateStorageQuantity(c.field, c.val); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return req, false
+		}
+	}
+	for _, c := range []struct{ field, val string }{
+		{"workspace_storage_class", req.WorkspaceStorageClass},
+		{"dind_storage_class", req.DinDStorageClass},
+	} {
+		if err := store.ValidateStorageClassName(c.field, c.val); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return req, false
+		}
+	}
 	return req, true
 }
 
@@ -389,6 +421,10 @@ func runnerProfileInputFromReq(req runnerProfileWriteRequest) store.RunnerProfil
 		PreferredNodeAffinity: req.PreferredNodeAffinity,
 		Env:                   req.Env,
 		Secrets:               req.Secrets,
+		WorkspaceSize:         req.WorkspaceSize,
+		WorkspaceStorageClass: req.WorkspaceStorageClass,
+		DinDStorageSize:       req.DinDStorageSize,
+		DinDStorageClass:      req.DinDStorageClass,
 	}
 }
 
@@ -448,6 +484,10 @@ func toRunnerProfileDTO(p store.RunnerProfile, refs map[string]string) runnerPro
 		Env:                   env,
 		SecretKeys:            keys,
 		SecretRefs:            refs,
+		WorkspaceSize:         p.WorkspaceSize,
+		WorkspaceStorageClass: p.WorkspaceStorageClass,
+		DinDStorageSize:       p.DinDStorageSize,
+		DinDStorageClass:      p.DinDStorageClass,
 		CreatedAt:             p.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:             p.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}

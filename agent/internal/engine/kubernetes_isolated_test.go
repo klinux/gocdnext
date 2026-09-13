@@ -835,3 +835,154 @@ func TestIsolatedPod_HousekeeperHasExplicitLimits(t *testing.T) {
 		t.Fatalf("housekeeper memory limit %s too small for tar+gzip of real caches", mem)
 	}
 }
+
+// --- per-profile DinD storage + workspace override (feat/runner-profile-dind-storage) ---
+// (findVolume helper — returns *corev1.VolumeSource — is defined above.)
+
+// TestBuildIsolatedJobPodSpec_DinDStorageVolume: when a docker job carries
+// per-profile DinD storage, the pod gets a dedicated ephemeral PVC and the
+// DinD sidecar mounts it at /var/lib/docker so the image export/push churn
+// lands on a fast/large disk instead of the node's ephemeral storage.
+func TestBuildIsolatedJobPodSpec_DinDStorageVolume(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r1",
+		JobID:                "j1",
+		Image:                "docker:24",
+		Script:               "docker build .",
+		Docker:               true,
+		DinDStorageSize:      "50Gi",
+		DinDStorageClass:     "premium-rwo",
+		AssignmentSecretName: "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	vol := findVolume(pod.Spec.Volumes, dindStorageVolumeName)
+	if vol == nil {
+		t.Fatalf("dind-storage volume missing; volumes=%v", pod.Spec.Volumes)
+	}
+	tmpl := vol.Ephemeral
+	if tmpl == nil || tmpl.VolumeClaimTemplate == nil {
+		t.Fatalf("dind-storage should be an ephemeral PVC; got %+v", *vol)
+	}
+	spec := tmpl.VolumeClaimTemplate.Spec
+	if got := spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "50Gi" {
+		t.Errorf("dind-storage size: want 50Gi, got %s", got.String())
+	}
+	if spec.StorageClassName == nil || *spec.StorageClassName != "premium-rwo" {
+		t.Errorf("dind-storage class: want premium-rwo, got %v", spec.StorageClassName)
+	}
+	dind := findContainer(pod.Spec.Containers, "dind")
+	var mounted bool
+	for _, m := range dind.VolumeMounts {
+		if m.Name == dindStorageVolumeName && m.MountPath == dindDataRoot {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Errorf("dind should mount %s at %s; mounts=%v", dindStorageVolumeName, dindDataRoot, dind.VolumeMounts)
+	}
+}
+
+// TestBuildIsolatedJobPodSpec_NoDinDStorageWhenUnset: a docker job with no
+// per-profile DinD storage keeps the current behaviour (store on node disk),
+// so nothing extra is allocated.
+func TestBuildIsolatedJobPodSpec_NoDinDStorageWhenUnset(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r1",
+		JobID:                "j1",
+		Image:                "docker:24",
+		Script:               "docker build .",
+		Docker:               true,
+		AssignmentSecretName: "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if v := findVolume(pod.Spec.Volumes, dindStorageVolumeName); v != nil {
+		t.Errorf("no dind-storage volume expected when size unset; got %+v", v)
+	}
+	dind := findContainer(pod.Spec.Containers, "dind")
+	for _, m := range dind.VolumeMounts {
+		if m.MountPath == dindDataRoot {
+			t.Errorf("dind should not mount %s when storage unset", dindDataRoot)
+		}
+	}
+}
+
+// TestBuildIsolatedJobPodSpec_DinDStorageIgnoredWithoutDocker: DinD storage
+// only makes sense with a DinD sidecar. A non-docker job never allocates it,
+// even if the profile carries a size (guards against wasted PVCs).
+func TestBuildIsolatedJobPodSpec_DinDStorageIgnoredWithoutDocker(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r1",
+		JobID:                "j1",
+		Image:                "alpine:3.19",
+		Script:               "echo hi",
+		Docker:               false,
+		DinDStorageSize:      "50Gi",
+		AssignmentSecretName: "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if v := findVolume(pod.Spec.Volumes, dindStorageVolumeName); v != nil {
+		t.Errorf("no dind-storage volume expected without docker:true; got %+v", v)
+	}
+}
+
+// TestBuildIsolatedJobPodSpec_WorkspaceOverride: a profile can size/class the
+// workspace PVC per-job, overriding the agent-global default (10Gi/pd-ssd).
+func TestBuildIsolatedJobPodSpec_WorkspaceOverride(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                 "r1",
+		JobID:                 "j1",
+		Image:                 "alpine:3.19",
+		Script:                "echo hi",
+		WorkspaceSize:         "200Gi",
+		WorkspaceStorageClass: "local-ssd",
+		AssignmentSecretName:  "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	vol := findVolume(pod.Spec.Volumes, "workspace")
+	if vol == nil || vol.Ephemeral == nil {
+		t.Fatalf("workspace ephemeral volume missing")
+	}
+	spec := vol.Ephemeral.VolumeClaimTemplate.Spec
+	if got := spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "200Gi" {
+		t.Errorf("workspace size override: want 200Gi, got %s", got.String())
+	}
+	if spec.StorageClassName == nil || *spec.StorageClassName != "local-ssd" {
+		t.Errorf("workspace class override: want local-ssd, got %v", spec.StorageClassName)
+	}
+}
+
+// TestBuildIsolatedJobPodSpec_WorkspaceDefaultsWhenNoOverride: no per-job
+// override falls back to the agent-global workspace size/class.
+func TestBuildIsolatedJobPodSpec_WorkspaceDefaultsWhenNoOverride(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r1",
+		JobID:                "j1",
+		Image:                "alpine:3.19",
+		Script:               "echo hi",
+		AssignmentSecretName: "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	vol := findVolume(pod.Spec.Volumes, "workspace")
+	spec := vol.Ephemeral.VolumeClaimTemplate.Spec
+	if got := spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "10Gi" {
+		t.Errorf("workspace default size: want 10Gi, got %s", got.String())
+	}
+	if spec.StorageClassName == nil || *spec.StorageClassName != "pd-ssd" {
+		t.Errorf("workspace default class: want pd-ssd, got %v", spec.StorageClassName)
+	}
+}
