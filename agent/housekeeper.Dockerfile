@@ -11,11 +11,14 @@
 FROM alpine:3.20
 
 # zstd pulls in libzstd; pin the apk-provided version implicitly to the 3.20
-# repo snapshot. `--no-cache` keeps the layer lean.
-RUN apk add --no-cache zstd
+# repo snapshot. `--no-cache` keeps the layer lean. curl enables the direct
+# pod→object-store artifact PUT (GOCDNEXT_ARTIFACT_DIRECT_UPLOAD): the
+# housekeeper streams tar+compress straight to the signed URL, bypassing the
+# agent exec-stream cap on big artifacts.
+RUN apk add --no-cache zstd curl
 
 LABEL org.opencontainers.image.title="gocdnext-housekeeper" \
-      org.opencontainers.image.description="Isolated-mode cache/artifact tar+compress sidecar (gzip+zstd)."
+      org.opencontainers.image.description="Isolated-mode cache/artifact tar+compress sidecar (gzip+zstd+curl)."
 
 # No ENTRYPOINT: the engine sets the container command explicitly
 # (sleep loop for housekeeper; marker-wait for cache-fetch).

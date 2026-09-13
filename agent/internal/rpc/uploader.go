@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,26 @@ type ArtifactUploader struct {
 	// artifacts (a .zip, a tar.gz, an image layer) is pure CPU waste; zstd's
 	// fast path stores incompressible blocks near memcpy speed (#274).
 	compression string
+	// directUpload, when true (GOCDNEXT_ARTIFACT_DIRECT_UPLOAD), makes the
+	// isolated-mode upload PUT straight from the pod to the signed URL via
+	// curl in the housekeeper, instead of streaming the tar through the
+	// agent's exec channel. The exec channel (SPDY via the apiserver) caps
+	// around ~20 MB/s regardless of disk/network; a direct pod→object-store
+	// PUT runs at the pod's network speed (multi-GB artifacts drop from
+	// minutes to seconds). Opt-in because it needs (a) a housekeeper image
+	// with curl and (b) an object store that accepts chunked PUT on its
+	// signed URL (GCS does — it doesn't sign Content-Length; S3 does not).
+	// The agent probes for curl and falls back to the exec-stream path when
+	// it's absent, so a mixed-image fleet during rollout never breaks.
+	directUpload bool
+}
+
+// UseDirectUpload enables the pod→store direct-PUT path from an operator
+// string ("true"/"1"/"yes"/"on"). Empty/false keeps the exec-stream path.
+// See the directUpload field for the contract (GCS + curl-capable housekeeper).
+func (u *ArtifactUploader) UseDirectUpload(v string) {
+	s := strings.ToLower(strings.TrimSpace(v))
+	u.directUpload = s == "true" || s == "1" || s == "yes" || s == "on"
 }
 
 // UseCompression sets the store codec from an operator string, falling back
@@ -65,6 +86,120 @@ func (u *ArtifactUploader) artifactTarCmd(podWorkDir string, files []string) []s
 		return append([]string{"sh", "-c", script, "_", podWorkDir}, files...)
 	}
 	return append([]string{"tar", "-czf", "-", "-C", podWorkDir, "--"}, files...)
+}
+
+// directUploadMarker prefixes the single summary line the in-pod direct-upload
+// command prints on stdout: "GOCDNEXTUP <sha256> <size>".
+const directUploadMarker = "GOCDNEXTUP"
+
+// directUploadCmd builds the in-pod command that tars+compresses one artifact
+// path's files and PUTs the stream STRAIGHT to the signed URL via curl — the
+// bytes go pod→object-store, never through the agent's exec channel. sha256 is
+// computed inline through a fifo (the server cross-checks it against its own
+// InspectObject), size comes from curl's %{size_upload}. The command emits a
+// single `GOCDNEXTUP <sha> <size>` line on stdout and nothing else there.
+//
+// podWorkDir, putURL and files reach the shell as positional args ($1,$2,$@
+// after `shift 2`) — never interpolated — so an operator-controlled path or a
+// signed URL carrying shell metacharacters can't inject. The compressor +
+// Content-Type are code constants (not input). curl -T - streams the body with
+// chunked transfer-encoding (no Content-Length), which the signed URL must
+// accept (GCS does).
+func (u *ArtifactUploader) directUploadCmd(podWorkDir, putURL string, files []string) []string {
+	compressor := "gzip -c"
+	ctype := "application/gzip"
+	if u.compression == codecZstd {
+		compressor = "zstd -T0 -3 -c"
+		ctype = "application/zstd"
+	}
+	// --connect-timeout + --max-time bound the PUT the same way the agent's
+	// http.Client{Timeout: 30m} bounds the exec-stream path: without them a
+	// store that accepts the TCP connection then stalls mid-body would hang
+	// the job in POST-JOB until cancel/drain instead of failing. 1800s = 30m
+	// matches the old ceiling; --connect-timeout catches a dead endpoint fast.
+	script := `set -o pipefail; d="$1"; url="$2"; shift 2; ` +
+		`f="$(mktemp -u)"; mkfifo "$f"; ( sha256sum <"$f" | cut -d' ' -f1 >"$f.sha" ) & ` +
+		`sz="$(tar -cf - -C "$d" -- "$@" | ` + compressor + ` | tee "$f" | ` +
+		`curl -fsS --connect-timeout 30 --max-time 1800 -X PUT -T - ` +
+		`-H "Content-Type: ` + ctype + `" -w "%{size_upload}" -o /dev/null "$url")"; ` +
+		`wait; printf "` + directUploadMarker + ` %s %s\n" "$(cat "$f.sha")" "$sz"; rm -f "$f" "$f.sha"`
+	return append([]string{"sh", "-c", script, "_", podWorkDir, putURL}, files...)
+}
+
+// parseDirectUploadSummary extracts (sha256, size) from the direct-upload
+// command's stdout — the last `GOCDNEXTUP <sha> <size>` line. Anything else on
+// stdout is ignored so a stray warning doesn't break parsing; a missing or
+// malformed marker is an error (we must not report a bogus ref the server
+// would reject on the sha/size cross-check).
+func parseDirectUploadSummary(stdout string) (string, int64, error) {
+	var (
+		gotSha  string
+		gotSize int64
+		found   bool
+	)
+	// Scan ALL lines and keep the LAST valid marker: the summary is the
+	// command's final line, but a stray earlier "GOCDNEXTUP"-looking line
+	// (e.g. echoed from a retry) must not win over the real one.
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != directUploadMarker {
+			continue
+		}
+		sha := fields[1]
+		// hex.DecodeString rejects non-hex here (better error locality than
+		// waiting for the server's InspectObject cross-check to fail); the
+		// length assertion catches a truncated/short digest.
+		if raw, err := hex.DecodeString(sha); err != nil || len(raw) != sha256.Size {
+			return "", 0, fmt.Errorf("sha256 %q is not 64 hex chars", sha)
+		}
+		size, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil {
+			return "", 0, fmt.Errorf("parse size %q: %w", fields[2], err)
+		}
+		gotSha, gotSize, found = sha, size, true
+	}
+	if !found {
+		return "", 0, fmt.Errorf("no %s summary line in output", directUploadMarker)
+	}
+	return gotSha, gotSize, nil
+}
+
+// podHasCurl probes the housekeeper for curl once per upload batch. When
+// directUpload is on but the image predates the curl addition (rolling fleet),
+// this returns false and the caller keeps the exec-stream path — no regression.
+func (u *ArtifactUploader) podHasCurl(ctx context.Context, exec engine.PodExecutor, podName, containerName string) bool {
+	err := exec.Exec(ctx, podName, containerName,
+		[]string{"sh", "-c", "command -v curl >/dev/null 2>&1"}, nil, io.Discard, io.Discard)
+	return err == nil
+}
+
+// uploadOneFromPodDirect execs the direct-PUT command and turns its summary
+// line into an ArtifactRef. The blob never crosses the exec channel.
+func (u *ArtifactUploader) uploadOneFromPodDirect(
+	ctx context.Context,
+	exec engine.PodExecutor,
+	podName, containerName, podWorkDir string,
+	tkt *gocdnextv1.ArtifactUploadTicket,
+	files []string,
+) (*gocdnextv1.ArtifactRef, error) {
+	if len(files) == 0 {
+		files = []string{tkt.GetPath()}
+	}
+	var out, errb strings.Builder
+	cmd := u.directUploadCmd(podWorkDir, tkt.GetPutUrl(), files)
+	if err := exec.Exec(ctx, podName, containerName, cmd, nil, &out, &errb); err != nil {
+		return nil, fmt.Errorf("exec direct upload %q: %w (stderr=%q)", tkt.GetPath(), err, errb.String())
+	}
+	sha, size, err := parseDirectUploadSummary(out.String())
+	if err != nil {
+		return nil, fmt.Errorf("direct upload %q: %w (stderr=%q)", tkt.GetPath(), err, errb.String())
+	}
+	return &gocdnextv1.ArtifactRef{
+		Path:          tkt.GetPath(),
+		StorageKey:    tkt.GetStorageKey(),
+		Size:          size,
+		ContentSha256: sha,
+	}, nil
 }
 
 // NewArtifactUploader wires the concrete uploader. http is optional;
@@ -235,10 +370,24 @@ func (u *ArtifactUploader) UploadFromPod(
 		return nil, fmt.Errorf("server returned %d tickets for %d paths", got, len(requested))
 	}
 
+	// Choose the upload path once for the whole batch: direct pod→store PUT
+	// when the operator opted in AND the housekeeper actually has curl (a
+	// rolling fleet may still run the old image — fall back cleanly rather
+	// than fail). Probe once, not per-ticket.
+	useDirect := u.directUpload && u.podHasCurl(ctx, exec, podName, containerName)
+
 	refs := make([]*gocdnextv1.ArtifactRef, 0, len(requested))
 	for _, tkt := range resp.GetTickets() {
 		files := resolved[tkt.GetPath()]
-		ref, err := u.uploadOneFromPod(ctx, exec, podName, containerName, podWorkDir, tkt, files)
+		var (
+			ref *gocdnextv1.ArtifactRef
+			err error
+		)
+		if useDirect {
+			ref, err = u.uploadOneFromPodDirect(ctx, exec, podName, containerName, podWorkDir, tkt, files)
+		} else {
+			ref, err = u.uploadOneFromPod(ctx, exec, podName, containerName, podWorkDir, tkt, files)
+		}
 		if err != nil {
 			return refs, fmt.Errorf("upload %q: %w", tkt.GetPath(), err)
 		}

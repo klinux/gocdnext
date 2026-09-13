@@ -219,6 +219,17 @@ spec:
             - name: GOCDNEXT_ARTIFACT_COMPRESSION
               value: {{ . | quote }}
             {{- end }}{{- end }}
+            {{- with .Values.agent.artifacts }}{{ if .directUpload }}
+            # Direct pod→object-store artifact PUT: the housekeeper curls the
+            # tar straight to the signed URL instead of streaming it through
+            # the agent exec channel (the ~20 MB/s cap on big artifacts).
+            # Needs a curl-capable housekeeper image + a store that accepts
+            # chunked PUT (GCS). The agent probes for curl and falls back to
+            # the exec-stream path when absent, so this is safe on a rolling
+            # fleet.
+            - name: GOCDNEXT_ARTIFACT_DIRECT_UPLOAD
+              value: "true"
+            {{- end }}{{- end }}
             - name: GOCDNEXT_K8S_DEFAULT_IMAGE
               value: {{ .Values.agent.defaultJobImage | quote }}
             - name: GOCDNEXT_K8S_CLEANUP_ON_SUCCESS
