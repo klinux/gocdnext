@@ -669,6 +669,26 @@ runnerProfiles:
 #   secrets:
 #     AWS_ACCESS_KEY_ID:     # set via --set or sealed-secret
 #     AWS_SECRET_ACCESS_KEY:
+#
+# Example of a HEAVY-IMAGE-BUILD profile (isolated engine): give the DinD
+# sidecar a dedicated fast/large /var/lib/docker disk so a big image's
+# layer export + push runs off the node's ephemeral disk (the throughput
+# bottleneck), and a bigger workspace for the build context. A job opts in
+# with `agent: { profile: image-build }` + `docker: true`. All storage
+# fields are OPTIONAL — omit them and jobs keep the agent-global workspace
+# default and DinD on the node disk (current behaviour).
+# - name: image-build
+#   description: Fast/large disks for big container-image builds.
+#   engine: kubernetes
+#   tags: [linux, docker]
+#   # Override the workspace PVC for this profile (else agent-global default).
+#   workspace_size: 100Gi
+#   workspace_storage_class: premium-rwo
+#   # Dedicated DinD store. On GCE, PD throughput scales with size, so a
+#   # large premium-rwo buys bandwidth; a local-SSD class is faster still
+#   # (needs a node pool with local SSDs). Only used by docker:true jobs.
+#   dind_storage_size: 300Gi
+#   dind_storage_class: premium-rwo
 
 # ----- GitHub App ------------------------------------------------------
 

@@ -241,6 +241,39 @@ a qualified name; `In`/`NotIn` need at least one label-valid value;
 total counts (terms, expressions, values) are bounded so the assignment
 stays small.
 
+## Storage sizing (isolated mode)
+
+A profile can size the Kubernetes **isolated**-mode job pod's disks — an
+opt-in for the heavy jobs (a big container-image build being the classic
+case) without inflating every pod. All four fields are **optional**; empty
+keeps the current behaviour (agent-global workspace default, and DinD on the
+node's ephemeral disk).
+
+```yaml
+workspace_size: 100Gi            # override the agent-global workspace PVC size
+workspace_storage_class: premium-rwo
+dind_storage_size: 300Gi         # dedicated /var/lib/docker PVC for docker:true jobs
+dind_storage_class: premium-rwo
+```
+
+- `workspace_size` / `workspace_storage_class` override the agent-global
+  workspace ephemeral-PVC (`agent.workspace.size` / `storageClassName`) for
+  every isolated job on the profile.
+- `dind_storage_size` / `dind_storage_class` apply **only to `docker: true`
+  jobs**: they mount a dedicated ephemeral PVC at `/var/lib/docker`, so
+  dockerd + buildkit keep the layer store and the image export/push staging
+  on a disk you sized — instead of the node's ephemeral disk, whose
+  throughput otherwise caps multi-GB image builds. On GCE, PD throughput
+  scales with provisioned size (a 300Gi `premium-rwo` buys bandwidth even if
+  only a few GB are used); a `local-ssd` class is faster where available. A
+  `dind_storage_size` set on a non-docker job allocates nothing.
+
+Sizes validate as positive Kubernetes quantities, classes as DNS-1123 names,
+at write time (admin API and the Helm seed) — a typo fails with a clear
+error instead of a pod stuck `Pending` on an unbindable PVC. See the
+[Kubernetes runtime](/gocdnext/docs/concepts/kubernetes-runtime/#per-profile-storage-sizing)
+page for the disk-throughput rationale.
+
 ## Seed via Helm
 
 Both UI-created and Helm-seeded profiles coexist. The chart's
