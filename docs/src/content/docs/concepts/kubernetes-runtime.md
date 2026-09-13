@@ -111,6 +111,29 @@ switch safe for existing caches/artifacts — but flip `compression: zstd` only
 read zstd (reader-before-writer). Rolling back the codec is instant (set it
 back to `gzip`); new stores revert while old zstd blobs still restore.
 
+### Direct upload (`agent.artifacts.directUpload`)
+
+Compression decides *how much* the housekeeper writes; **directUpload decides
+where it goes.** By default the isolated-mode artifact upload streams the
+tar back through the agent's exec channel (SPDY via the apiserver) and the
+agent PUTs it to the store. That exec channel caps around **~20 MB/s**
+regardless of disk or network — a multi-GB artifact (an SDK bundle, an image
+tarball) burns minutes there even when the object store is seconds away.
+
+With `agent.artifacts.directUpload: true` the **housekeeper curls the
+tar+compress stream straight to the store's signed URL** — the bytes go
+pod→store at network speed, never through the agent. size + sha256 are still
+computed in-pod and cross-checked server-side (`InspectObject`), so integrity
+is unchanged. Requirements:
+
+- The housekeeper image has `curl` (the bundled `gocdnext-housekeeper` does).
+- The store accepts **chunked PUT** on its signed URL: **GCS does** (it
+  doesn't sign `Content-Length`); **S3 does not** — leave it off there.
+
+The agent probes for curl and falls back to the exec-stream path when it's
+absent, so enabling it on a rolling fleet never breaks a job. Download is
+unaffected (prep already fetches via signed URL). Default off.
+
 > **Artifacts, both paths:** `agent.artifacts.compression: zstd` is safe
 > end-to-end. Job→job restore auto-detects the codec, and the manual UI/API
 > download is codec-aware too (since v0.106.0) — it names a zstd artifact

@@ -211,6 +211,19 @@ agent:
     # downloaded artifact fail `tar xzf`. Do NOT set "zstd" until the manual
     # download path learns the codec (#283).
     compression: "gzip"
+    # directUpload: when true, the isolated-mode artifact upload PUTs straight
+    # from the pod to the store's signed URL (housekeeper curls the tar+compress
+    # stream), instead of streaming it back through the agent's exec channel —
+    # which caps around ~20 MB/s regardless of disk/network. Multi-GB artifacts
+    # (SDK bundles, image tarballs) drop from minutes to seconds.
+    #
+    # Requirements: (a) the housekeeper image has curl (the bundled
+    # gocdnext-housekeeper does since this version); (b) the object store
+    # accepts chunked PUT on its signed URL — GCS does (it doesn't sign
+    # Content-Length), S3 does NOT (leave this false on S3). The agent probes
+    # for curl and falls back to the exec-stream path when absent, so enabling
+    # it on a rolling fleet is safe. Default off (no behavior change).
+    directUpload: false
   defaultJobImage: alpine:3.19
   jobCleanup:
     onSuccess: true

@@ -118,6 +118,10 @@ type fakeArtifactExec struct {
 	gotTars  [][]string // recorded tar invocations (full argv)
 	gotFinds int
 	allCalls []string // cmd[0] sequence for assertion
+	// Direct-upload (GOCDNEXT_ARTIFACT_DIRECT_UPLOAD) support:
+	hasCurl       bool       // curl probe result
+	directSummary string     // stdout the direct-upload command emits
+	gotDirects    [][]string // recorded direct-upload invocations (full argv)
 }
 
 var _ engine.PodExecutor = (*fakeArtifactExec)(nil)
@@ -146,6 +150,29 @@ func (f *fakeArtifactExec) Exec(_ context.Context, _, _ string, cmd []string,
 		// to this test (the PUT endpoint accepts whatever it sees).
 		_, _ = stdout.Write([]byte("fake-tar-content"))
 		return nil
+	case "sh":
+		// cmd[2] is the script. Three shapes reach here: the curl probe,
+		// the direct-upload command, and (compression=zstd) the tar|zstd
+		// exec-stream command.
+		script := ""
+		if len(cmd) >= 3 {
+			script = cmd[2]
+		}
+		switch {
+		case strings.Contains(script, "command -v curl"):
+			if !f.hasCurl {
+				return errors.New("curl: not found")
+			}
+			return nil
+		case strings.Contains(script, directUploadMarker):
+			f.gotDirects = append(f.gotDirects, append([]string(nil), cmd...))
+			_, _ = stdout.Write([]byte(f.directSummary))
+			return nil
+		default: // tar|zstd exec-stream
+			f.gotTars = append(f.gotTars, append([]string(nil), cmd...))
+			_, _ = stdout.Write([]byte("fake-tar-content"))
+			return nil
+		}
 	default:
 		return errors.New("unexpected command: " + cmd[0])
 	}
@@ -353,5 +380,147 @@ func TestUpload_TicketCountMismatchStillSurfacesAsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "1 tickets for 2 paths") {
 		t.Fatalf("err = %v, want '1 tickets for 2 paths'", err)
+	}
+}
+
+// --- Direct pod→store upload (GOCDNEXT_ARTIFACT_DIRECT_UPLOAD) ---------
+
+func TestDirectUploadCmd_ShapeAndSafety(t *testing.T) {
+	u := NewArtifactUploader(&stubAgentClient{}, "s", nil)
+	u.UseDirectUpload("true")
+	u.UseCompression("zstd")
+	cmd := u.directUploadCmd("/workspace", "https://signed.example/put?sig=abc", []string{"a.zip", "b.zip"})
+
+	if cmd[0] != "sh" || cmd[1] != "-c" {
+		t.Fatalf("want sh -c invocation, got %v", cmd[:2])
+	}
+	script := cmd[2]
+	for _, want := range []string{"curl", "zstd -T0", directUploadMarker, "sha256sum", "-T -"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script missing %q: %s", want, script)
+		}
+	}
+	// dir + url + files are POSITIONAL args, never interpolated into the script.
+	if strings.Contains(script, "/workspace") || strings.Contains(script, "signed.example") {
+		t.Errorf("path/url must not be interpolated into the script: %s", script)
+	}
+	rest := cmd[3:] // ["_", dir, url, files...]
+	if !sliceContains(rest, "/workspace") || !sliceContains(rest, "https://signed.example/put?sig=abc") ||
+		!sliceContains(rest, "a.zip") || !sliceContains(rest, "b.zip") {
+		t.Errorf("positional args = %v, want dir+url+files", rest)
+	}
+}
+
+func TestDirectUploadCmd_GzipCodec(t *testing.T) {
+	u := NewArtifactUploader(&stubAgentClient{}, "s", nil)
+	u.UseCompression("") // gzip default
+	script := u.directUploadCmd("/w", "https://u", []string{"x"})[2]
+	if !strings.Contains(script, "gzip -c") || strings.Contains(script, "zstd") {
+		t.Errorf("gzip codec should use gzip, not zstd: %s", script)
+	}
+}
+
+func TestParseDirectUploadSummary(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	tests := []struct {
+		name    string
+		in      string
+		wantSha string
+		wantSz  int64
+		wantErr bool
+	}{
+		{"valid", "GOCDNEXTUP " + sha + " 4096\n", sha, 4096, false},
+		{"valid with noise", "some warning\nGOCDNEXTUP " + sha + " 12\n", sha, 12, false},
+		{"missing marker", "no summary here\n", "", 0, true},
+		{"bad size", "GOCDNEXTUP " + sha + " notanumber\n", "", 0, true},
+		{"short sha", "GOCDNEXTUP deadbeef 10\n", "", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSha, gotSz, err := parseDirectUploadSummary(tt.in)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tt.wantErr)
+			}
+			if !tt.wantErr && (gotSha != tt.wantSha || gotSz != tt.wantSz) {
+				t.Errorf("got (%q,%d), want (%q,%d)", gotSha, gotSz, tt.wantSha, tt.wantSz)
+			}
+		})
+	}
+}
+
+// Direct path: bytes never cross the exec-stream — the agent execs the
+// direct-upload command (which PUTs from the pod) and reads only the summary.
+func TestUploadFromPod_DirectPath(t *testing.T) {
+	const workDir = "/workspace"
+	sha := strings.Repeat("b", 64)
+	// PUT server should NEVER be hit in direct mode — the pod does the PUT.
+	putHit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		putHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	exec := &fakeArtifactExec{hasCurl: true, directSummary: "GOCDNEXTUP " + sha + " 6769705142\n"}
+	stub := &stubAgentClient{tickets: []*gocdnextv1.ArtifactUploadTicket{
+		{Path: "facetec-server.zip", StorageKey: "k1", PutUrl: srv.URL, ExpiresAt: timestamppb.Now()},
+	}}
+	u := NewArtifactUploader(stub, "sess", srv.Client())
+	u.UseDirectUpload("true")
+
+	refs, err := u.UploadFromPod(context.Background(), exec, "pod", "housekeeper", workDir, "r", "j",
+		[]string{"facetec-server.zip"})
+	if err != nil {
+		t.Fatalf("UploadFromPod: %v", err)
+	}
+	if len(refs) != 1 || refs[0].GetSize() != 6769705142 || refs[0].GetContentSha256() != sha {
+		t.Fatalf("ref = %+v, want size+sha from summary", refs[0])
+	}
+	if len(exec.gotDirects) != 1 {
+		t.Errorf("want 1 direct-upload exec, got %d", len(exec.gotDirects))
+	}
+	if len(exec.gotTars) != 0 {
+		t.Errorf("no tar exec-stream expected in direct mode, got %d", len(exec.gotTars))
+	}
+	if putHit {
+		t.Error("agent must NOT PUT in direct mode — the pod does")
+	}
+}
+
+// Rollout safety: directUpload on but the housekeeper image lacks curl →
+// fall back to the exec-stream path (tar through the agent, agent PUTs).
+func TestUploadFromPod_FallsBackWhenNoCurl(t *testing.T) {
+	const workDir = "/workspace"
+	putHit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		putHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	exec := &fakeArtifactExec{hasCurl: false} // old image, no curl
+	stub := &stubAgentClient{tickets: []*gocdnextv1.ArtifactUploadTicket{
+		{Path: "app.jar", StorageKey: "k1", PutUrl: srv.URL, ExpiresAt: timestamppb.Now()},
+	}}
+	u := NewArtifactUploader(stub, "sess", srv.Client())
+	u.UseDirectUpload("true") // enabled, but curl absent
+
+	refs, err := u.UploadFromPod(context.Background(), exec, "pod", "housekeeper", workDir, "r", "j",
+		[]string{"app.jar"})
+	if err != nil {
+		t.Fatalf("UploadFromPod: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("refs = %d, want 1", len(refs))
+	}
+	if len(exec.gotDirects) != 0 {
+		t.Errorf("no direct-upload expected without curl, got %d", len(exec.gotDirects))
+	}
+	if len(exec.gotTars) != 1 {
+		t.Errorf("want 1 tar exec-stream fallback, got %d", len(exec.gotTars))
+	}
+	if !putHit {
+		t.Error("agent must PUT in the fallback path")
 	}
 }
