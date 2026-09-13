@@ -8,6 +8,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.108.1 — 2026-09-13
+
+### Fixed
+
+- **Editing a just-created runner profile no longer 400s with "invalid
+  profile id".** Creating a profile seeded the optimistic table row with a
+  fabricated `__opt__<ts>` id; editing that row before a full refresh sent a
+  PUT to a non-UUID path, which the server rejected. `createRunnerProfile` now
+  returns the real id from the create response and the client seeds the row
+  with it. Most visible via the new Clone action (clone → create → edit).
+
 ## v0.108.0 — 2026-09-13
 
 ### Added
