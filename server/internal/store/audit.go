@@ -68,6 +68,8 @@ const (
 	AuditActionProjectCheckReportingSet = "project_check_reporting.set"
 	AuditActionProjectPRHeadTrustSet    = "project_trust_same_repo_pr_config.set"
 	AuditActionProjectRequiredChecksSet = "project_required_checks.set"
+	AuditActionProjectBadgeRotate       = "project_badge.rotate"
+	AuditActionProjectBadgeDisable      = "project_badge.disable"
 	AuditActionAPITokenCreate           = "api_token.create"
 	AuditActionAPITokenRevoke           = "api_token.revoke"
 	AuditActionServiceAccountCreate     = "service_account.create"

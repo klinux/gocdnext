@@ -29,6 +29,106 @@ func (q *Queries) CountLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) 
 	return count, err
 }
 
+const getBadgeLatestRun = `-- name: GetBadgeLatestRun :one
+SELECT lr.id, lr.status, lr.created_at, pl.name AS pipeline_name
+FROM projects p
+JOIN pipelines pl ON pl.project_id = p.id
+JOIN LATERAL (
+  SELECT id, status, created_at
+  FROM runs
+  WHERE pipeline_id = pl.id
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+) lr ON true
+WHERE p.slug = $1
+  AND p.badge_token_hash = $2
+  AND ($3::text = '' OR pl.name = $3)
+ORDER BY lr.created_at DESC, lr.id DESC
+LIMIT 1
+`
+
+type GetBadgeLatestRunParams struct {
+	Slug           string
+	BadgeTokenHash *string
+	PipelineName   string
+}
+
+type GetBadgeLatestRunRow struct {
+	ID           pgtype.UUID
+	Status       string
+	CreatedAt    pgtype.Timestamptz
+	PipelineName string
+}
+
+// Anonymous badge lookup. The badge_token_hash predicate is the public opt-in
+// gate: when it misses, callers intentionally receive the same "unknown" badge
+// as a valid-but-never-run project, so the endpoint does not become a private
+// project/run existence oracle. The runs_badge_latest* indexes bound the latest
+// run lookup for README/wiki traffic.
+func (q *Queries) GetBadgeLatestRun(ctx context.Context, arg GetBadgeLatestRunParams) (GetBadgeLatestRunRow, error) {
+	row := q.db.QueryRow(ctx, getBadgeLatestRun, arg.Slug, arg.BadgeTokenHash, arg.PipelineName)
+	var i GetBadgeLatestRunRow
+	err := row.Scan(
+		&i.ID,
+		&i.Status,
+		&i.CreatedAt,
+		&i.PipelineName,
+	)
+	return i, err
+}
+
+const getBadgeLatestRunByBranch = `-- name: GetBadgeLatestRunByBranch :one
+SELECT lr.id, lr.status, lr.created_at, pl.name AS pipeline_name
+FROM projects p
+JOIN pipelines pl ON pl.project_id = p.id
+JOIN LATERAL (
+  SELECT id, status, created_at
+  FROM runs
+  WHERE pipeline_id = pl.id
+    AND ref = $1
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+) lr ON true
+WHERE p.slug = $2
+  AND p.badge_token_hash = $3
+  AND ($4::text = '' OR pl.name = $4)
+ORDER BY lr.created_at DESC, lr.id DESC
+LIMIT 1
+`
+
+type GetBadgeLatestRunByBranchParams struct {
+	Branch         string
+	Slug           string
+	BadgeTokenHash *string
+	PipelineName   string
+}
+
+type GetBadgeLatestRunByBranchRow struct {
+	ID           pgtype.UUID
+	Status       string
+	CreatedAt    pgtype.Timestamptz
+	PipelineName string
+}
+
+// Same as GetBadgeLatestRun, but branch-pinned so Postgres can use the
+// (pipeline_id, ref, created_at) badge index without a parameterised OR.
+func (q *Queries) GetBadgeLatestRunByBranch(ctx context.Context, arg GetBadgeLatestRunByBranchParams) (GetBadgeLatestRunByBranchRow, error) {
+	row := q.db.QueryRow(ctx, getBadgeLatestRunByBranch,
+		arg.Branch,
+		arg.Slug,
+		arg.BadgeTokenHash,
+		arg.PipelineName,
+	)
+	var i GetBadgeLatestRunByBranchRow
+	err := row.Scan(
+		&i.ID,
+		&i.Status,
+		&i.CreatedAt,
+		&i.PipelineName,
+	)
+	return i, err
+}
+
 const getProjectBySlug = `-- name: GetProjectBySlug :one
 SELECT id, slug, name, description, config_path, created_at, updated_at
 FROM projects
