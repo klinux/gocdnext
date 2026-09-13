@@ -127,6 +127,19 @@ describe("ProfilesManager", () => {
     expect(screen.getByPlaceholderText("e.g. 100Gi")).toBeTruthy();
   });
 
+  it("clone opens a create-mode editor pre-filled with a -copy name", () => {
+    render(<ProfilesManager initial={sample} globalSecretNames={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: /clone default/i }));
+    // Create mode (no id) → "New profile" heading, not "Edit profile".
+    expect(screen.getByRole("heading", { name: /new profile/i })).toBeTruthy();
+    // Name pre-filled from source + "-copy".
+    const nameInput = screen.getByPlaceholderText("default") as HTMLInputElement;
+    expect(nameInput.value).toBe("default-copy");
+    // A non-secret field carried over (max_cpu from the "default" sample).
+    const maxCpu = screen.getByDisplayValue("4") as HTMLInputElement;
+    expect(maxCpu).toBeTruthy();
+  });
+
   it("delete button asks for confirmation before dispatching", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<ProfilesManager initial={sample} globalSecretNames={[]} />);
