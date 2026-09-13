@@ -8,6 +8,24 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.111.0 — 2026-09-14
+
+### Added
+
+- **Status badges for project READMEs (#292).** Public, anonymous SVG badges,
+  Woodpecker-style: `GET /api/v1/badge/<project>.svg?token=…` (and a
+  per-pipeline `…/<pipeline>.svg`), with an optional `?branch=` (defaults to the
+  project's SCM default branch, else latest across branches). Opt-in per
+  project: badges are disabled until a maintainer generates a token, stored only
+  as its SHA-256 (plaintext shown once). A missing/wrong/disabled token — or an
+  unknown project/pipeline/branch — returns the same grey `unknown` badge with
+  HTTP 200, so the endpoint is never a project/run-existence oracle. The badge
+  SVG carries no user-controlled content and is served `nosniff` +
+  `Content-Security-Policy: default-src 'none'`. Project Settings gains a card to
+  generate/rotate/disable the token with one-time **Copy Markdown** / **Copy
+  link** buttons. Maintainer+ manages the token
+  (`GET/POST/DELETE /api/v1/projects/{slug}/badge[/token]`).
+
 ## v0.110.0 — 2026-09-13
 
 ### Added
