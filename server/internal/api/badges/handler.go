@@ -137,6 +137,7 @@ func writeSVG(w http.ResponseWriter, r *http.Request, body []byte, lookupErr boo
 	h := w.Header()
 	h.Set("Content-Type", "image/svg+xml; charset=utf-8")
 	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'")
 	h.Set("ETag", etag)
 	if lookupErr {
 		h.Set("Cache-Control", "no-store")

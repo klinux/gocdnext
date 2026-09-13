@@ -8,8 +8,10 @@ import { ProjectLabelsCard } from "@/components/projects/project-labels.client";
 import { ProjectComplianceCard } from "@/components/projects/project-compliance.client";
 import { ProjectCompliancePreview } from "@/components/projects/project-compliance-preview.client";
 import { ProjectRequiredChecks } from "@/components/projects/project-required-checks.client";
+import { ProjectStatusBadgeSettings } from "@/components/projects/project-status-badge-settings.client";
 import {
   GocdnextAPIError,
+  getProjectBadge,
   getProjectDetail,
   getProjectLogArchive,
   getProjectCheckReporting,
@@ -71,6 +73,13 @@ export default async function ProjectSettingsPage({
     checkReporting = await getProjectCheckReporting(slug);
   } catch {
     checkReporting = null;
+  }
+
+  let badge: Awaited<ReturnType<typeof getProjectBadge>> | null = null;
+  try {
+    badge = await getProjectBadge(slug);
+  } catch {
+    badge = null;
   }
 
   // Compliance framework assignment is admin-only (the API routes are
@@ -155,6 +164,13 @@ export default async function ProjectSettingsPage({
 
       {requiredChecks ? (
         <ProjectRequiredChecks slug={slug} initial={requiredChecks} />
+      ) : null}
+
+      {badge ? (
+        <ProjectStatusBadgeSettings
+          slug={slug}
+          initialEnabled={badge.enabled}
+        />
       ) : null}
 
       {isAdmin ? (

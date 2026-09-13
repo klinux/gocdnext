@@ -94,6 +94,9 @@ func TestBadge_ValidTokenRendersLatestRunAndLink(t *testing.T) {
 	if got := rr.Header().Get("Content-Type"); got != "image/svg+xml; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", got)
 	}
+	if got := rr.Header().Get("Content-Security-Policy"); got != "default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'" {
+		t.Fatalf("Content-Security-Policy = %q", got)
+	}
 
 	etag := rr.Header().Get("ETag")
 	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/badge/demo/build.svg?token="+token, nil)
