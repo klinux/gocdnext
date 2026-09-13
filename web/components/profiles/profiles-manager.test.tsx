@@ -36,6 +36,7 @@ const sample: AdminRunnerProfile[] = [
     max_mem: "8Gi",
     tags: ["linux", "amd64"], env: {}, secret_keys: [], secret_refs: {},
     node_selector: {}, tolerations: [], preferred_node_affinity: [],
+    workspace_size: "", workspace_storage_class: "", dind_storage_size: "", dind_storage_class: "",
     created_at: "2026-04-27T12:00:00Z",
     updated_at: "2026-04-27T12:00:00Z",
   },
@@ -53,6 +54,7 @@ const sample: AdminRunnerProfile[] = [
     max_mem: "32Gi",
     tags: ["gpu"], env: {}, secret_keys: [], secret_refs: {},
     node_selector: {}, tolerations: [], preferred_node_affinity: [],
+    workspace_size: "", workspace_storage_class: "", dind_storage_size: "", dind_storage_class: "",
     created_at: "2026-04-27T12:00:00Z",
     updated_at: "2026-04-27T12:00:00Z",
   },
@@ -111,6 +113,31 @@ describe("ProfilesManager", () => {
     // Name input is empty when creating.
     const sheetNameInput = screen.getByPlaceholderText("default") as HTMLInputElement;
     expect(sheetNameInput.value).toBe("");
+  });
+
+  it("renders the per-profile storage fields in the editor", () => {
+    render(<ProfilesManager initial={sample} globalSecretNames={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: /new profile/i }));
+    // Storage section heading + the four inputs (by placeholder) are present.
+    expect(screen.getByText(/Storage \(isolated mode\)/i)).toBeTruthy();
+    const dindSize = screen.getByPlaceholderText("e.g. 300Gi") as HTMLInputElement;
+    expect(dindSize.value).toBe("");
+    fireEvent.change(dindSize, { target: { value: "300Gi" } });
+    expect(dindSize.value).toBe("300Gi");
+    expect(screen.getByPlaceholderText("e.g. 100Gi")).toBeTruthy();
+  });
+
+  it("clone opens a create-mode editor pre-filled with a -copy name", () => {
+    render(<ProfilesManager initial={sample} globalSecretNames={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: /clone default/i }));
+    // Create mode (no id) → "New profile" heading, not "Edit profile".
+    expect(screen.getByRole("heading", { name: /new profile/i })).toBeTruthy();
+    // Name pre-filled from source + "-copy".
+    const nameInput = screen.getByPlaceholderText("default") as HTMLInputElement;
+    expect(nameInput.value).toBe("default-copy");
+    // A non-secret field carried over (max_cpu from the "default" sample).
+    const maxCpu = screen.getByDisplayValue("4") as HTMLInputElement;
+    expect(maxCpu).toBeTruthy();
   });
 
   it("delete button asks for confirmation before dispatching", () => {

@@ -454,6 +454,61 @@ func TestRunnerProfile_NodeSelectorAndTolerations_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunnerProfile_Storage_RoundTrip(t *testing.T) {
+	// Per-profile storage (workspace + DinD) round-trips through
+	// Insert → Get → ResolveByName → Update → Get. Guards the raw
+	// UPDATE SQL param numbering (workspace_size=$19 … dind_storage_class=$22)
+	// and the ResolveProfileByName propagation into the assignment view.
+	s, ctx := newProfileStore(t)
+
+	created, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
+		Name:                  "image-build",
+		Engine:                "kubernetes",
+		WorkspaceSize:         "200Gi",
+		WorkspaceStorageClass: "local-ssd",
+		DinDStorageSize:       "300Gi",
+		DinDStorageClass:      "premium-rwo",
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, err := s.GetRunnerProfile(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.WorkspaceSize != "200Gi" || got.WorkspaceStorageClass != "local-ssd" ||
+		got.DinDStorageSize != "300Gi" || got.DinDStorageClass != "premium-rwo" {
+		t.Errorf("storage round-trip on Get: %+v", got)
+	}
+
+	resolved, err := s.ResolveProfileByName(ctx, nil, "image-build")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if resolved.WorkspaceSize != "200Gi" || resolved.WorkspaceStorageClass != "local-ssd" ||
+		resolved.DinDStorageSize != "300Gi" || resolved.DinDStorageClass != "premium-rwo" {
+		t.Errorf("storage on ResolvedProfile: %+v", resolved)
+	}
+
+	// Update path: shrink workspace, clear DinD storage.
+	if err := s.UpdateRunnerProfile(ctx, nil, created.ID, store.RunnerProfileInput{
+		Name:          "image-build",
+		Engine:        "kubernetes",
+		WorkspaceSize: "50Gi",
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err = s.GetRunnerProfile(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if got.WorkspaceSize != "50Gi" || got.WorkspaceStorageClass != "" ||
+		got.DinDStorageSize != "" || got.DinDStorageClass != "" {
+		t.Errorf("storage after update (workspace shrunk, dind cleared): %+v", got)
+	}
+}
+
 func TestRunnerProfile_SchedulingShapeChecksRejectBadJSON(t *testing.T) {
 	// Belt-and-braces: the migration's CHECK constraints reject
 	// node_selector that's not a JSON object and tolerations that's

@@ -554,6 +554,10 @@ type RunnerProfile struct {
 	NodeSelector          []byte
 	Tolerations           []byte
 	PreferredNodeAffinity []byte
+	WorkspaceSize         string
+	WorkspaceStorageClass string
+	DindStorageSize       string
+	DindStorageClass      string
 }
 
 type ScmCredential struct {

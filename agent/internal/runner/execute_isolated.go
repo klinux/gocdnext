@@ -191,6 +191,10 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		NodeSelector:          assignmentNodeSelector(a),
 		Tolerations:           assignmentTolerations(a),
 		PreferredNodeAffinity: assignmentPreferredNodeAffinity(a),
+		WorkspaceSize:         a.GetWorkspaceSize(),
+		WorkspaceStorageClass: a.GetWorkspaceStorageClass(),
+		DinDStorageSize:       a.GetDindStorageSize(),
+		DinDStorageClass:      a.GetDindStorageClass(),
 		NeedsCacheFetchInit:   needsCacheFetch,
 	}
 

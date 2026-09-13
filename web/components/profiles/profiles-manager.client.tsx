@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { KeyRound, Link2, Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { Copy, KeyRound, Link2, Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -95,6 +95,11 @@ type FormDraft = {
   default_mem_limit: string;
   max_cpu: string;
   max_mem: string;
+  // Per-profile storage (Kubernetes isolated mode). All optional.
+  workspace_size: string;
+  workspace_storage_class: string;
+  dind_storage_size: string;
+  dind_storage_class: string;
   tagsRaw: string; // comma-separated; parsed on save
   envRows: EnvRow[];
   secretRows: SecretRow[];
@@ -119,6 +124,10 @@ function blankForm(): FormDraft {
     default_mem_limit: "",
     max_cpu: "",
     max_mem: "",
+    workspace_size: "",
+    workspace_storage_class: "",
+    dind_storage_size: "",
+    dind_storage_class: "",
     tagsRaw: "",
     envRows: [{ key: "", value: "" }],
     secretRows: [{ key: "", value: "", existing: false, replace: true }],
@@ -141,6 +150,22 @@ function optimisticSecretRefs(secrets: Record<string, string>): Record<string, s
     if (m) out[k] = m[1]!;
   }
   return out;
+}
+
+// cloneToDraft opens the editor pre-filled from an existing profile as a
+// NEW (unsaved) one: id cleared so save creates rather than updates, name
+// suffixed "-copy" so it doesn't collide with the source's unique name.
+// Secrets are deliberately NOT carried — their values never leave the
+// server on read, so there's nothing to clone; the operator re-adds any
+// secrets on the copy. Everything else (resources, tags, env, scheduling,
+// storage) carries verbatim.
+function cloneToDraft(p: AdminRunnerProfile): FormDraft {
+  return {
+    ...profileToDraft(p),
+    id: null,
+    name: `${p.name}-copy`,
+    secretRows: [{ key: "", value: "", existing: false, replace: true }],
+  };
 }
 
 function profileToDraft(p: AdminRunnerProfile): FormDraft {
@@ -167,6 +192,10 @@ function profileToDraft(p: AdminRunnerProfile): FormDraft {
     default_mem_limit: p.default_mem_limit,
     max_cpu: p.max_cpu,
     max_mem: p.max_mem,
+    workspace_size: p.workspace_size ?? "",
+    workspace_storage_class: p.workspace_storage_class ?? "",
+    dind_storage_size: p.dind_storage_size ?? "",
+    dind_storage_class: p.dind_storage_class ?? "",
     tagsRaw: (p.tags ?? []).join(", "),
     envRows,
     secretRows,
@@ -273,6 +302,10 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         default_mem_limit: form.default_mem_limit,
         max_cpu: form.max_cpu,
         max_mem: form.max_mem,
+        workspace_size: form.workspace_size,
+        workspace_storage_class: form.workspace_storage_class,
+        dind_storage_size: form.dind_storage_size,
+        dind_storage_class: form.dind_storage_class,
         tags: parseTags(form.tagsRaw),
         node_selector: nodeSelectorMap,
         tolerations: tolerationsList,
@@ -303,6 +336,10 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         default_mem_limit: form.default_mem_limit,
         max_cpu: form.max_cpu,
         max_mem: form.max_mem,
+        workspace_size: form.workspace_size,
+        workspace_storage_class: form.workspace_storage_class,
+        dind_storage_size: form.dind_storage_size,
+        dind_storage_class: form.dind_storage_class,
         tags: parseTags(form.tagsRaw),
         node_selector: nodeSelectorMap,
         tolerations: tolerationsList,
@@ -416,6 +453,14 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
                     aria-label={`Edit ${p.name}`}
                   >
                     <Pencil className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setForm(cloneToDraft(p))}
+                    aria-label={`Clone ${p.name}`}
+                  >
+                    <Copy className="h-4 w-4" />
                   </Button>
                   <Button
                     variant="ghost"
@@ -536,6 +581,49 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
                   placeholder="linux, gpu"
                 />
               </Field>
+
+              {/* Per-profile storage (Kubernetes isolated mode). All
+                  optional — empty falls back to the agent-global
+                  workspace default / the node disk for DinD. */}
+              <div className="space-y-3 rounded-md border border-border p-3">
+                <p className="text-sm font-medium text-foreground">Storage (isolated mode)</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field
+                    label="Workspace size"
+                    hint="Override the agent's workspace PVC size for jobs on this profile. Empty = agent default."
+                  >
+                    <Input
+                      value={form.workspace_size}
+                      onChange={(e) => setForm({ ...form, workspace_size: e.target.value })}
+                      placeholder="e.g. 100Gi"
+                    />
+                  </Field>
+                  <Field label="Workspace storage class" hint="Empty = agent/cluster default.">
+                    <Input
+                      value={form.workspace_storage_class}
+                      onChange={(e) => setForm({ ...form, workspace_storage_class: e.target.value })}
+                      placeholder="e.g. premium-rwo"
+                    />
+                  </Field>
+                  <Field
+                    label="DinD store size"
+                    hint="For docker:true jobs: a dedicated /var/lib/docker disk so big-image export+push runs off the node disk. Empty = node disk."
+                  >
+                    <Input
+                      value={form.dind_storage_size}
+                      onChange={(e) => setForm({ ...form, dind_storage_size: e.target.value })}
+                      placeholder="e.g. 300Gi"
+                    />
+                  </Field>
+                  <Field label="DinD store class" hint="A large premium-rwo or a local-SSD class. Empty = cluster default.">
+                    <Input
+                      value={form.dind_storage_class}
+                      onChange={(e) => setForm({ ...form, dind_storage_class: e.target.value })}
+                      placeholder="e.g. premium-rwo"
+                    />
+                  </Field>
+                </div>
+              </div>
 
               <SchedulingFields
                 nodeSelector={form.nodeSelectorRows}

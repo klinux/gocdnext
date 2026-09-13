@@ -8,6 +8,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Runner profiles: per-profile workspace + DinD storage sizing.** Four new
+  optional profile fields for the Kubernetes isolated engine —
+  `workspace_size` / `workspace_storage_class` override the agent-global
+  workspace ephemeral-PVC per job, and `dind_storage_size` /
+  `dind_storage_class` give a `docker: true` job a **dedicated ephemeral PVC at
+  `/var/lib/docker`**. Big-image builds are bottlenecked on the DinD store's
+  disk throughput (`exporting layers` + `pushing layers`), which by default
+  lands on the node's ephemeral disk; a profile can now put it on a sized/fast
+  volume (e.g. a large `premium-rwo` — GCE PD throughput scales with size — or
+  a `local-ssd` class) without inflating every job. All fields are opt-in;
+  empty keeps the current behaviour (agent-global workspace, DinD on node
+  disk). Sizes/classes are validated (positive k8s quantity + DNS-1123 name)
+  at the admin API and the store. Settable in the admin profile editor and the
+  Helm `runnerProfiles[]` seed.
+- **Clone a runner profile in the admin UI.** A Clone action on each profile
+  row opens the editor pre-filled from the source as a new profile (name
+  suffixed `-copy`); secrets are not carried (their values never leave the
+  server), everything else does.
+
 ## v0.107.0 — 2026-09-11
 
 ### Added
