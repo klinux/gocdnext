@@ -395,7 +395,7 @@ func TestDirectUploadCmd_ShapeAndSafety(t *testing.T) {
 		t.Fatalf("want sh -c invocation, got %v", cmd[:2])
 	}
 	script := cmd[2]
-	for _, want := range []string{"curl", "zstd -T0", directUploadMarker, "sha256sum", "-T -"} {
+	for _, want := range []string{"curl", "zstd -T0", directUploadMarker, "sha256sum", "-T -", "--max-time 1800", "--connect-timeout 30"} {
 		if !strings.Contains(script, want) {
 			t.Errorf("script missing %q: %s", want, script)
 		}
@@ -431,9 +431,11 @@ func TestParseDirectUploadSummary(t *testing.T) {
 	}{
 		{"valid", "GOCDNEXTUP " + sha + " 4096\n", sha, 4096, false},
 		{"valid with noise", "some warning\nGOCDNEXTUP " + sha + " 12\n", sha, 12, false},
+		{"last marker wins", "GOCDNEXTUP " + strings.Repeat("b", 64) + " 1\nGOCDNEXTUP " + sha + " 4096\n", sha, 4096, false},
 		{"missing marker", "no summary here\n", "", 0, true},
 		{"bad size", "GOCDNEXTUP " + sha + " notanumber\n", "", 0, true},
 		{"short sha", "GOCDNEXTUP deadbeef 10\n", "", 0, true},
+		{"non-hex sha", "GOCDNEXTUP " + strings.Repeat("z", 64) + " 10\n", "", 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

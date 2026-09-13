@@ -112,10 +112,16 @@ func (u *ArtifactUploader) directUploadCmd(podWorkDir, putURL string, files []st
 		compressor = "zstd -T0 -3 -c"
 		ctype = "application/zstd"
 	}
+	// --connect-timeout + --max-time bound the PUT the same way the agent's
+	// http.Client{Timeout: 30m} bounds the exec-stream path: without them a
+	// store that accepts the TCP connection then stalls mid-body would hang
+	// the job in POST-JOB until cancel/drain instead of failing. 1800s = 30m
+	// matches the old ceiling; --connect-timeout catches a dead endpoint fast.
 	script := `set -o pipefail; d="$1"; url="$2"; shift 2; ` +
 		`f="$(mktemp -u)"; mkfifo "$f"; ( sha256sum <"$f" | cut -d' ' -f1 >"$f.sha" ) & ` +
 		`sz="$(tar -cf - -C "$d" -- "$@" | ` + compressor + ` | tee "$f" | ` +
-		`curl -fsS -X PUT -T - -H "Content-Type: ` + ctype + `" -w "%{size_upload}" -o /dev/null "$url")"; ` +
+		`curl -fsS --connect-timeout 30 --max-time 1800 -X PUT -T - ` +
+		`-H "Content-Type: ` + ctype + `" -w "%{size_upload}" -o /dev/null "$url")"; ` +
 		`wait; printf "` + directUploadMarker + ` %s %s\n" "$(cat "$f.sha")" "$sz"; rm -f "$f" "$f.sha"`
 	return append([]string{"sh", "-c", script, "_", podWorkDir, putURL}, files...)
 }
@@ -126,22 +132,36 @@ func (u *ArtifactUploader) directUploadCmd(podWorkDir, putURL string, files []st
 // malformed marker is an error (we must not report a bogus ref the server
 // would reject on the sha/size cross-check).
 func parseDirectUploadSummary(stdout string) (string, int64, error) {
+	var (
+		gotSha  string
+		gotSize int64
+		found   bool
+	)
+	// Scan ALL lines and keep the LAST valid marker: the summary is the
+	// command's final line, but a stray earlier "GOCDNEXTUP"-looking line
+	// (e.g. echoed from a retry) must not win over the real one.
 	for _, line := range strings.Split(stdout, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 3 || fields[0] != directUploadMarker {
 			continue
 		}
 		sha := fields[1]
+		// hex.DecodeString rejects non-hex here (better error locality than
+		// waiting for the server's InspectObject cross-check to fail); the
+		// length assertion catches a truncated/short digest.
+		if raw, err := hex.DecodeString(sha); err != nil || len(raw) != sha256.Size {
+			return "", 0, fmt.Errorf("sha256 %q is not 64 hex chars", sha)
+		}
 		size, err := strconv.ParseInt(fields[2], 10, 64)
 		if err != nil {
 			return "", 0, fmt.Errorf("parse size %q: %w", fields[2], err)
 		}
-		if len(sha) != 64 {
-			return "", 0, fmt.Errorf("sha256 %q is not 64 hex chars", sha)
-		}
-		return sha, size, nil
+		gotSha, gotSize, found = sha, size, true
 	}
-	return "", 0, fmt.Errorf("no %s summary line in output", directUploadMarker)
+	if !found {
+		return "", 0, fmt.Errorf("no %s summary line in output", directUploadMarker)
+	}
+	return gotSha, gotSize, nil
 }
 
 // podHasCurl probes the housekeeper for curl once per upload batch. When
