@@ -462,6 +462,8 @@ type Project struct {
 	CheckReportingMode    string
 	TrustSameRepoPrConfig bool
 	RequiredChecks        []byte
+	// SHA-256 hex digest of the project badge token. NULL disables anonymous badges.
+	BadgeTokenHash *string
 }
 
 type ProjectCron struct {

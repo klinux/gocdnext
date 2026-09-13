@@ -158,6 +158,7 @@ type Querier interface {
 	ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (bool, error)
 	// Health recovered before the debounce elapsed: reset the anchor. Fenced on claim_id.
 	ClearDeployWatchDegraded(ctx context.Context, arg ClearDeployWatchDegradedParams) (int64, error)
+	ClearProjectBadgeTokenBySlug(ctx context.Context, slug string) (int64, error)
 	// Disarm the current step's gate: null the per-arm / decision / action columns. The
 	// CONFIG columns (gate_approvers/required/description) persist for the whole deploy, so
 	// the next pause re-arms with the same policy. If cleared while STILL UNDECIDED (an
@@ -680,6 +681,19 @@ type Querier interface {
 	// ErrNoRows if the agent invented a key or the row was swept.
 	GetArtifactByStorageKey(ctx context.Context, storageKey string) (GetArtifactByStorageKeyRow, error)
 	GetAuthProviderByID(ctx context.Context, id pgtype.UUID) (AuthProvider, error)
+	// Token-gated default branch lookup for anonymous badges. Missing rows cover
+	// unknown project, disabled badge, or invalid token and stay indistinguishable
+	// at the public HTTP edge.
+	GetBadgeDefaultBranch(ctx context.Context, arg GetBadgeDefaultBranchParams) (string, error)
+	// Anonymous badge lookup. The badge_token_hash predicate is the public opt-in
+	// gate: when it misses, callers intentionally receive the same "unknown" badge
+	// as a valid-but-never-run project, so the endpoint does not become a private
+	// project/run existence oracle. The runs_badge_latest* indexes bound the latest
+	// run lookup for README/wiki traffic.
+	GetBadgeLatestRun(ctx context.Context, arg GetBadgeLatestRunParams) (GetBadgeLatestRunRow, error)
+	// Same as GetBadgeLatestRun, but branch-pinned so Postgres can use the
+	// (pipeline_id, ref, created_at) badge index without a parameterised OR.
+	GetBadgeLatestRunByBranch(ctx context.Context, arg GetBadgeLatestRunByBranchParams) (GetBadgeLatestRunByBranchRow, error)
 	GetCluster(ctx context.Context, id pgtype.UUID) (GetClusterRow, error)
 	// Authorization-only lookup: existence + allowed_projects, WITHOUT touching the
 	// sealed credential — for validating a rollout_cluster reference at registration
@@ -793,6 +807,7 @@ type Querier interface {
 	// Joins runs -> pipelines -> projects so the archive hook can
 	// resolve a job_run's project flag in one query.
 	GetProjectArchiveFlagForRun(ctx context.Context, id pgtype.UUID) (*bool, error)
+	GetProjectBadgeEnabledBySlug(ctx context.Context, slug string) (bool, error)
 	GetProjectByID(ctx context.Context, id pgtype.UUID) (GetProjectByIDRow, error)
 	GetProjectBySlug(ctx context.Context, slug string) (GetProjectBySlugRow, error)
 	// Surfaces the per-project GitHub check reporting mode by slug — what the
@@ -2032,6 +2047,7 @@ type Querier interface {
 	SetFindingState(ctx context.Context, arg SetFindingStateParams) (int64, error)
 	// Link the run this delivery produced (same tx as the claim + run insert).
 	SetGithubAppDeliveryRun(ctx context.Context, arg SetGithubAppDeliveryRunParams) error
+	SetProjectBadgeTokenHashBySlug(ctx context.Context, arg SetProjectBadgeTokenHashBySlugParams) (int64, error)
 	// Replaces the project-level notifications list. Admin/maintainer
 	// UI writes here; the column has a NOT NULL default of '[]' so a
 	// fresh project never needs an initial INSERT against this field.

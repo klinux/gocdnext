@@ -162,6 +162,48 @@ WHERE p.slug = $1
 ORDER BY r.created_at DESC
 LIMIT $2;
 
+-- name: GetBadgeLatestRun :one
+-- Anonymous badge lookup. The badge_token_hash predicate is the public opt-in
+-- gate: when it misses, callers intentionally receive the same "unknown" badge
+-- as a valid-but-never-run project, so the endpoint does not become a private
+-- project/run existence oracle. The runs_badge_latest* indexes bound the latest
+-- run lookup for README/wiki traffic.
+SELECT lr.id, lr.status, lr.created_at, pl.name AS pipeline_name
+FROM projects p
+JOIN pipelines pl ON pl.project_id = p.id
+JOIN LATERAL (
+  SELECT id, status, created_at
+  FROM runs
+  WHERE pipeline_id = pl.id
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+) lr ON true
+WHERE p.slug = @slug
+  AND p.badge_token_hash = @badge_token_hash
+  AND (@pipeline_name::text = '' OR pl.name = @pipeline_name)
+ORDER BY lr.created_at DESC, lr.id DESC
+LIMIT 1;
+
+-- name: GetBadgeLatestRunByBranch :one
+-- Same as GetBadgeLatestRun, but branch-pinned so Postgres can use the
+-- (pipeline_id, ref, created_at) badge index without a parameterised OR.
+SELECT lr.id, lr.status, lr.created_at, pl.name AS pipeline_name
+FROM projects p
+JOIN pipelines pl ON pl.project_id = p.id
+JOIN LATERAL (
+  SELECT id, status, created_at
+  FROM runs
+  WHERE pipeline_id = pl.id
+    AND ref = @branch
+  ORDER BY created_at DESC, id DESC
+  LIMIT 1
+) lr ON true
+WHERE p.slug = @slug
+  AND p.badge_token_hash = @badge_token_hash
+  AND (@pipeline_name::text = '' OR pl.name = @pipeline_name)
+ORDER BY lr.created_at DESC, lr.id DESC
+LIMIT 1;
+
 -- name: ListMaterialsByProjectSlug :many
 -- All materials across pipelines of a project. VSM uses the
 -- `upstream` ones to build edges between pipeline nodes; git ones

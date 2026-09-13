@@ -18,6 +18,35 @@ FROM projects
 WHERE slug = $1
 LIMIT 1;
 
+-- name: GetProjectBadgeEnabledBySlug :one
+SELECT (badge_token_hash IS NOT NULL)::boolean AS enabled
+FROM projects
+WHERE slug = $1
+LIMIT 1;
+
+-- name: GetBadgeDefaultBranch :one
+-- Token-gated default branch lookup for anonymous badges. Missing rows cover
+-- unknown project, disabled badge, or invalid token and stay indistinguishable
+-- at the public HTTP edge.
+SELECT COALESCE(NULLIF(s.default_branch, ''), '')::text AS default_branch
+FROM projects p
+LEFT JOIN scm_sources s ON s.project_id = p.id
+WHERE p.slug = @slug
+  AND p.badge_token_hash = @badge_token_hash
+LIMIT 1;
+
+-- name: SetProjectBadgeTokenHashBySlug :execrows
+UPDATE projects
+SET badge_token_hash = @badge_token_hash::text,
+    updated_at = NOW()
+WHERE slug = @slug;
+
+-- name: ClearProjectBadgeTokenBySlug :execrows
+UPDATE projects
+SET badge_token_hash = NULL,
+    updated_at = NOW()
+WHERE slug = $1;
+
 -- name: GetProjectDeletionCounts :one
 -- Aggregated before the cascading delete so the caller can surface
 -- "deleted N pipelines, M runs, K secrets" without probing each

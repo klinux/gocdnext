@@ -141,6 +141,17 @@ export async function getProjectRequiredChecks(
   );
 }
 
+export type ProjectBadgeSettings = {
+  enabled: boolean;
+};
+export async function getProjectBadge(
+  slug: string,
+): Promise<ProjectBadgeSettings> {
+  return readJSON<ProjectBadgeSettings>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/badge`,
+  );
+}
+
 export async function getRunDetail(
   id: string,
   logsPerJob = 200,

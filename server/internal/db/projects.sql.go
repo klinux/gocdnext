@@ -11,6 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearProjectBadgeTokenBySlug = `-- name: ClearProjectBadgeTokenBySlug :execrows
+UPDATE projects
+SET badge_token_hash = NULL,
+    updated_at = NOW()
+WHERE slug = $1
+`
+
+func (q *Queries) ClearProjectBadgeTokenBySlug(ctx context.Context, slug string) (int64, error) {
+	result, err := q.db.Exec(ctx, clearProjectBadgeTokenBySlug, slug)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteProjectBySlug = `-- name: DeleteProjectBySlug :execrows
 DELETE FROM projects WHERE slug = $1
 `
@@ -66,6 +81,44 @@ func (q *Queries) FindProjectBySlug(ctx context.Context, slug string) (FindProje
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getBadgeDefaultBranch = `-- name: GetBadgeDefaultBranch :one
+SELECT COALESCE(NULLIF(s.default_branch, ''), '')::text AS default_branch
+FROM projects p
+LEFT JOIN scm_sources s ON s.project_id = p.id
+WHERE p.slug = $1
+  AND p.badge_token_hash = $2
+LIMIT 1
+`
+
+type GetBadgeDefaultBranchParams struct {
+	Slug           string
+	BadgeTokenHash *string
+}
+
+// Token-gated default branch lookup for anonymous badges. Missing rows cover
+// unknown project, disabled badge, or invalid token and stay indistinguishable
+// at the public HTTP edge.
+func (q *Queries) GetBadgeDefaultBranch(ctx context.Context, arg GetBadgeDefaultBranchParams) (string, error) {
+	row := q.db.QueryRow(ctx, getBadgeDefaultBranch, arg.Slug, arg.BadgeTokenHash)
+	var default_branch string
+	err := row.Scan(&default_branch)
+	return default_branch, err
+}
+
+const getProjectBadgeEnabledBySlug = `-- name: GetProjectBadgeEnabledBySlug :one
+SELECT (badge_token_hash IS NOT NULL)::boolean AS enabled
+FROM projects
+WHERE slug = $1
+LIMIT 1
+`
+
+func (q *Queries) GetProjectBadgeEnabledBySlug(ctx context.Context, slug string) (bool, error) {
+	row := q.db.QueryRow(ctx, getProjectBadgeEnabledBySlug, slug)
+	var enabled bool
+	err := row.Scan(&enabled)
+	return enabled, err
 }
 
 const getProjectDeletionCounts = `-- name: GetProjectDeletionCounts :one
@@ -192,6 +245,26 @@ func (q *Queries) ListProjectLabels(ctx context.Context, projectID pgtype.UUID) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const setProjectBadgeTokenHashBySlug = `-- name: SetProjectBadgeTokenHashBySlug :execrows
+UPDATE projects
+SET badge_token_hash = $1::text,
+    updated_at = NOW()
+WHERE slug = $2
+`
+
+type SetProjectBadgeTokenHashBySlugParams struct {
+	BadgeTokenHash string
+	Slug           string
+}
+
+func (q *Queries) SetProjectBadgeTokenHashBySlug(ctx context.Context, arg SetProjectBadgeTokenHashBySlugParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setProjectBadgeTokenHashBySlug, arg.BadgeTokenHash, arg.Slug)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setProjectNotifications = `-- name: SetProjectNotifications :exec

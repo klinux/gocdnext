@@ -54,6 +54,8 @@ tags:
     description: Per-user preferences and API tokens.
   - name: projects
     description: Project + pipeline definitions, secrets, caches.
+  - name: badges
+    description: Anonymous README/wiki build-status badges.
   - name: runs
     description: Runs, jobs, logs, artifacts, lifecycle actions.
   - name: pipelines
@@ -390,6 +392,115 @@ paths:
       responses:
         "204": { description: deleted }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/projects/{slug}/badge:
+    get:
+      tags: [badges]
+      summary: Badge token status for a project (maintainer+).
+      description: |
+        Reports whether anonymous SVG badges are enabled. The stored token hash
+        is never returned; rotate the token to receive a fresh plaintext token
+        once.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: badge configuration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BadgeConfig" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{slug}/badge/token:
+    post:
+      tags: [badges]
+      summary: Enable or rotate a project's anonymous badge token (maintainer+).
+      description: |
+        Generates a fresh unguessable token, stores only its SHA-256 hash, and
+        returns the plaintext token exactly once with a copy-pasteable project
+        badge URL/Markdown snippet. Rotating immediately invalidates old badge
+        URLs.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: token rotated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BadgeRotate" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [badges]
+      summary: Disable a project's anonymous badge token (maintainer+).
+      description: Existing badge URLs fall back to the generic unknown badge.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: disabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BadgeConfig" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/badge/{slug}.svg:
+    get:
+      tags: [badges]
+      summary: Anonymous project build-status badge SVG.
+      description: |
+        Public-by-design for README/wiki embeds. Requires a project badge token
+        in the `token` query parameter. Missing, malformed, disabled, unknown,
+        or wrong tokens all return the same grey `unknown` SVG instead of 401/404
+        so the endpoint does not reveal private project existence or run history.
+        Without `branch`, the lookup uses the project's SCM default branch when
+        one is configured; add `branch=<name>` to override it.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+        - in: query
+          name: token
+          required: true
+          schema: { type: string, minLength: 43, maxLength: 43 }
+        - in: query
+          name: branch
+          schema: { type: string, maxLength: 255 }
+      responses:
+        "200":
+          description: SVG badge
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "public, max-age=60" }
+            ETag:
+              schema: { type: string }
+          content:
+            image/svg+xml:
+              schema: { type: string }
+
+  /api/v1/badge/{slug}/{pipeline}.svg:
+    get:
+      tags: [badges]
+      summary: Anonymous pipeline build-status badge SVG.
+      description: Same as the project badge, but scoped to one pipeline name.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+        - in: path
+          name: pipeline
+          required: true
+          schema: { type: string, maxLength: 160 }
+        - in: query
+          name: token
+          required: true
+          schema: { type: string, minLength: 43, maxLength: 43 }
+        - in: query
+          name: branch
+          schema: { type: string, maxLength: 255 }
+      responses:
+        "200":
+          description: SVG badge
+          content:
+            image/svg+xml:
+              schema: { type: string }
 
   /api/v1/projects/{slug}/vsm:
     get:
@@ -1881,6 +1992,32 @@ components:
         last_used_at: { type: string, format: date-time, nullable: true }
         expires_at: { type: string, format: date-time, nullable: true }
         revoked_at: { type: string, format: date-time, nullable: true }
+
+    BadgeConfig:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: True when a badge token hash is configured for the project.
+
+    BadgeRotate:
+      type: object
+      required: [enabled, token, badge_url, markdown]
+      properties:
+        enabled: { type: boolean, const: true }
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+          description: Plaintext badge token, returned once. Store it in the README URL.
+        badge_url:
+          type: string
+          format: uri-reference
+          description: Project-wide badge URL. Append `&branch=main` to pin a branch.
+        markdown:
+          type: string
+          description: Markdown image snippet using `badge_url`.
 
     Project:
       type: object

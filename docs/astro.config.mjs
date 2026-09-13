@@ -65,6 +65,7 @@ export default defineConfig({
               label: "Required checks for merge",
               link: "/pipelines/required-checks/",
             },
+            { label: "Status badges", link: "/pipelines/status-badges/" },
             {
               label: "Recipes",
               items: [

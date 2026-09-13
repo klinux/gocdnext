@@ -30,6 +30,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/api/account"
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
+	badgesapi "github.com/gocdnext/gocdnext/server/internal/api/badges"
 	dashboardapi "github.com/gocdnext/gocdnext/server/internal/api/dashboard"
 	"github.com/gocdnext/gocdnext/server/internal/api/openapi"
 	pipelinesapi "github.com/gocdnext/gocdnext/server/internal/api/pipelines"
@@ -346,7 +347,9 @@ func main() {
 	projectsHandler := projectsapi.NewHandler(st, logger).
 		WithCipher(cipher).
 		WithSecretSources(secretSourcesFn).
-		WithConfigFetcher(gitHubFetcher)
+		WithConfigFetcher(gitHubFetcher).
+		WithPublicBase(cfg.PublicBase)
+	badgesHandler := badgesapi.NewHandler(st, logger, cfg.PublicBase)
 	if artifactStore != nil {
 		projectsHandler = projectsHandler.WithArtifactStore(artifactStore)
 	}
@@ -707,6 +710,11 @@ func main() {
 		artifactHandler.Mount(r)
 	}
 
+	// Anonymous status badges. Access is public-by-design for README/wiki/CDN
+	// embeds, but gated by a per-project unguessable token hash so private
+	// projects do not leak status unless a maintainer explicitly opts in.
+	badgesHandler.Mount(r)
+
 	// /api/webhooks stays outside the auth middleware's enforcement
 	// path — it authenticates via HMAC signature, not sessions.
 	r.Post("/api/webhooks/github", webhookHandler.HandleGitHub)
@@ -804,6 +812,9 @@ func main() {
 		// the PUT enforces ADMIN in-handler — it writes the repo's GitHub ruleset.
 		p.Get("/api/v1/projects/{slug}/required-checks", projectsHandler.GetRequiredChecks)
 		p.Put("/api/v1/projects/{slug}/required-checks", projectsHandler.SetRequiredChecks)
+		p.Get("/api/v1/projects/{slug}/badge", projectsHandler.GetBadgeConfig)
+		p.Post("/api/v1/projects/{slug}/badge/token", projectsHandler.RotateBadgeToken)
+		p.Delete("/api/v1/projects/{slug}/badge/token", projectsHandler.DisableBadgeToken)
 		p.Get("/api/v1/projects/{slug}/crons", projectsHandler.ListProjectCrons)
 		p.Post("/api/v1/projects/{slug}/crons", projectsHandler.CreateProjectCron)
 		p.Put("/api/v1/projects/{slug}/crons/{id}", projectsHandler.UpdateProjectCron)

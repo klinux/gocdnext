@@ -52,6 +52,10 @@ type Handler struct {
 	// server didn't wire it — the endpoints then answer 501.
 	deployRegistrar *deploysvc.Registrar
 
+	// publicBase is the externally reachable server URL. Badge token rotations
+	// use it to return copy-pasteable URLs; empty keeps responses relative.
+	publicBase string
+
 	// rolloutLister lists Argo Rollouts via the cluster registry (ADR-0001). nil when
 	// the server didn't wire it — the rollouts endpoint then answers 501.
 	rolloutLister rolloutLister
@@ -99,6 +103,11 @@ func NewHandler(s *store.Store, log *slog.Logger) *Handler {
 		log = slog.Default()
 	}
 	return &Handler{store: s, log: log}
+}
+
+func (h *Handler) WithPublicBase(base string) *Handler {
+	h.publicBase = strings.TrimRight(base, "/")
+	return h
 }
 
 // WithConfigFetcher opts the apply handler into initial-sync
