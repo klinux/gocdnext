@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.108.0 — 2026-09-13
+
 ### Added
 
 - **Runner profiles: per-profile workspace + DinD storage sizing.** Four new
