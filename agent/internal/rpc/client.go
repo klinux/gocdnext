@@ -402,6 +402,10 @@ func (c *Client) Run(ctx context.Context, drainTrigger <-chan struct{}) error {
 	// (runner.UntarGz sniffs), so this is safe to flip once the fleet reads
 	// zstd — which it does since v0.105.0, as UntarGz is shared with caches.
 	uploader.UseCompression(os.Getenv("GOCDNEXT_ARTIFACT_COMPRESSION"))
+	// Direct pod→store artifact PUT (bypasses the exec-stream cap). Opt-in;
+	// needs a curl-capable housekeeper + a chunked-PUT-friendly store (GCS).
+	// The agent probes for curl and falls back automatically if absent.
+	uploader.UseDirectUpload(os.Getenv("GOCDNEXT_ARTIFACT_DIRECT_UPLOAD"))
 	cache := NewCacheClient(cli, reg.SessionId, nil)
 	// Store-side codec: gzip by default, zstd when the operator opts in AND
 	// the housekeeper image carries zstd (#274). Restore auto-detects, so

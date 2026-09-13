@@ -8,6 +8,22 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Direct pod→store artifact upload (opt-in).** In isolated mode the artifact
+  upload streamed the tar through the agent's exec channel (SPDY via the
+  apiserver), which caps around ~20 MB/s regardless of disk or network — a
+  multi-GB artifact (SDK bundle, image tarball) spent minutes there even when
+  the object store was seconds away. With `agent.artifacts.directUpload: true`
+  the housekeeper now PUTs the tar+compress stream **straight to the store's
+  signed URL** (curl, chunked), so the bytes go pod→store at network speed. The
+  agent still records size+sha256 (computed in-pod, cross-checked server-side),
+  so integrity is unchanged. Needs a curl-capable housekeeper image (the
+  bundled one now has it) and a store that accepts chunked PUT on its signed
+  URL — GCS does; S3 does not (leave it off there). The agent probes for curl
+  and falls back to the exec-stream path when absent, so it is safe to enable
+  on a rolling fleet. Default off.
+
 ## v0.108.1 — 2026-09-13
 
 ### Fixed
