@@ -34,7 +34,9 @@ func TestSubstituteRefs(t *testing.T) {
 			want:    "${{ B }}",
 		},
 		{name: "unresolved errors", in: "${{ MISSING }}", wantErr: "unresolved reference(s): MISSING"},
-		{name: "unsupported expression errors", in: "${{ secrets.X }}", wantErr: "unsupported reference expression(s): secrets.X"},
+		{name: "unsupported expression errors (nested dots)", in: "${{ foo.bar.baz }}", wantErr: "unsupported reference expression(s): foo.bar.baz"},
+		{name: "vars. with empty NS is unresolved not unsupported", in: "${{ vars.X }}", wantErr: "unresolved reference(s): vars.X"},
+		{name: "secrets. with empty NS is unresolved not unsupported", in: "${{ secrets.X }}", wantErr: "unresolved reference(s): secrets.X"},
 		{
 			name:    "errors list deduped + sorted",
 			in:      "${{ B }}${{ A }}${{ B }}",
@@ -135,5 +137,102 @@ func TestDedupeSorted(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
 		}
+	}
+}
+
+// --- #281: explicit vars./secrets. namespaces ---
+
+func TestSubstituteRefsNS(t *testing.T) {
+	vars := map[string]string{"APP_VERSION": "1.2.3", "SHARED": "from-vars"}
+	secrets := map[string]string{"DB_PASSWORD": "s3cr3t", "SHARED": "from-secrets"}
+	bare := map[string]string{"CI_SHA": "abc123", "SHARED": "from-bare"}
+
+	tests := []struct {
+		name    string
+		in      string
+		ns      refs.Namespaces
+		bare    []map[string]string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "vars. resolves from Vars",
+			in:   "${{ vars.APP_VERSION }}", ns: refs.Namespaces{Vars: vars}, want: "1.2.3",
+		},
+		{
+			name: "secrets. resolves from Secrets",
+			in:   "${{ secrets.DB_PASSWORD }}", ns: refs.Namespaces{Secrets: secrets}, want: "s3cr3t",
+		},
+		{
+			name: "bare still resolves from bareSources",
+			in:   "${{ CI_SHA }}", ns: refs.Namespaces{Vars: vars, Secrets: secrets}, bare: []map[string]string{bare}, want: "abc123",
+		},
+		{
+			// SECURITY: vars. must NEVER resolve to a secret, even when a
+			// secret (and a bare source) of the same name exists. This is
+			// what makes ${{ vars.X }} safe for deploy.version.
+			name:    "vars. NEVER falls back to secrets or bare",
+			in:      "${{ vars.ONLYSECRET }}",
+			ns:      refs.Namespaces{Vars: vars, Secrets: map[string]string{"ONLYSECRET": "leak"}},
+			bare:    []map[string]string{{"ONLYSECRET": "bareval"}},
+			wantErr: "unresolved reference(s): vars.ONLYSECRET",
+		},
+		{
+			// SECURITY mirror: secrets. never falls back to vars/bare.
+			name:    "secrets. NEVER falls back to vars or bare",
+			in:      "${{ secrets.ONLYVAR }}",
+			ns:      refs.Namespaces{Vars: map[string]string{"ONLYVAR": "v"}, Secrets: secrets},
+			bare:    []map[string]string{{"ONLYVAR": "b"}},
+			wantErr: "unresolved reference(s): secrets.ONLYVAR",
+		},
+		{
+			// Same NAME in all three: each namespace picks its own source.
+			name: "namespaces are isolated (same NAME)",
+			in:   "${{ vars.SHARED }}|${{ secrets.SHARED }}|${{ SHARED }}",
+			ns:   refs.Namespaces{Vars: vars, Secrets: secrets},
+			bare: []map[string]string{bare},
+			want: "from-vars|from-secrets|from-bare",
+		},
+		{
+			name: "vars. undeclared is unresolved",
+			in:   "${{ vars.NOPE }}", ns: refs.Namespaces{Vars: vars}, wantErr: "unresolved reference(s): vars.NOPE",
+		},
+		{
+			name: "malformed vars. (empty name) is unsupported",
+			in:   "${{ vars. }}", ns: refs.Namespaces{Vars: vars}, wantErr: "unsupported reference expression(s): vars.",
+		},
+		{
+			name: "malformed vars. (nested dots) is unsupported",
+			in:   "${{ vars.a.b }}", ns: refs.Namespaces{Vars: vars}, wantErr: "unsupported reference expression(s): vars.a.b",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := refs.SubstituteRefsNS(tt.in, tt.ns, tt.bare...)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The error path must not leak a namespaced secret's value either.
+func TestSubstituteRefsNS_ErrorDoesNotLeakSecret(t *testing.T) {
+	_, err := refs.SubstituteRefsNS("${{ vars.TYPO }} ${{ secrets.DB }}",
+		refs.Namespaces{Secrets: map[string]string{"DB": "top-secret"}})
+	if err == nil {
+		t.Fatal("expected error (vars.TYPO unresolved)")
+	}
+	if strings.Contains(err.Error(), "top-secret") {
+		t.Fatalf("error leaked a secret value: %v", err)
 	}
 }

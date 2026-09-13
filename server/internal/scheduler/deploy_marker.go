@@ -112,12 +112,12 @@ func buildMatrixDims(def domain.Pipeline, matrixNeedsOutputs MatrixNeedsOutputs)
 // uses (but NOT secrets — the version is persisted + surfaced in the UI), or the
 // commit short sha by default. Empty → ErrDeployVersionEmpty (terminal). Shared by
 // BuildAssignment (plugin path) and the native takeover so both resolve identically.
-func resolveDeployMarkerVersion(jobName string, jobDef domain.Job, needs NeedsOutputs, matrix MatrixNeedsOutputs, dims MatrixDimNames, ciVars map[string]string) (string, error) {
+func resolveDeployMarkerVersion(jobName string, jobDef domain.Job, needs NeedsOutputs, matrix MatrixNeedsOutputs, dims MatrixDimNames, vars, ciVars map[string]string) (string, error) {
 	version := jobDef.Deploy.Version
 	if version == "" {
 		version = ciVars["CI_COMMIT_SHORT_SHA"]
 	} else {
-		v, err := resolveDeployVersion(version, needs, matrix, dims, ciVars)
+		v, err := resolveDeployVersion(version, needs, matrix, dims, vars, ciVars)
 		if err != nil {
 			// Wrapped in ErrDeployVersionUnresolved — terminal.
 			return "", fmt.Errorf("scheduler: job %s: %w", jobName, err)

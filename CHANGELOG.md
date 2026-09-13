@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Explicit `${{ vars.NAME }}` / `${{ secrets.NAME }}` reference namespaces
+  (#281).** References inside `with:` / `variables:` / template fields can now
+  name their source unambiguously: `vars.` resolves strictly against the
+  pipeline/job `variables:` map (never a secret, even one of the same name) and
+  `secrets.` strictly against the `secrets:` set (masked in logs). Bare
+  `${{ NAME }}` still works (variables-then-secrets, first hit) for
+  compatibility. Because `vars.` is provably non-secret, `deploy.version` /
+  `deploy.revision` now accept `${{ vars.NAME }}` — so a pipeline can compose a
+  version from a `variables:` entry directly instead of laundering it through a
+  throwaway outputs job. Bare and `${{ secrets.NAME }}` stay rejected in those
+  persisted, UI-shown fields. Resolution is shared by the scheduler and the CLI
+  `run-local` simulator, so both behave identically.
+
 ## v0.109.0 — 2026-09-13
 
 ### Added

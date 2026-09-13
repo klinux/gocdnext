@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gocdnext/gocdnext/server/pkg/parser"
+	"github.com/gocdnext/gocdnext/server/pkg/refs"
 )
 
 // Options configure one local run.
@@ -169,10 +170,12 @@ func jobEnv(j PlannedJob, ciVars, secretsEnv map[string]string) (map[string]stri
 		env[k] = v
 	}
 
-	// Strict `${{ NAME }}` pass over env values, sources matching
-	// the dispatch: secrets first, CI built-ins after.
+	// Strict `${{ NAME }}` pass over env values. Namespaces (#281):
+	// vars. → the job's variables map, secrets. → the env-file secrets;
+	// bare refs keep the dispatch order (secrets first, CI after).
+	ns := refs.Namespaces{Vars: j.Variables, Secrets: secrets}
 	for k, v := range env {
-		resolved, err := substituteRefs(v, secrets, ciVarsJob)
+		resolved, err := substituteRefsNS(v, ns, secrets, ciVarsJob)
 		if err != nil {
 			return nil, fmt.Errorf("job %s env %s: %w", j.Name, k, err)
 		}
@@ -185,7 +188,7 @@ func jobEnv(j PlannedJob, ciVars, secretsEnv map[string]string) (map[string]stri
 			// Settings resolve against secrets + resolved env + CI
 			// vars (strict), then the soft `${VAR}` pass — same two
 			// phases as dispatch; a literal `${HOME}` stays literal.
-			resolved, err := substituteRefs(raw, secrets, env, ciVarsJob)
+			resolved, err := substituteRefsNS(raw, ns, secrets, env, ciVarsJob)
 			if err != nil {
 				return nil, fmt.Errorf("job %s with %s: %w", j.Name, k, err)
 			}

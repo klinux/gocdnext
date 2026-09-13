@@ -11,5 +11,6 @@ import "github.com/gocdnext/gocdnext/server/pkg/refs"
 // a `${{ needs.* }}` body, which is the right run-local behaviour).
 var (
 	substituteRefs      = refs.SubstituteRefs
+	substituteRefsNS    = refs.SubstituteRefsNS
 	substituteShellVars = refs.SubstituteShellVars
 )

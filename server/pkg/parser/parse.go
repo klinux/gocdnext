@@ -53,12 +53,17 @@ var jobClusterRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 // aren't ErrNeedsRefUnresolved). Bounded inner capture; non-greedy.
 var deployVersionRefRE = regexp.MustCompile(`\$\{\{\s*([^}]{1,256}?)\s*\}\}`)
 
-// deployVersionRefOK accepts the only namespaces deploy.version
+// deployVersionRefOK accepts the only reference forms deploy.version
 // resolves against at dispatch: upstream outputs (`needs.<job>.
-// outputs.<alias>`) and CI built-ins (`CI_*`). It deliberately
-// rejects `${{ MY_VAR }}` / `${{ SECRET }}` — variables aren't wired
-// for version, and a secret in a version would leak into the
-// deployment_revisions row + Environments UI.
+// outputs.<alias>`), CI built-ins (`CI_*`), and the explicit
+// `${{ vars.NAME }}` namespace (#281). It deliberately rejects bare
+// `${{ MY_VAR }}` and `${{ secrets.NAME }}` — a bare ref is
+// ambiguous (variable OR secret at resolution) and `secrets.` is a
+// secret, and either in a version would leak into the
+// deployment_revisions row + Environments UI. `vars.` is safe because
+// the resolver (pkg/refs.SubstituteRefsNS) binds it STRICTLY to the
+// pipeline/job `variables:` map — it can never resolve to a secret,
+// even one of the same name.
 //
 // The needs branch MIRRORS the scheduler's needsRefPattern
 // (refs.go): job name is `[A-Za-z0-9_-]+` (no dot — job names have
@@ -69,7 +74,7 @@ var deployVersionRefRE = regexp.MustCompile(`\$\{\{\s*([^}]{1,256}?)\s*\}\}`)
 // (ErrDeployVersionUnresolved), never a retry loop. Matrix-selector
 // needs refs (needs.X.matrix[..].outputs.Y) are NOT accepted in a
 // version — rare, and rejected loud at apply rather than silently.
-var deployVersionRefOK = regexp.MustCompile(`^(needs\.[A-Za-z0-9_-]+\.outputs\.[a-z][a-zA-Z0-9_-]*|CI_[A-Z0-9_]+)$`)
+var deployVersionRefOK = regexp.MustCompile(`^(needs\.[A-Za-z0-9_-]+\.outputs\.[a-z][a-zA-Z0-9_-]*|CI_[A-Z0-9_]+|vars\.[A-Za-z_][A-Za-z0-9_]*)$`)
 
 // ParsePollInterval returns (duration, error) for a YAML-supplied
 // poll_interval string. Empty is (0, nil) — caller treats zero as
