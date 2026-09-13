@@ -88,10 +88,11 @@ fired and what payload was sent.</p>
 <p><code dir="auto">on:</code> accepts <code dir="auto">success</code>, <code dir="auto">failure</code>, <code dir="auto">canceled</code>, <code dir="auto">always</code> — single
 ‘l’ on <code dir="auto">canceled</code> (the parser canonical form). The notification
 fires only when the run’s terminal status matches.</p>
-<p>Substitution rules apply: <code dir="auto">${{ NAME }}</code> is identifier-only (no
-dotted <code dir="auto">${{ secrets.X }}</code> — list the name in <code dir="auto">secrets:</code> and refer
-to it as <code dir="auto">${{ NAME }}</code>). <code dir="auto">${VAR}</code> is shell-style and reaches the
-plugin verbatim for runtime expansion.</p>
+<p>Substitution rules apply: reference a secret as <code dir="auto">${{ NAME }}</code> or the
+explicit <code dir="auto">${{ secrets.NAME }}</code> (both resolve when <code dir="auto">NAME</code> is listed in
+<code dir="auto">secrets:</code>); deeper dotted forms and function calls are rejected.
+<code dir="auto">${VAR}</code> is shell-style and reaches the plugin verbatim for runtime
+expansion.</p>
 <h2 id="plugins-available">Plugins available</h2>
 <h3 id="slack">Slack</h3>
 <p>Slack ships <strong>one</strong> body field: <code dir="auto">template:</code>. There’s no separate
@@ -195,10 +196,11 @@ parallel. A typical “production” project ends up with:</p>
 <ul>
 <li><strong>Webhook URL inline in YAML</strong>: never. Always declare it as a
 project secret and reference via <code dir="auto">${{ NAME }}</code> with <code dir="auto">secrets: [NAME]</code> — webhooks ARE credentials.</li>
-<li><strong>Dotted references</strong>: <code dir="auto">${{ secrets.X }}</code> is rejected with
-“unsupported reference expression”. The parser supports
-identifier-only refs (<code dir="auto">${{ X }}</code>) — list the name under
-<code dir="auto">secrets:</code> and use it directly.</li>
+<li><strong>References</strong>: use <code dir="auto">${{ NAME }}</code> or the explicit
+<code dir="auto">${{ secrets.NAME }}</code> (both resolve when <code dir="auto">NAME</code> is under
+<code dir="auto">secrets:</code>). Deeper dotted forms (<code dir="auto">${{ secrets.X.Y }}</code>), function
+calls, and operators are rejected with “unsupported reference
+expression”.</li>
 <li><strong>Notification storms</strong>: a flapping pipeline fires on every
 failure. Pair with retention policies and consider a dedup
 downstream tool (PagerDuty deduplicates by title).</li>

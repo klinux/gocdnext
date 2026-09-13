@@ -571,13 +571,25 @@ secret with the same name doesn’t exist.</p>
 <p>The reference grammar inside <code dir="auto">with:</code>, <code dir="auto">variables:</code>, and other
 template fields is intentionally tight:</p>
 <ul>
-<li><code dir="auto">${{ NAME }}</code> — hard reference. Resolved at dispatch against
-secrets first, then <code dir="auto">variables</code>. <strong>Identifier only</strong> — dotted
-forms (<code dir="auto">${{ secrets.X }}</code>, <code dir="auto">${{ matrix.GO_VERSION.0 }}</code>),
-function calls, and operators are rejected with “unsupported
-reference expression”. Unresolved references fail the dispatch
-with the reference <strong>name</strong> (never the value of something else),
-so secret values can’t leak via error message.</li>
+<li><code dir="auto">${{ NAME }}</code> — hard reference, <strong>bare</strong> (legacy) form. Resolved at
+dispatch against secrets first, then <code dir="auto">variables</code> — so a bare ref is
+<em>ambiguous</em> (could be either). Identifier only.</li>
+<li><code dir="auto">${{ vars.NAME }}</code> — hard reference into the <strong><code dir="auto">variables:</code></strong> map
+<strong>only</strong>. Never resolves to a secret, even if a secret shares the
+name. Because it is provably non-secret, it is the only ref form
+allowed in persisted / UI-shown fields like
+<a href="/gocdnext/docs/concepts/deployments/#composing-a-version-from-a-variable-vars"><code dir="auto">deploy.version</code></a>.</li>
+<li><code dir="auto">${{ secrets.NAME }}</code> — hard reference into the <strong><code dir="auto">secrets:</code></strong> set
+<strong>only</strong>. Masked in logs like any secret. Rejected in <code dir="auto">deploy.version</code>
+/ <code dir="auto">deploy.revision</code>.</li>
+<li>The explicit <code dir="auto">vars.</code> / <code dir="auto">secrets.</code> namespaces are the <strong>preferred</strong>
+form (unambiguous, auditable); bare <code dir="auto">${{ NAME }}</code> stays supported for
+compatibility. Anything else inside <code dir="auto">${{ }}</code> — deeper dotted paths
+(<code dir="auto">${{ matrix.GO_VERSION.0 }}</code>), function calls, operators — is
+rejected with “unsupported reference expression”. Unresolved
+references fail the dispatch with the reference <strong>name</strong> (never the
+value of something else), so secret values can’t leak via error
+message.</li>
 <li><code dir="auto">${VAR}</code> — soft, shell-style. <strong>Not</strong> resolved server-side: it is
 passed through verbatim and expanded later by whatever runs the
 value. In a <code dir="auto">script:</code> job the job’s shell expands it. In a plugin’s
