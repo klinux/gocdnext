@@ -36,10 +36,11 @@ notifications:
 'l' on `canceled` (the parser canonical form). The notification
 fires only when the run's terminal status matches.
 
-Substitution rules apply: `${{ NAME }}` is identifier-only (no
-dotted `${{ secrets.X }}` — list the name in `secrets:` and refer
-to it as `${{ NAME }}`). `${VAR}` is shell-style and reaches the
-plugin verbatim for runtime expansion.
+Substitution rules apply: reference a secret as `${{ NAME }}` or the
+explicit `${{ secrets.NAME }}` (both resolve when `NAME` is listed in
+`secrets:`); deeper dotted forms and function calls are rejected.
+`${VAR}` is shell-style and reaches the plugin verbatim for runtime
+expansion.
 
 ## Plugins available
 
@@ -271,10 +272,11 @@ notifications:
 - **Webhook URL inline in YAML**: never. Always declare it as a
   project secret and reference via `${{ NAME }}` with `secrets:
   [NAME]` — webhooks ARE credentials.
-- **Dotted references**: `${{ secrets.X }}` is rejected with
-  "unsupported reference expression". The parser supports
-  identifier-only refs (`${{ X }}`) — list the name under
-  `secrets:` and use it directly.
+- **References**: use `${{ NAME }}` or the explicit
+  `${{ secrets.NAME }}` (both resolve when `NAME` is under
+  `secrets:`). Deeper dotted forms (`${{ secrets.X.Y }}`), function
+  calls, and operators are rejected with "unsupported reference
+  expression".
 - **Notification storms**: a flapping pipeline fires on every
   failure. Pair with retention policies and consider a dedup
   downstream tool (PagerDuty deduplicates by title).

@@ -175,8 +175,9 @@ trivy-fs:
 
 Pair trivy with the [notifications recipe](/gocdnext/docs/pipelines/recipes/notifications/)
 to ping a Slack channel when a scan job fails. Note the
-`secrets:` declaration and `${{ NAME }}` identifier-only ref —
-dotted `${{ secrets.X }}` is rejected.
+`secrets:` declaration and the `${{ NAME }}` ref (the explicit
+`${{ secrets.NAME }}` form works too when the name is under
+`secrets:`).
 
 ```yaml
 notifications:

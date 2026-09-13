@@ -14,6 +14,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/pkg/compliance"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/refs"
 )
 
 func BuildAssignment(
@@ -107,6 +108,29 @@ func BuildAssignment(
 	for k, v := range jobDef.Variables {
 		env[k] = v
 	}
+
+	// varsMap is the resolution source for the explicit `${{ vars.NAME }}`
+	// namespace (#281). It is STRICTLY the pipeline + job `variables:`
+	// blocks — provably non-secret, so a `vars.` ref can safely reach the
+	// persisted/UI deploy.version. It deliberately EXCLUDES profile.Env:
+	// the resolved profile mixes plain env AND decrypted profile secrets in
+	// one map, so including it could let `${{ vars.X }}` resolve to a
+	// secret. Matrix dims / CI built-ins are their own namespaces and are
+	// not `vars.` either. Compliance jobs exclude pipeline variables (same
+	// isolation as env above).
+	varsMap := map[string]string{}
+	if !isCompliance {
+		for k, v := range def.Variables {
+			varsMap[k] = v
+		}
+	}
+	for k, v := range jobDef.Variables {
+		varsMap[k] = v
+	}
+	// ns is threaded into every `${{ }}` resolution below so vars./secrets.
+	// resolve strictly to their own source; bare refs keep the legacy
+	// ordered-sources behavior via the explicit bareSources args.
+	ns := refs.Namespaces{Vars: varsMap, Secrets: secrets}
 	if job.MatrixKey != "" {
 		// Expose the combined matrix key (GOCDNEXT_MATRIX="ARCH=...,OS=...")
 		// AND decompose it into one env var per dimension (#42): OS=linux
@@ -286,7 +310,7 @@ func BuildAssignment(
 	// contract: variables MAY reference secrets and CI vars,
 	// settings MAY reference variables + secrets + CI vars,
 	// variables MAY NOT reference other plain variables.
-	resolvedEnv, err := substituteRefsMap(env, secrets, ciVars)
+	resolvedEnv, err := substituteRefsNSMap(env, ns, secrets, ciVars)
 	if err != nil {
 		return nil, nil, fmt.Errorf("scheduler: env for job %s: %w", job.Name, err)
 	}
@@ -302,7 +326,7 @@ func BuildAssignment(
 	// takeover). The caller records the revision once the job actually dispatches.
 	var deployTarget *DeployTarget
 	if jobDef.Deploy != nil {
-		version, verr := resolveDeployMarkerVersion(job.Name, jobDef, needsOutputs, matrixNeedsOutputs, matrixDims, ciVars)
+		version, verr := resolveDeployMarkerVersion(job.Name, jobDef, needsOutputs, matrixNeedsOutputs, matrixDims, varsMap, ciVars)
 		if verr != nil {
 			return nil, nil, verr
 		}
@@ -330,7 +354,7 @@ func BuildAssignment(
 			if err != nil {
 				return nil, nil, fmt.Errorf("scheduler: needs refs in plugin %q settings: %w", tk.Plugin.Image, err)
 			}
-			settings, err := substituteRefsMap(pluginSettings, secrets, env)
+			settings, err := substituteRefsNSMap(pluginSettings, ns, secrets, env)
 			if err != nil {
 				return nil, nil, fmt.Errorf("scheduler: plugin %q settings: %w", tk.Plugin.Image, err)
 			}
