@@ -127,9 +127,13 @@ jobs:
 }
 
 func TestParse_Deploy_AcceptsNeedsAndCIRefsInVersion(t *testing.T) {
-	// needs.outputs and CI_* refs are the allowed version namespaces;
-	// a mix with literals + shell-style ${CI_*} must parse clean.
+	// needs.outputs, CI_* and vars.* (#281) are the allowed version
+	// namespaces; a mix with literals + shell-style ${CI_*} must parse
+	// clean. vars.* is safe because pkg/refs binds it strictly to the
+	// non-secret `variables:` map.
 	y := `
+variables:
+  APP_VERSION: "10.1.19"
 stages: [build, deploy]
 jobs:
   build:
@@ -143,7 +147,7 @@ jobs:
     script: ["true"]
     deploy:
       environment: production
-      version: "1.${{ CI_RUN_COUNTER }}.${{ needs.build.outputs.sha }}-${CI_COMMIT_SHORT_SHA}"
+      version: "${{ vars.APP_VERSION }}.${{ CI_RUN_COUNTER }}.${{ needs.build.outputs.sha }}-${CI_COMMIT_SHORT_SHA}"
 `
 	if _, err := ParseNamed(strings.NewReader(y), "p", "release"); err != nil {
 		t.Fatalf("parse: %v", err)
@@ -276,6 +280,38 @@ jobs:
     deploy:
       environment: production
       revision: "${{ MY_VAR }}"
+`,
+			wantErr: "not allowed",
+		},
+		{
+			// #281: the explicit secrets. namespace must STILL be rejected in
+			// version — it names a secret, which must never reach the persisted
+			// deployment_revisions row / Environments UI. (vars. is allowed;
+			// secrets. and bare are not.)
+			name: "version with explicit secrets. namespace ref",
+			yaml: `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: production
+      version: "${{ secrets.TOKEN }}"
+`,
+			wantErr: "not allowed",
+		},
+		{
+			name: "revision with explicit secrets. namespace ref",
+			yaml: `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: production
+      revision: "${{ secrets.TOKEN }}"
 `,
 			wantErr: "not allowed",
 		},

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+
+	"github.com/gocdnext/gocdnext/server/pkg/refs"
 )
 
 // ErrDeployVersionEmpty is returned by BuildAssignment when a deploy
@@ -30,18 +32,27 @@ var ErrDeployVersionUnresolved = errors.New("a deploy marker reference could not
 
 // resolveDeployVersion resolves a non-empty deploy.version through the
 // same pipeline the env uses — the `${{ needs.*.outputs.* }}` pre-pass,
-// the strict `${{ CI_* }}` pass, then the soft shell-style `${CI_*}`
-// pass for parity with plugin settings — but against CI vars ONLY,
-// never secrets (the version is persisted in deployment_revisions and
-// shown in the Environments UI). ANY resolution failure is wrapped in
+// the strict `${{ vars.NAME }}` + `${{ CI_* }}` pass, then the soft
+// shell-style `${CI_*}` pass for parity with plugin settings. It
+// resolves against CI vars + the pipeline `variables:` (via the
+// `vars.` namespace, #281) ONLY — NEVER secrets: the version is
+// persisted in deployment_revisions and shown in the Environments UI.
+// The `vars.` namespace is safe because pkg/refs binds it strictly to
+// `vars` (the non-secret `variables:` map) — a bare `${{ NAME }}` or a
+// `${{ secrets.X }}` was already rejected at apply by the parser's
+// allow-list; here we additionally can't leak because the Secrets
+// namespace is left nil. ANY resolution failure is wrapped in
 // ErrDeployVersionUnresolved so the dispatcher terminalises it rather
 // than retrying an identical failure forever (#39).
-func resolveDeployVersion(raw string, needs NeedsOutputs, matrix MatrixNeedsOutputs, dims MatrixDimNames, ciVars map[string]string) (string, error) {
+func resolveDeployVersion(raw string, needs NeedsOutputs, matrix MatrixNeedsOutputs, dims MatrixDimNames, vars, ciVars map[string]string) (string, error) {
 	v, err := substituteNeedsRefs(raw, needs, matrix, dims)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrDeployVersionUnresolved, err)
 	}
-	v, err = substituteRefs(v, ciVars)
+	// NS with Secrets deliberately nil: a `secrets.X` ref here can never
+	// resolve (defence in depth on top of the parser's allow-list). vars.
+	// → the pipeline variables; bare + CI_* → ciVars.
+	v, err = substituteRefsNS(v, refs.Namespaces{Vars: vars}, ciVars)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrDeployVersionUnresolved, err)
 	}

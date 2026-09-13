@@ -17,8 +17,10 @@ import (
 var (
 	refPattern             = refs.RefPattern
 	substituteRefs         = refs.SubstituteRefs
+	substituteRefsNS       = refs.SubstituteRefsNS
 	substituteShellVars    = refs.SubstituteShellVars
 	substituteRefsMap      = refs.SubstituteRefsMap
+	substituteRefsNSMap    = refs.SubstituteRefsNSMap
 	substituteShellVarsMap = refs.SubstituteShellVarsMap
 	dedupeSorted           = refs.DedupeSorted
 )

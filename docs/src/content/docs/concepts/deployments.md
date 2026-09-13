@@ -43,7 +43,7 @@ jobs:
 | Key | Type | Notes |
 |---|---|---|
 | `environment` | string (**required**) | Target environment name. Lazy-created on first deploy — no pre-registration, no separate "create environment" step. |
-| `version` | string (optional) | The version string recorded as deployed. References allowed: `${{ needs.X.outputs.Y }}`, `${{ CI_* }}`, `${CI_*}`. Resolved against **CI vars only — never secrets** (the version is persisted and shown in the UI). Omitted → defaults to `CI_COMMIT_SHORT_SHA`. |
+| `version` | string (optional) | The version string recorded as deployed. References allowed: `${{ needs.X.outputs.Y }}`, `${{ CI_* }}`, `${CI_*}`, and `${{ vars.NAME }}` (a pipeline/job `variables:` entry). Resolved against CI vars + those variables only — **never secrets** (the version is persisted and shown in the UI); a `vars.` ref binds strictly to `variables:` so it can never resolve to a secret. Bare `${{ NAME }}` and `${{ secrets.NAME }}` are rejected. Omitted → defaults to `CI_COMMIT_SHORT_SHA`. |
 
 A deploy job is a normal executable job, so it carries everything a
 job carries — `needs:`, `artifacts:`, `id_tokens:`, `secrets:`. The
@@ -81,6 +81,33 @@ or an omitted version on a run with no commit short sha — the deploy
 job fails **terminally** at dispatch (it does not retry forever
 against an identical failure). The error names the missing reference,
 never the value of anything next to it.
+
+### Composing a version from a variable (`vars.`)
+
+A common shape is a pipeline `variables:` entry (an SDK/app version)
+that both builds the image tag and labels the deployment. Reference it
+directly with the explicit `vars.` namespace — no throwaway job to
+"launder" it through outputs:
+
+```yaml
+variables:
+  APP_VERSION: "10.1.19"
+
+jobs:
+  deploy:
+    stage: production
+    uses: ghcr.io/you/argocd@v1
+    with: { ... }
+    deploy:
+      environment: production
+      version: ${{ vars.APP_VERSION }}-${CI_COMMIT_SHORT_SHA}
+```
+
+`${{ vars.NAME }}` resolves **strictly** against the `variables:` map,
+so it can never resolve to a secret even if one shares the name — which
+is exactly why it is allowed in this persisted, UI-shown field while
+bare `${{ NAME }}` (ambiguous) and `${{ secrets.NAME }}` (a secret) are
+rejected. See the [substitution grammar](/gocdnext/docs/pipelines/yaml-reference/#substitution-grammar).
 
 ## Environments and revisions
 

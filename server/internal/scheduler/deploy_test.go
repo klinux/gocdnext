@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -254,5 +255,138 @@ func TestBuildAssignment_NoDeployTargetForPlainJob(t *testing.T) {
 	}
 	if target != nil {
 		t.Fatalf("plain job produced a DeployTarget: %+v", target)
+	}
+}
+
+// --- #281: explicit vars./secrets. namespaces end-to-end ---
+
+// The #281 use case: deploy.version composes a non-secret pipeline variable
+// via `${{ vars.NAME }}` — no throwaway `tag` job needed. Proves the version
+// resolves against the variables map.
+func TestBuildAssignment_DeployVersion_ResolvesVarsNamespace(t *testing.T) {
+	def := domain.Pipeline{
+		Variables: map[string]string{"APP_VERSION": "10.1.19"},
+		Jobs: []domain.Job{{
+			Name:   "sync-prod",
+			Tasks:  []domain.Task{{Plugin: &domain.PluginStep{Image: "ghcr.io/x/argocd:v1", Settings: map[string]string{}}}},
+			Deploy: &domain.DeploySpec{Environment: "production", Version: "${{ vars.APP_VERSION }}"},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "sync-prod"}
+
+	_, target, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if target == nil || target.Version != "10.1.19" {
+		t.Fatalf("target = %+v, want version 10.1.19 from vars.", target)
+	}
+}
+
+// SECURITY: `${{ vars.X }}` must resolve to the VARIABLE even when a secret
+// of the same name exists — it must never leak the secret. Guards the
+// property that lets vars. reach persisted/UI fields.
+func TestBuildAssignment_VarsNamespaceNeverResolvesSecret(t *testing.T) {
+	def := domain.Pipeline{
+		Variables: map[string]string{"SHARED": "public-var"},
+		Jobs: []domain.Job{{
+			Name:    "build",
+			Secrets: []string{"SHARED"},
+			Tasks: []domain.Task{{Plugin: &domain.PluginStep{
+				Image:    "ghcr.io/x/tool:v1",
+				Settings: map[string]string{"value": "${{ vars.SHARED }}"},
+			}}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
+	secrets := map[string]string{"SHARED": "s3cr3t-value"}
+
+	asg, _, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	got := asg.GetTasks()[0].GetPlugin().GetSettings()["value"]
+	if got != "public-var" {
+		t.Fatalf("vars.SHARED = %q, want public-var (the variable, NOT the secret)", got)
+	}
+	if got == "s3cr3t-value" {
+		t.Fatal("SECURITY: vars.SHARED leaked the secret value")
+	}
+}
+
+// `${{ secrets.X }}` resolves to the secret AND the value is masked (the
+// declare-all-secrets-masked invariant covers it — namespace doesn't weaken).
+func TestBuildAssignment_SecretsNamespaceResolvesAndMasks(t *testing.T) {
+	def := domain.Pipeline{
+		Jobs: []domain.Job{{
+			Name:    "build",
+			Secrets: []string{"TOKEN"},
+			Tasks: []domain.Task{{Plugin: &domain.PluginStep{
+				Image:    "ghcr.io/x/tool:v1",
+				Settings: map[string]string{"auth": "Bearer ${{ secrets.TOKEN }}"},
+			}}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
+	secrets := map[string]string{"TOKEN": "tok-abc123"}
+
+	asg, _, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if got := asg.GetTasks()[0].GetPlugin().GetSettings()["auth"]; got != "Bearer tok-abc123" {
+		t.Fatalf("secrets.TOKEN = %q, want resolved", got)
+	}
+	var masked bool
+	for _, m := range asg.GetLogMasks() {
+		if m == "tok-abc123" {
+			masked = true
+		}
+	}
+	if !masked {
+		t.Fatal("secret value not in LogMasks — would leak to logs")
+	}
+}
+
+// SECURITY regression lock (#281 review): the resolved profile mixes plain
+// env AND decrypted profile secrets in ONE map (ResolvedProfile.Env). varsMap
+// must be built STRICTLY from `variables:` and NEVER from profile.Env, or a
+// profile secret could leak through `${{ vars.X }}` into a persisted field.
+// So `vars.` referencing a profile-env name must fail unresolved, not resolve.
+func TestBuildAssignment_VarsNamespaceExcludesProfileEnv(t *testing.T) {
+	def := domain.Pipeline{
+		Jobs: []domain.Job{{
+			Name: "build",
+			Tasks: []domain.Task{{Plugin: &domain.PluginStep{
+				Image:    "ghcr.io/x/tool:v1",
+				Settings: map[string]string{"value": "${{ vars.PROFILE_SECRET }}"},
+			}}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
+	// PROFILE_SECRET lives in the profile's resolved Env (as a profile secret
+	// would) — it must NOT be reachable via vars.
+	profile := store.ResolvedProfile{
+		Env:          map[string]string{"PROFILE_SECRET": "leak-me"},
+		SecretValues: []string{"leak-me"},
+	}
+
+	_, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, profile, nil, nil, nil, nil, "", nil)
+	if err == nil {
+		t.Fatal("SECURITY: vars.PROFILE_SECRET resolved from profile.Env — must be unresolved")
+	}
+	if !strings.Contains(err.Error(), "vars.PROFILE_SECRET") {
+		t.Fatalf("err = %v, want unresolved vars.PROFILE_SECRET", err)
+	}
+	if strings.Contains(err.Error(), "leak-me") {
+		t.Fatalf("SECURITY: error leaked the profile secret value: %v", err)
 	}
 }

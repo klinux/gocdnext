@@ -584,13 +584,25 @@ secret with the same name doesn't exist.
 The reference grammar inside `with:`, `variables:`, and other
 template fields is intentionally tight:
 
-- `${{ NAME }}` — hard reference. Resolved at dispatch against
-  secrets first, then `variables`. **Identifier only** — dotted
-  forms (`${{ secrets.X }}`, `${{ matrix.GO_VERSION.0 }}`),
-  function calls, and operators are rejected with "unsupported
-  reference expression". Unresolved references fail the dispatch
-  with the reference **name** (never the value of something else),
-  so secret values can't leak via error message.
+- `${{ NAME }}` — hard reference, **bare** (legacy) form. Resolved at
+  dispatch against secrets first, then `variables` — so a bare ref is
+  *ambiguous* (could be either). Identifier only.
+- `${{ vars.NAME }}` — hard reference into the **`variables:`** map
+  **only**. Never resolves to a secret, even if a secret shares the
+  name. Because it is provably non-secret, it is the only ref form
+  allowed in persisted / UI-shown fields like
+  [`deploy.version`](/gocdnext/docs/concepts/deployments/#composing-a-version-from-a-variable-vars).
+- `${{ secrets.NAME }}` — hard reference into the **`secrets:`** set
+  **only**. Masked in logs like any secret. Rejected in `deploy.version`
+  / `deploy.revision`.
+- The explicit `vars.` / `secrets.` namespaces are the **preferred**
+  form (unambiguous, auditable); bare `${{ NAME }}` stays supported for
+  compatibility. Anything else inside `${{ }}` — deeper dotted paths
+  (`${{ matrix.GO_VERSION.0 }}`), function calls, operators — is
+  rejected with "unsupported reference expression". Unresolved
+  references fail the dispatch with the reference **name** (never the
+  value of something else), so secret values can't leak via error
+  message.
 - `${VAR}` — soft, shell-style. **Not** resolved server-side: it is
   passed through verbatim and expanded later by whatever runs the
   value. In a `script:` job the job's shell expands it. In a plugin's

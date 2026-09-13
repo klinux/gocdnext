@@ -414,8 +414,8 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 		for _, m := range deployVersionRefRE.FindAllStringSubmatch(version, -1) {
 			if !deployVersionRefOK.MatchString(m[1]) {
 				return domain.Job{}, fmt.Errorf(
-					"job %q: deploy.version reference ${{ %s }} is not allowed — version accepts only ${{ needs.<job>.outputs.<alias> }} and ${{ CI_* }} "+
-						"(variables/secrets are rejected: the version is recorded and shown in the Environments UI)",
+					"job %q: deploy.version reference ${{ %s }} is not allowed — version accepts only ${{ needs.<job>.outputs.<alias> }}, ${{ CI_* }} and ${{ vars.NAME }} "+
+						"(bare ${{ NAME }} and ${{ secrets.NAME }} are rejected: the version is recorded and shown in the Environments UI)",
 					name, m[1])
 			}
 		}
@@ -426,8 +426,8 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 		for _, m := range deployVersionRefRE.FindAllStringSubmatch(revision, -1) {
 			if !deployVersionRefOK.MatchString(m[1]) {
 				return domain.Job{}, fmt.Errorf(
-					"job %q: deploy.revision reference ${{ %s }} is not allowed — revision accepts only ${{ needs.<job>.outputs.<alias> }} and ${{ CI_* }} "+
-						"(variables/secrets are rejected: the revision is recorded and shown in the UI)",
+					"job %q: deploy.revision reference ${{ %s }} is not allowed — revision accepts only ${{ needs.<job>.outputs.<alias> }}, ${{ CI_* }} and ${{ vars.NAME }} "+
+						"(bare ${{ NAME }} and ${{ secrets.NAME }} are rejected: the revision is recorded and shown in the UI)",
 					name, m[1])
 			}
 		}

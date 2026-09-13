@@ -234,7 +234,17 @@ func (s *Scheduler) resolveNativeDeployMarker(ctx context.Context, run store.Run
 	}
 	dims := buildMatrixDims(def, matrixNeedsOutputs)
 	ciVars := buildCIVars(run, job.Name)
-	version, err = resolveDeployMarkerVersion(job.Name, jobDef, needsOutputs, matrixNeedsOutputs, dims, ciVars)
+	// vars. namespace (#281): STRICTLY the pipeline + job `variables:` maps —
+	// never profile.Env (mixes secrets) or CI. Native deploy jobs are never
+	// compliance-reserved, so pipeline variables always apply here.
+	varsMap := map[string]string{}
+	for k, v := range def.Variables {
+		varsMap[k] = v
+	}
+	for k, v := range jobDef.Variables {
+		varsMap[k] = v
+	}
+	version, err = resolveDeployMarkerVersion(job.Name, jobDef, needsOutputs, matrixNeedsOutputs, dims, varsMap, ciVars)
 	if err != nil {
 		return "", "", err
 	}
@@ -243,7 +253,7 @@ func (s *Scheduler) resolveNativeDeployMarker(ctx context.Context, run store.Run
 	// non-secret allow-list), then the ladder resolves the anchor.
 	declared := strings.TrimSpace(jobDef.Deploy.Revision)
 	if declared != "" {
-		declared, err = resolveDeployVersion(declared, needsOutputs, matrixNeedsOutputs, dims, ciVars)
+		declared, err = resolveDeployVersion(declared, needsOutputs, matrixNeedsOutputs, dims, varsMap, ciVars)
 		if err != nil {
 			return "", "", fmt.Errorf("scheduler: job %s deploy.revision: %w", job.Name, err)
 		}

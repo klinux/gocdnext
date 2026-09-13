@@ -52,10 +52,12 @@ Two halves:
    after which the value is also injected as the env var
    `SSH_DEPLOY_KEY` for the container.
 
-The reference grammar is **identifier-only** — dotted forms like
-`${{ secrets.X }}`, `${{ matrix.Y }}`, function calls, and
-operators are rejected at dispatch with "unsupported reference
-expression". The parser keeps the surface small so it can fail
+The reference grammar accepts a bare identifier (`${{ NAME }}`) or the
+explicit `${{ vars.NAME }}` / `${{ secrets.NAME }}` namespaces (#281 —
+`vars.` binds to `variables:`, `secrets.` to `secrets:`). Deeper dotted
+forms like `${{ matrix.Y }}`, function calls, and operators are
+rejected at dispatch with "unsupported reference expression". The
+parser keeps the surface small so it can fail
 loud on typos instead of silently producing empty strings.
 Resolution order is secrets first, then job/pipeline
 `variables`; a job-local override shadows a global secret with
