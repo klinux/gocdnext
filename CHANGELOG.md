@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.109.0 — 2026-09-13
+
 ### Added
 
 - **Direct pod→store artifact upload (opt-in).** In isolated mode the artifact
