@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ProfilesManager } from "./profiles-manager.client";
+import { createRunnerProfile, updateRunnerProfile } from "@/server/actions/runner-profiles";
 import type { AdminRunnerProfile } from "@/server/queries/admin";
 
 // Server actions are mocked at module level — the manager dispatches
@@ -138,6 +139,32 @@ describe("ProfilesManager", () => {
     // A non-secret field carried over (max_cpu from the "default" sample).
     const maxCpu = screen.getByDisplayValue("4") as HTMLInputElement;
     expect(maxCpu).toBeTruthy();
+  });
+
+  it("a freshly-created profile is editable with the server's real id (not a placeholder)", async () => {
+    // Regression: creating a profile then editing it before a full refresh
+    // must PUT to the real UUID the server returned, not a fabricated
+    // "__opt__" id (which the server rejects as "invalid profile id").
+    vi.mocked(createRunnerProfile).mockResolvedValueOnce({ ok: true, id: "real-uuid-9999" });
+    render(<ProfilesManager initial={sample} globalSecretNames={[]} />);
+
+    // Create a new profile.
+    fireEvent.click(screen.getByRole("button", { name: /new profile/i }));
+    fireEvent.change(screen.getByPlaceholderText("default"), { target: { value: "brand-new" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // The new row appears once the create transition settles.
+    await waitFor(() => expect(screen.getByText("brand-new")).toBeTruthy());
+
+    // Edit it and save — the update action must receive the real id.
+    fireEvent.click(screen.getByRole("button", { name: /edit brand-new/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(vi.mocked(updateRunnerProfile)).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "real-uuid-9999" }),
+      ),
+    );
   });
 
   it("delete button asks for confirmation before dispatching", () => {

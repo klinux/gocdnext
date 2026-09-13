@@ -149,7 +149,11 @@ const writeSchema = z.object({
 const updateSchema = writeSchema.extend({ id: z.string().min(1) });
 const deleteSchema = z.object({ id: z.string().min(1) });
 
-export type ActionResult = { ok: true } | { ok: false; error: string };
+// `id` is populated on a successful CREATE (from the server's response) so
+// the client can seed its optimistic row with the REAL profile id — editing
+// a just-created profile before a full refresh must PUT to a valid UUID, not
+// a fabricated placeholder (which the server rejects as "invalid profile id").
+export type ActionResult = { ok: true; id?: string } | { ok: false; error: string };
 
 async function apiFetch(path: string, init: RequestInit): Promise<Response> {
   const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
@@ -185,8 +189,18 @@ export async function createRunnerProfile(
       body: JSON.stringify(parsed.data),
     });
     if (!res.ok) return errorResult(res, await res.text());
+    // The server returns the created profile (StatusCreated) — pull its real
+    // id back so the client's optimistic row is immediately editable.
+    let id: string | undefined;
+    try {
+      const created = (await res.json()) as { id?: string };
+      id = created.id;
+    } catch {
+      // Non-fatal: the row still appears via revalidate; it just falls back
+      // to a placeholder id until the next full load.
+    }
     revalidatePath("/admin/profiles");
-    return { ok: true };
+    return { ok: true, id };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

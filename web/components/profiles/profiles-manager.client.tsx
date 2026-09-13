@@ -324,8 +324,14 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
       setForm(null);
       // Optimistic local update; the next server render replaces
       // this with the canonical row including timestamps.
+      //
+      // On create, prefer the REAL id the server returned (res.id) so the
+      // row is immediately editable — a fabricated "__opt__" id would make a
+      // follow-up edit PUT to a non-UUID path and get "invalid profile id".
+      // The placeholder only remains as a last-resort fallback.
+      const createdId = form.id ?? (res.ok ? res.id : undefined);
       const draft: AdminRunnerProfile = {
-        id: form.id ?? "__opt__" + Date.now(),
+        id: createdId ?? "__opt__" + Date.now(),
         name,
         description: form.description,
         engine: form.engine,
