@@ -16,6 +16,19 @@ const quantitySchema = z
 
 const tagSchema = z.string().regex(/^[A-Za-z0-9._-]+$/, "tag: letters, digits, dash, underscore, dot only");
 
+// storage class name follows the k8s object-name rule (DNS-1123
+// subdomain: lowercase alphanumerics, '-' and '.', edges alnum).
+// Empty allowed = cluster default / agent default. Server revalidates
+// with the same lib k8s uses; this is the quick typo gate.
+const storageClassSchema = z
+  .string()
+  .regex(
+    /^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/,
+    "must be a valid storage class name (lowercase, e.g. premium-rwo)",
+  )
+  .optional()
+  .default("");
+
 // env / secret keys mirror the conventional UPPER_SNAKE shape that
 // shells, Docker and Kubernetes all converge on. Mirrors the
 // validEnvKey check on the server so a typo round-trips cleanly.
@@ -122,6 +135,15 @@ const writeSchema = z.object({
   // only the keys, never the values. Empty/missing on update means
   // "remove every secret on this profile" — full-replace semantics.
   secrets: envMapSchema,
+  // Per-profile storage sizing (Kubernetes isolated mode). All
+  // optional. workspace_* override the agent-global workspace PVC;
+  // dind_storage_* give a docker:true job a dedicated /var/lib/docker
+  // disk so the big-image export+push runs on a fast/large volume
+  // instead of the node's ephemeral disk.
+  workspace_size: quantitySchema.optional().default(""),
+  workspace_storage_class: storageClassSchema,
+  dind_storage_size: quantitySchema.optional().default(""),
+  dind_storage_class: storageClassSchema,
 });
 
 const updateSchema = writeSchema.extend({ id: z.string().min(1) });

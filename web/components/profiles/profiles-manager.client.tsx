@@ -95,6 +95,11 @@ type FormDraft = {
   default_mem_limit: string;
   max_cpu: string;
   max_mem: string;
+  // Per-profile storage (Kubernetes isolated mode). All optional.
+  workspace_size: string;
+  workspace_storage_class: string;
+  dind_storage_size: string;
+  dind_storage_class: string;
   tagsRaw: string; // comma-separated; parsed on save
   envRows: EnvRow[];
   secretRows: SecretRow[];
@@ -119,6 +124,10 @@ function blankForm(): FormDraft {
     default_mem_limit: "",
     max_cpu: "",
     max_mem: "",
+    workspace_size: "",
+    workspace_storage_class: "",
+    dind_storage_size: "",
+    dind_storage_class: "",
     tagsRaw: "",
     envRows: [{ key: "", value: "" }],
     secretRows: [{ key: "", value: "", existing: false, replace: true }],
@@ -167,6 +176,10 @@ function profileToDraft(p: AdminRunnerProfile): FormDraft {
     default_mem_limit: p.default_mem_limit,
     max_cpu: p.max_cpu,
     max_mem: p.max_mem,
+    workspace_size: p.workspace_size ?? "",
+    workspace_storage_class: p.workspace_storage_class ?? "",
+    dind_storage_size: p.dind_storage_size ?? "",
+    dind_storage_class: p.dind_storage_class ?? "",
     tagsRaw: (p.tags ?? []).join(", "),
     envRows,
     secretRows,
@@ -273,6 +286,10 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         default_mem_limit: form.default_mem_limit,
         max_cpu: form.max_cpu,
         max_mem: form.max_mem,
+        workspace_size: form.workspace_size,
+        workspace_storage_class: form.workspace_storage_class,
+        dind_storage_size: form.dind_storage_size,
+        dind_storage_class: form.dind_storage_class,
         tags: parseTags(form.tagsRaw),
         node_selector: nodeSelectorMap,
         tolerations: tolerationsList,
@@ -303,6 +320,10 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         default_mem_limit: form.default_mem_limit,
         max_cpu: form.max_cpu,
         max_mem: form.max_mem,
+        workspace_size: form.workspace_size,
+        workspace_storage_class: form.workspace_storage_class,
+        dind_storage_size: form.dind_storage_size,
+        dind_storage_class: form.dind_storage_class,
         tags: parseTags(form.tagsRaw),
         node_selector: nodeSelectorMap,
         tolerations: tolerationsList,
@@ -536,6 +557,49 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
                   placeholder="linux, gpu"
                 />
               </Field>
+
+              {/* Per-profile storage (Kubernetes isolated mode). All
+                  optional — empty falls back to the agent-global
+                  workspace default / the node disk for DinD. */}
+              <div className="space-y-3 rounded-md border border-border p-3">
+                <p className="text-sm font-medium text-foreground">Storage (isolated mode)</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field
+                    label="Workspace size"
+                    hint="Override the agent's workspace PVC size for jobs on this profile. Empty = agent default."
+                  >
+                    <Input
+                      value={form.workspace_size}
+                      onChange={(e) => setForm({ ...form, workspace_size: e.target.value })}
+                      placeholder="e.g. 100Gi"
+                    />
+                  </Field>
+                  <Field label="Workspace storage class" hint="Empty = agent/cluster default.">
+                    <Input
+                      value={form.workspace_storage_class}
+                      onChange={(e) => setForm({ ...form, workspace_storage_class: e.target.value })}
+                      placeholder="e.g. premium-rwo"
+                    />
+                  </Field>
+                  <Field
+                    label="DinD store size"
+                    hint="For docker:true jobs: a dedicated /var/lib/docker disk so big-image export+push runs off the node disk. Empty = node disk."
+                  >
+                    <Input
+                      value={form.dind_storage_size}
+                      onChange={(e) => setForm({ ...form, dind_storage_size: e.target.value })}
+                      placeholder="e.g. 300Gi"
+                    />
+                  </Field>
+                  <Field label="DinD store class" hint="A large premium-rwo or a local-SSD class. Empty = cluster default.">
+                    <Input
+                      value={form.dind_storage_class}
+                      onChange={(e) => setForm({ ...form, dind_storage_class: e.target.value })}
+                      placeholder="e.g. premium-rwo"
+                    />
+                  </Field>
+                </div>
+              </div>
 
               <SchedulingFields
                 nodeSelector={form.nodeSelectorRows}

@@ -367,6 +367,21 @@ const dindHost = "tcp://localhost:2375"
 // sockets simply don't.
 const dindHostIsolated = "unix://" + dindSharedSocketPath
 
+// dindStorageVolumeName names the OPTIONAL dedicated ephemeral PVC
+// mounted into the DinD sidecar at dindDataRoot. Only allocated when
+// the resolved runner profile carries DinDStorageSize (isolated mode
+// + docker:true). Its purpose is to move dockerd/buildkit's layer
+// store and image export/push staging off the node's ephemeral disk
+// onto a sized/classed volume — see IsolatedJobSpec.DinDStorageSize.
+const dindStorageVolumeName = "dind-storage"
+
+// dindDataRoot is dockerd's data directory inside the DinD sidecar.
+// Mounting the dedicated PVC here captures the layer store AND the
+// buildkit content store (where `exporting layers` / `pushing`
+// churn the full image), which is exactly the I/O the fast disk is
+// meant to accelerate.
+const dindDataRoot = "/var/lib/docker"
+
 // Name identifies the engine for log/metric labels.
 func (*Kubernetes) Name() string { return "kubernetes" }
 

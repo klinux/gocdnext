@@ -48,6 +48,14 @@ type runnerProfileEntry struct {
 	// a foot-gun. Use the admin UI (or sealed-secrets) to manage
 	// `secrets:` post-install.
 	Env map[string]string `yaml:"env"`
+	// Storage sizing (optional, Kubernetes isolated mode). WorkspaceSize
+	// / WorkspaceStorageClass override the agent-global workspace PVC;
+	// DinDStorageSize / DinDStorageClass give docker:true jobs a
+	// dedicated /var/lib/docker disk. Empty = agent default / node-disk.
+	WorkspaceSize         string `yaml:"workspace_size"`
+	WorkspaceStorageClass string `yaml:"workspace_storage_class"`
+	DinDStorageSize       string `yaml:"dind_storage_size"`
+	DinDStorageClass      string `yaml:"dind_storage_class"`
 }
 
 // seedToleration mirrors the Toleration domain shape in YAML/JSON
@@ -170,6 +178,10 @@ func (s *Store) SeedRunnerProfilesFromFile(ctx context.Context, path string) (in
 			Tolerations:           p.tolerations(),
 			PreferredNodeAffinity: p.preferredNodeAffinity(),
 			Env:                   p.Env,
+			WorkspaceSize:         p.WorkspaceSize,
+			WorkspaceStorageClass: p.WorkspaceStorageClass,
+			DinDStorageSize:       p.DinDStorageSize,
+			DinDStorageClass:      p.DinDStorageClass,
 			// Secrets intentionally NOT seeded from YAML — see the
 			// type comment for the rationale.
 		}

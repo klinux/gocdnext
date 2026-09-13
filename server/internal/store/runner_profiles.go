@@ -76,8 +76,19 @@ type RunnerProfile struct {
 	PreferredNodeAffinity []PreferredNodeAffinityTerm
 	Env                   map[string]string
 	SecretKeys            []string // names only, sorted; values never decrypted on this path
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// WorkspaceSize / WorkspaceStorageClass OPTIONALLY override the
+	// agent-global workspace ephemeral-PVC sizing for jobs on this
+	// profile (Kubernetes isolated mode). Empty = agent default.
+	WorkspaceSize         string
+	WorkspaceStorageClass string
+	// DinDStorageSize / DinDStorageClass, when size is set and the job
+	// runs docker:true, give the DinD sidecar a dedicated ephemeral PVC
+	// at /var/lib/docker (fast/large disk for the image export+push).
+	// Empty = keep the node-disk default.
+	DinDStorageSize  string
+	DinDStorageClass string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // Toleration mirrors corev1.Toleration in store-friendly form
@@ -140,6 +151,10 @@ type RunnerProfileInput struct {
 	PreferredNodeAffinity []PreferredNodeAffinityTerm
 	Env                   map[string]string
 	Secrets               map[string]string
+	WorkspaceSize         string
+	WorkspaceStorageClass string
+	DinDStorageSize       string
+	DinDStorageClass      string
 }
 
 // ListRunnerProfiles returns every profile, sorted by name.
@@ -236,6 +251,10 @@ func (s *Store) InsertRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 		PreferredNodeAffinity: affinityBytes,
 		Env:                   envBytes,
 		Secrets:               secretsBytes,
+		WorkspaceSize:         in.WorkspaceSize,
+		WorkspaceStorageClass: in.WorkspaceStorageClass,
+		DindStorageSize:       in.DinDStorageSize,
+		DindStorageClass:      in.DinDStorageClass,
 	})
 	if err != nil {
 		return RunnerProfile{}, fmt.Errorf("store: insert runner profile %q: %w", in.Name, err)
@@ -311,6 +330,8 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
             env = $14, secrets = $15,
             node_selector = $16, tolerations = $17,
             preferred_node_affinity = $18,
+            workspace_size = $19, workspace_storage_class = $20,
+            dind_storage_size = $21, dind_storage_class = $22,
             updated_at = NOW()
         WHERE id = $1
     `, toPgUUID(id),
@@ -323,6 +344,8 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 		envBytes, secretsBytes,
 		nodeSel, tolerations,
 		affinityBytes,
+		in.WorkspaceSize, in.WorkspaceStorageClass,
+		in.DinDStorageSize, in.DinDStorageClass,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update runner profile %s: %w", id, err)
@@ -379,6 +402,8 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
             env = $14,
             node_selector = $15, tolerations = $16,
             preferred_node_affinity = $17,
+            workspace_size = $18, workspace_storage_class = $19,
+            dind_storage_size = $20, dind_storage_class = $21,
             updated_at = NOW()
         WHERE id = $1
     `, toPgUUID(id),
@@ -391,6 +416,8 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 		envBytes,
 		nodeSel, tolerations,
 		affinityBytes,
+		in.WorkspaceSize, in.WorkspaceStorageClass,
+		in.DinDStorageSize, in.DinDStorageClass,
 	)
 	if err != nil {
 		return fmt.Errorf("store: seed-update runner profile %s: %w", id, err)
@@ -419,6 +446,14 @@ type ResolvedProfile struct {
 	NodeSelector          map[string]string
 	Tolerations           []Toleration
 	PreferredNodeAffinity []PreferredNodeAffinityTerm
+	// WorkspaceSize / WorkspaceStorageClass / DinDStorageSize /
+	// DinDStorageClass are propagated verbatim to the JobAssignment;
+	// the agent applies them to the isolated-mode pod's PVCs. Empty =
+	// agent default (workspace) or node-disk (dind).
+	WorkspaceSize         string
+	WorkspaceStorageClass string
+	DinDStorageSize       string
+	DinDStorageClass      string
 }
 
 // ResolveProfileByName is the dispatch path: scheduler asks for a
@@ -492,6 +527,10 @@ func (s *Store) ResolveProfileByName(ctx context.Context, cipher *crypto.Cipher,
 		NodeSelector:          nodeSel,
 		Tolerations:           tolerations,
 		PreferredNodeAffinity: affinity,
+		WorkspaceSize:         row.WorkspaceSize,
+		WorkspaceStorageClass: row.WorkspaceStorageClass,
+		DinDStorageSize:       row.DindStorageSize,
+		DinDStorageClass:      row.DindStorageClass,
 	}, nil
 }
 
@@ -718,6 +757,10 @@ func runnerProfileFromRow(r db.RunnerProfile) (RunnerProfile, error) {
 		PreferredNodeAffinity: affinity,
 		Env:                   env,
 		SecretKeys:            keys,
+		WorkspaceSize:         r.WorkspaceSize,
+		WorkspaceStorageClass: r.WorkspaceStorageClass,
+		DinDStorageSize:       r.DindStorageSize,
+		DinDStorageClass:      r.DindStorageClass,
 		CreatedAt:             r.CreatedAt.Time,
 		UpdatedAt:             r.UpdatedAt.Time,
 	}, nil

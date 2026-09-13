@@ -32,7 +32,9 @@ SELECT id, name, description, engine,
        tags, config,
        created_at, updated_at,
        env, secrets,
-       node_selector, tolerations, preferred_node_affinity
+       node_selector, tolerations, preferred_node_affinity,
+       workspace_size, workspace_storage_class,
+       dind_storage_size, dind_storage_class
 FROM runner_profiles
 WHERE id = $1
 LIMIT 1
@@ -62,6 +64,10 @@ func (q *Queries) GetRunnerProfile(ctx context.Context, id pgtype.UUID) (RunnerP
 		&i.NodeSelector,
 		&i.Tolerations,
 		&i.PreferredNodeAffinity,
+		&i.WorkspaceSize,
+		&i.WorkspaceStorageClass,
+		&i.DindStorageSize,
+		&i.DindStorageClass,
 	)
 	return i, err
 }
@@ -75,7 +81,9 @@ SELECT id, name, description, engine,
        tags, config,
        created_at, updated_at,
        env, secrets,
-       node_selector, tolerations, preferred_node_affinity
+       node_selector, tolerations, preferred_node_affinity,
+       workspace_size, workspace_storage_class,
+       dind_storage_size, dind_storage_class
 FROM runner_profiles
 WHERE name = $1
 LIMIT 1
@@ -108,6 +116,10 @@ func (q *Queries) GetRunnerProfileByName(ctx context.Context, name string) (Runn
 		&i.NodeSelector,
 		&i.Tolerations,
 		&i.PreferredNodeAffinity,
+		&i.WorkspaceSize,
+		&i.WorkspaceStorageClass,
+		&i.DindStorageSize,
+		&i.DindStorageClass,
 	)
 	return i, err
 }
@@ -121,7 +133,9 @@ INSERT INTO runner_profiles (
     max_cpu, max_mem,
     tags, config,
     env, secrets,
-    node_selector, tolerations, preferred_node_affinity
+    node_selector, tolerations, preferred_node_affinity,
+    workspace_size, workspace_storage_class,
+    dind_storage_size, dind_storage_class
 ) VALUES (
     $1, $2, $3,
     $4,
@@ -130,7 +144,9 @@ INSERT INTO runner_profiles (
     $9, $10,
     $11, $12,
     $13, $14,
-    $15, $16, $17
+    $15, $16, $17,
+    $18, $19,
+    $20, $21
 )
 RETURNING id, name, description, engine,
           default_image,
@@ -140,7 +156,9 @@ RETURNING id, name, description, engine,
           tags, config,
           created_at, updated_at,
           env, secrets,
-          node_selector, tolerations, preferred_node_affinity
+          node_selector, tolerations, preferred_node_affinity,
+          workspace_size, workspace_storage_class,
+          dind_storage_size, dind_storage_class
 `
 
 type InsertRunnerProfileParams struct {
@@ -161,6 +179,10 @@ type InsertRunnerProfileParams struct {
 	NodeSelector          []byte
 	Tolerations           []byte
 	PreferredNodeAffinity []byte
+	WorkspaceSize         string
+	WorkspaceStorageClass string
+	DindStorageSize       string
+	DindStorageClass      string
 }
 
 func (q *Queries) InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error) {
@@ -182,6 +204,10 @@ func (q *Queries) InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfi
 		arg.NodeSelector,
 		arg.Tolerations,
 		arg.PreferredNodeAffinity,
+		arg.WorkspaceSize,
+		arg.WorkspaceStorageClass,
+		arg.DindStorageSize,
+		arg.DindStorageClass,
 	)
 	var i RunnerProfile
 	err := row.Scan(
@@ -205,6 +231,10 @@ func (q *Queries) InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfi
 		&i.NodeSelector,
 		&i.Tolerations,
 		&i.PreferredNodeAffinity,
+		&i.WorkspaceSize,
+		&i.WorkspaceStorageClass,
+		&i.DindStorageSize,
+		&i.DindStorageClass,
 	)
 	return i, err
 }
@@ -218,7 +248,9 @@ SELECT id, name, description, engine,
        tags, config,
        created_at, updated_at,
        env, secrets,
-       node_selector, tolerations, preferred_node_affinity
+       node_selector, tolerations, preferred_node_affinity,
+       workspace_size, workspace_storage_class,
+       dind_storage_size, dind_storage_class
 FROM runner_profiles
 ORDER BY name
 `
@@ -254,6 +286,10 @@ func (q *Queries) ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, erro
 			&i.NodeSelector,
 			&i.Tolerations,
 			&i.PreferredNodeAffinity,
+			&i.WorkspaceSize,
+			&i.WorkspaceStorageClass,
+			&i.DindStorageSize,
+			&i.DindStorageClass,
 		); err != nil {
 			return nil, err
 		}
@@ -281,6 +317,10 @@ SET name = $2,
     node_selector = $16,
     tolerations = $17,
     preferred_node_affinity = $18,
+    workspace_size = $19,
+    workspace_storage_class = $20,
+    dind_storage_size = $21,
+    dind_storage_class = $22,
     updated_at = NOW()
 WHERE id = $1
 `
@@ -304,6 +344,10 @@ type UpdateRunnerProfileParams struct {
 	NodeSelector          []byte
 	Tolerations           []byte
 	PreferredNodeAffinity []byte
+	WorkspaceSize         string
+	WorkspaceStorageClass string
+	DindStorageSize       string
+	DindStorageClass      string
 }
 
 func (q *Queries) UpdateRunnerProfile(ctx context.Context, arg UpdateRunnerProfileParams) error {
@@ -326,6 +370,10 @@ func (q *Queries) UpdateRunnerProfile(ctx context.Context, arg UpdateRunnerProfi
 		arg.NodeSelector,
 		arg.Tolerations,
 		arg.PreferredNodeAffinity,
+		arg.WorkspaceSize,
+		arg.WorkspaceStorageClass,
+		arg.DindStorageSize,
+		arg.DindStorageClass,
 	)
 	return err
 }

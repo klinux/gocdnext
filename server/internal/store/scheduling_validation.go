@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
@@ -207,6 +208,43 @@ func ValidateAndNormalisePreferredNodeAffinity(in []PreferredNodeAffinityTerm) (
 	return out, nil
 }
 
+// ValidateStorageQuantity validates an OPTIONAL PVC size string.
+// Empty is allowed ("not set" → agent default / node-disk). A
+// non-empty value must parse as a Kubernetes resource quantity
+// (e.g. "50Gi", "300Gi") AND be strictly positive — a zero or
+// negative disk request would be rejected at PVC admission with a
+// far more cryptic error than this fixable 400. `field` names the
+// offending column in the message.
+func ValidateStorageQuantity(field, v string) error {
+	if v == "" {
+		return nil
+	}
+	q, err := resource.ParseQuantity(v)
+	if err != nil {
+		return fmt.Errorf("%s %q is not a valid storage quantity (e.g. \"50Gi\"): %w", field, v, err)
+	}
+	if q.Sign() <= 0 {
+		return fmt.Errorf("%s %q must be a positive size", field, v)
+	}
+	return nil
+}
+
+// ValidateStorageClassName validates an OPTIONAL storage-class name.
+// Empty is allowed (cluster default class / agent default). A
+// non-empty value must be a DNS-1123 subdomain — the same rule the
+// apiserver enforces on StorageClass object names — so a typo fails
+// here with a 400 instead of a pod stuck Pending on an unbindable
+// PVC. `field` names the offending column.
+func ValidateStorageClassName(field, v string) error {
+	if v == "" {
+		return nil
+	}
+	if errs := k8svalidation.IsDNS1123Subdomain(v); len(errs) > 0 {
+		return fmt.Errorf("%s %q is not a valid storage class name: %s", field, v, strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 // applySchedulingValidation is the internal shim every store
 // Insert/Update path runs before persist. Mutates input in place
 // (normalised tolerations replace the raw slice; node_selector
@@ -226,5 +264,17 @@ func applySchedulingValidation(in *RunnerProfileInput) error {
 		return err
 	}
 	in.PreferredNodeAffinity = affinity
+	if err := ValidateStorageQuantity("workspace_size", in.WorkspaceSize); err != nil {
+		return err
+	}
+	if err := ValidateStorageClassName("workspace_storage_class", in.WorkspaceStorageClass); err != nil {
+		return err
+	}
+	if err := ValidateStorageQuantity("dind_storage_size", in.DinDStorageSize); err != nil {
+		return err
+	}
+	if err := ValidateStorageClassName("dind_storage_class", in.DinDStorageClass); err != nil {
+		return err
+	}
 	return nil
 }

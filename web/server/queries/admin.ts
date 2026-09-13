@@ -213,6 +213,14 @@ export type AdminRunnerProfile = {
   // Biases scheduling toward matching nodes without overriding the hard
   // node_selector. Always emitted as `[]`, never null.
   preferred_node_affinity: AdminPreferredNodeAffinityTerm[];
+  // Per-profile storage sizing (Kubernetes isolated mode). All
+  // optional (empty string = not set). workspace_* override the
+  // agent-global workspace PVC; dind_storage_* give docker:true jobs
+  // a dedicated /var/lib/docker disk (fast/large export+push).
+  workspace_size: string;
+  workspace_storage_class: string;
+  dind_storage_size: string;
+  dind_storage_class: string;
   created_at: string;
   updated_at: string;
 };
