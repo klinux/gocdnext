@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -350,5 +351,42 @@ func TestBuildAssignment_SecretsNamespaceResolvesAndMasks(t *testing.T) {
 	}
 	if !masked {
 		t.Fatal("secret value not in LogMasks — would leak to logs")
+	}
+}
+
+// SECURITY regression lock (#281 review): the resolved profile mixes plain
+// env AND decrypted profile secrets in ONE map (ResolvedProfile.Env). varsMap
+// must be built STRICTLY from `variables:` and NEVER from profile.Env, or a
+// profile secret could leak through `${{ vars.X }}` into a persisted field.
+// So `vars.` referencing a profile-env name must fail unresolved, not resolve.
+func TestBuildAssignment_VarsNamespaceExcludesProfileEnv(t *testing.T) {
+	def := domain.Pipeline{
+		Jobs: []domain.Job{{
+			Name: "build",
+			Tasks: []domain.Task{{Plugin: &domain.PluginStep{
+				Image:    "ghcr.io/x/tool:v1",
+				Settings: map[string]string{"value": "${{ vars.PROFILE_SECRET }}"},
+			}}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
+	// PROFILE_SECRET lives in the profile's resolved Env (as a profile secret
+	// would) — it must NOT be reachable via vars.
+	profile := store.ResolvedProfile{
+		Env:          map[string]string{"PROFILE_SECRET": "leak-me"},
+		SecretValues: []string{"leak-me"},
+	}
+
+	_, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, profile, nil, nil, nil, nil, "", nil)
+	if err == nil {
+		t.Fatal("SECURITY: vars.PROFILE_SECRET resolved from profile.Env — must be unresolved")
+	}
+	if !strings.Contains(err.Error(), "vars.PROFILE_SECRET") {
+		t.Fatalf("err = %v, want unresolved vars.PROFILE_SECRET", err)
+	}
+	if strings.Contains(err.Error(), "leak-me") {
+		t.Fatalf("SECURITY: error leaked the profile secret value: %v", err)
 	}
 }
