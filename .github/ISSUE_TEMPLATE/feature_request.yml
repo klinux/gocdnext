@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a new capability or an improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! gocdnext favors **small, focused** additions that
+        fit the existing model (stage → job → task, materials, plugins). Please
+        describe the problem first — the solution second.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and discussions and this is not a duplicate.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do that gocdnext makes hard or impossible today?
+      placeholder: "As an operator I want ... so that ..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen? Sketch the YAML/CLI/UI shape if you can.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, or other designs you weighed.
+    validations:
+      required: false
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you be willing to contribute this?
+      options:
+        - "Yes, I'd like to implement it (with guidance)"
+        - "Maybe, if pointed in the right direction"
+        - "No, just proposing"
+    validations:
+      required: false

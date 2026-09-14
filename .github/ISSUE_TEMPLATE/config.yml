@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/klinux/gocdnext/security/advisories/new
+    about: Report security issues privately via GitHub Security Advisories — never in a public issue. See SECURITY.md.
+  - name: Question / discussion
+    url: https://github.com/klinux/gocdnext/discussions
+    about: Have a question, want to share how you use gocdnext, or float an idea before filing? Start a discussion.
+  - name: Documentation
+    url: https://klinux.github.io/gocdnext/docs/
+    about: Setup, concepts, pipeline reference, and upgrade guides.
