@@ -1,0 +1,88 @@
+name: Bug report
+description: Something in gocdnext is broken or behaves unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in as much as you
+        can — a clear reproduction is the single biggest factor in getting a fix.
+
+        ⚠️ **Do not report security vulnerabilities here.** See
+        [SECURITY.md](https://github.com/klinux/gocdnext/blob/main/SECURITY.md)
+        for private disclosure.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is a bug, not a security vulnerability (those go through SECURITY.md).
+          required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of gocdnext is affected?
+      options:
+        - server (control plane)
+        - agent (runner)
+        - cli
+        - web (UI)
+        - a plugin
+        - Helm chart / deployment
+        - docs
+        - not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: "Output of the release tag or `git rev-parse HEAD`. e.g. v0.111.0"
+      placeholder: v0.x.y
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe? Include exact error messages.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal steps. A pipeline YAML snippet (with secrets redacted) is
+        extremely helpful. The smaller the repro, the faster the fix.
+      placeholder: |
+        1. Apply this pipeline: ...
+        2. Trigger with a push to ...
+        3. See error ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Runtime (Docker on agent host vs Kubernetes), OS/arch, DB version if relevant.
+      placeholder: "Kubernetes 1.30, agents pod-per-job, Postgres 16"
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Server/agent logs (`slog` JSON) around the failure. Redact secrets — resolved secret values are masked in gocdnext logs, but double-check.
+      render: shell
+    validations:
+      required: false
