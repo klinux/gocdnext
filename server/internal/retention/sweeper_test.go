@@ -43,7 +43,7 @@ func (f *fakeStore) Delete(_ context.Context, key string) error {
 
 // Implement the rest of artifacts.Store with stubs — sweeper only
 // calls Delete, but the interface forces us to satisfy the surface.
-func (f *fakeStore) SignedPutURL(context.Context, string, time.Duration) (artifacts.SignedURL, error) {
+func (f *fakeStore) SignedPutURL(context.Context, string, time.Duration, ...artifacts.PutOption) (artifacts.SignedURL, error) {
 	return artifacts.SignedURL{}, errors.New("fakeStore: not used")
 }
 func (f *fakeStore) SignedGetURL(context.Context, string, time.Duration, ...artifacts.GetOption) (artifacts.SignedURL, error) {

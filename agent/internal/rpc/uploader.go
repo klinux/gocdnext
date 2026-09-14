@@ -105,25 +105,45 @@ const directUploadMarker = "GOCDNEXTUP"
 // Content-Type are code constants (not input). curl -T - streams the body with
 // chunked transfer-encoding (no Content-Length), which the signed URL must
 // accept (GCS does).
-func (u *ArtifactUploader) directUploadCmd(podWorkDir, putURL string, files []string) []string {
+func (u *ArtifactUploader) directUploadCmd(podWorkDir, putURL string, putHeaders map[string]string, files []string) []string {
 	compressor := "gzip -c"
 	ctype := "application/gzip"
 	if u.compression == codecZstd {
 		compressor = "zstd -T0 -3 -c"
 		ctype = "application/zstd"
 	}
+	// Signed PUT headers (create-only preconditions, #210) are passed as
+	// positional args ($3 = count, then that many "Key: Value" lines) and
+	// written into a curl config file via printf — never interpolated into
+	// the script — so a header value can't inject shell. curl -K reads them,
+	// which sidesteps sh word-splitting on values that contain spaces (e.g.
+	// "If-None-Match: *"). When write-once is off the list is empty and the
+	// config file is empty → behaviour is identical to a plain PUT.
+	//
+	// -fsS is kept deliberately: a create-only 412 (reused key whose earlier
+	// PUT already landed) is a HARD failure here, which fails the upload and
+	// lets the job retry — on the next attempt the prior pending rows are
+	// retired and a FRESH storage_key is minted, so the retry can't 412. We
+	// do NOT try to tolerate 412 mid-stream because curl abandoning the body
+	// would stall the tee'd sha/size readers and yield a partial digest.
+	//
 	// --connect-timeout + --max-time bound the PUT the same way the agent's
 	// http.Client{Timeout: 30m} bounds the exec-stream path: without them a
 	// store that accepts the TCP connection then stalls mid-body would hang
 	// the job in POST-JOB until cancel/drain instead of failing. 1800s = 30m
 	// matches the old ceiling; --connect-timeout catches a dead endpoint fast.
-	script := `set -o pipefail; d="$1"; url="$2"; shift 2; ` +
+	script := `set -o pipefail; d="$1"; url="$2"; nh="$3"; shift 3; ` +
+		`hf="$(mktemp)"; i=0; while [ "$i" -lt "$nh" ]; do printf 'header = "%s"\n' "$1" >>"$hf"; shift; i=$((i+1)); done; ` +
 		`f="$(mktemp -u)"; mkfifo "$f"; ( sha256sum <"$f" | cut -d' ' -f1 >"$f.sha" ) & ` +
 		`sz="$(tar -cf - -C "$d" -- "$@" | ` + compressor + ` | tee "$f" | ` +
 		`curl -fsS --connect-timeout 30 --max-time 1800 -X PUT -T - ` +
-		`-H "Content-Type: ` + ctype + `" -w "%{size_upload}" -o /dev/null "$url")"; ` +
-		`wait; printf "` + directUploadMarker + ` %s %s\n" "$(cat "$f.sha")" "$sz"; rm -f "$f" "$f.sha"`
-	return append([]string{"sh", "-c", script, "_", podWorkDir, putURL}, files...)
+		`-H "Content-Type: ` + ctype + `" -K "$hf" -w "%{size_upload}" -o /dev/null "$url")"; ` +
+		`wait; printf "` + directUploadMarker + ` %s %s\n" "$(cat "$f.sha")" "$sz"; rm -f "$f" "$f.sha" "$hf"`
+	args := []string{"sh", "-c", script, "_", podWorkDir, putURL, strconv.Itoa(len(putHeaders))}
+	for k, v := range putHeaders {
+		args = append(args, k+": "+v)
+	}
+	return append(args, files...)
 }
 
 // parseDirectUploadSummary extracts (sha256, size) from the direct-upload
@@ -186,7 +206,7 @@ func (u *ArtifactUploader) uploadOneFromPodDirect(
 		files = []string{tkt.GetPath()}
 	}
 	var out, errb strings.Builder
-	cmd := u.directUploadCmd(podWorkDir, tkt.GetPutUrl(), files)
+	cmd := u.directUploadCmd(podWorkDir, tkt.GetPutUrl(), tkt.GetPutHeaders(), files)
 	if err := exec.Exec(ctx, podName, containerName, cmd, nil, &out, &errb); err != nil {
 		return nil, fmt.Errorf("exec direct upload %q: %w (stderr=%q)", tkt.GetPath(), err, errb.String())
 	}
@@ -473,6 +493,37 @@ func resolveArtifactGlobs(
 // against drift.
 var _ = path.Clean
 
+// applyPutHeaders sets the ticket's required PUT headers on the request. The
+// server puts create-only preconditions here (#210, e.g. `If-None-Match: *`
+// on S3, `x-goog-if-generation-match: 0` on GCS) when write-once is enabled;
+// they're part of the signed URL's signature, so the agent MUST echo them
+// verbatim and never interprets them (stays backend-agnostic).
+func applyPutHeaders(req *http.Request, tkt *gocdnextv1.ArtifactUploadTicket) {
+	for k, v := range tkt.GetPutHeaders() {
+		req.Header.Set(k, v)
+	}
+}
+
+// putStatusOK reports whether a PUT response status means the object is now
+// in place. A 2xx is the normal success. A 412 (PreconditionFailed) on a
+// create-only PUT means the object ALREADY exists — reached only when a
+// reissued ticket re-PUTs a still-`pending` key whose earlier PUT had landed
+// but wasn't confirmed. That is NOT a failure: the agent still reports the
+// ArtifactRef with its computed sha/size, and the server's confirm re-reads
+// and verifies the on-backend bytes match (identical ⇒ idempotent success;
+// different ⇒ confirm fails on sha mismatch, the correct security outcome).
+// Any other status is a hard error.
+func putStatusOK(status int) (ok bool, hardErr bool) {
+	switch {
+	case status/100 == 2:
+		return true, false
+	case status == http.StatusPreconditionFailed:
+		return true, false
+	default:
+		return false, true
+	}
+}
+
 // uploadOneFromPod tars one declared path inside the pod via exec,
 // streams through a temp file (to derive Content-Length), then PUTs.
 // Sha256 is computed during the exec → tmp copy so the
@@ -540,6 +591,7 @@ func (u *ArtifactUploader) uploadOneFromPod(
 	}
 	req.ContentLength = size
 	req.Header.Set("Content-Type", cacheContentType(u.compression))
+	applyPutHeaders(req, tkt)
 
 	resp, err := u.http.Do(req)
 	if err != nil {
@@ -547,7 +599,7 @@ func (u *ArtifactUploader) uploadOneFromPod(
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
-	if resp.StatusCode/100 != 2 {
+	if _, hardErr := putStatusOK(resp.StatusCode); hardErr {
 		return nil, fmt.Errorf("PUT returned %s", resp.Status)
 	}
 	return &gocdnextv1.ArtifactRef{
@@ -586,6 +638,7 @@ func (u *ArtifactUploader) uploadOne(ctx context.Context, workDir string, tkt *g
 	}
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/gzip")
+	applyPutHeaders(req, tkt)
 
 	resp, err := u.http.Do(req)
 	if err != nil {
@@ -593,7 +646,7 @@ func (u *ArtifactUploader) uploadOne(ctx context.Context, workDir string, tkt *g
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
-	if resp.StatusCode/100 != 2 {
+	if _, hardErr := putStatusOK(resp.StatusCode); hardErr {
 		return nil, fmt.Errorf("PUT returned %s", resp.Status)
 	}
 	return &gocdnextv1.ArtifactRef{

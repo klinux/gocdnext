@@ -75,12 +75,16 @@ func (f *FilesystemStore) resolve(key string) (string, error) {
 	return full, nil
 }
 
-func (f *FilesystemStore) SignedPutURL(_ context.Context, key string, ttl time.Duration) (SignedURL, error) {
+func (f *FilesystemStore) SignedPutURL(_ context.Context, key string, ttl time.Duration, _ ...PutOption) (SignedURL, error) {
 	if ttl <= 0 {
 		ttl = 15 * time.Minute
 	}
 	exp := time.Now().Add(ttl)
 	tok := f.signer.Sign(key, VerbPUT, exp)
+	// WithCreateOnly is a no-op here: the HTTP handler already routes
+	// non-`cache/` keys through PutCreateOnly (handler.go), so filesystem
+	// artifacts are write-once regardless of the option. No extra header is
+	// needed — the create-only enforcement lives server-side, not in the URL.
 	return SignedURL{
 		URL:       f.publicBase + "/artifacts/" + url.PathEscape(tok),
 		ExpiresAt: exp,

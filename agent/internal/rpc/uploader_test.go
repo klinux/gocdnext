@@ -105,6 +105,81 @@ func TestUpload_DedupesPathsBeforeRPC(t *testing.T) {
 	}
 }
 
+// TestUpload_WriteOnce_SendsHeadersAndTolerates412 covers #210 on the http PUT
+// path: the ticket's PutHeaders (create-only precondition) are echoed on the
+// request, and a 412 (the object already exists — a reissued ticket whose prior
+// PUT landed) is treated as success, with the ArtifactRef still reported so the
+// server's confirm can verify the on-backend bytes.
+func TestUpload_WriteOnce_SendsHeadersAndTolerates412(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "a.out"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write a.out: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "b.out"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("write b.out: %v", err)
+	}
+
+	var gotIfNoneMatch []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		gotIfNoneMatch = append(gotIfNoneMatch, r.Header.Get("If-None-Match"))
+		// /already simulates a create-only PUT to an occupied key.
+		if strings.HasSuffix(r.URL.Path, "/already") {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	stub := &stubAgentClient{
+		tickets: []*gocdnextv1.ArtifactUploadTicket{
+			{Path: "a.out", StorageKey: "k1", PutUrl: srv.URL + "/fresh", ExpiresAt: timestamppb.Now(),
+				PutHeaders: map[string]string{"If-None-Match": "*"}},
+			{Path: "b.out", StorageKey: "k2", PutUrl: srv.URL + "/already", ExpiresAt: timestamppb.Now(),
+				PutHeaders: map[string]string{"If-None-Match": "*"}},
+		},
+	}
+	u := NewArtifactUploader(stub, "sess", srv.Client())
+
+	refs, err := u.Upload(context.Background(), workDir, "run-1", "job-1", []string{"a.out", "b.out"})
+	if err != nil {
+		t.Fatalf("Upload should tolerate 412, got error: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("refs = %d, want 2 (the 412 upload must still be reported)", len(refs))
+	}
+	for _, ref := range refs {
+		if ref.GetContentSha256() == "" || ref.GetSize() == 0 {
+			t.Errorf("ref %q missing sha/size: %+v", ref.GetPath(), ref)
+		}
+	}
+	for _, v := range gotIfNoneMatch {
+		if v != "*" {
+			t.Errorf("PUT missing If-None-Match:* header, got %q", v)
+		}
+	}
+}
+
+// TestPutStatusOK locks the status classification: 2xx and 412 are "in place",
+// everything else is a hard error.
+func TestPutStatusOK(t *testing.T) {
+	cases := []struct {
+		code        int
+		ok, hardErr bool
+	}{
+		{200, true, false}, {201, true, false}, {204, true, false},
+		{412, true, false}, // create-only: already exists, tolerated
+		{403, false, true}, {404, false, true}, {500, false, true}, {409, false, true},
+	}
+	for _, c := range cases {
+		ok, hard := putStatusOK(c.code)
+		if ok != c.ok || hard != c.hardErr {
+			t.Errorf("putStatusOK(%d) = (%v,%v), want (%v,%v)", c.code, ok, hard, c.ok, c.hardErr)
+		}
+	}
+}
+
 // --- #16: glob expansion in UploadFromPod (isolated mode) -------------
 
 // fakeArtifactExec is the rpc-test stub for engine.PodExecutor.
@@ -389,32 +464,37 @@ func TestDirectUploadCmd_ShapeAndSafety(t *testing.T) {
 	u := NewArtifactUploader(&stubAgentClient{}, "s", nil)
 	u.UseDirectUpload("true")
 	u.UseCompression("zstd")
-	cmd := u.directUploadCmd("/workspace", "https://signed.example/put?sig=abc", []string{"a.zip", "b.zip"})
+	hdrs := map[string]string{"If-None-Match": "*"}
+	cmd := u.directUploadCmd("/workspace", "https://signed.example/put?sig=abc", hdrs, []string{"a.zip", "b.zip"})
 
 	if cmd[0] != "sh" || cmd[1] != "-c" {
 		t.Fatalf("want sh -c invocation, got %v", cmd[:2])
 	}
 	script := cmd[2]
-	for _, want := range []string{"curl", "zstd -T0", directUploadMarker, "sha256sum", "-T -", "--max-time 1800", "--connect-timeout 30"} {
+	for _, want := range []string{"curl", "zstd -T0", directUploadMarker, "sha256sum", "-T -", "--max-time 1800", "--connect-timeout 30", `-K "$hf"`, "header = "} {
 		if !strings.Contains(script, want) {
 			t.Errorf("script missing %q: %s", want, script)
 		}
 	}
-	// dir + url + files are POSITIONAL args, never interpolated into the script.
-	if strings.Contains(script, "/workspace") || strings.Contains(script, "signed.example") {
-		t.Errorf("path/url must not be interpolated into the script: %s", script)
+	// dir + url + files + header values are POSITIONAL args, never interpolated.
+	if strings.Contains(script, "/workspace") || strings.Contains(script, "signed.example") || strings.Contains(script, "If-None-Match") {
+		t.Errorf("path/url/header must not be interpolated into the script: %s", script)
 	}
-	rest := cmd[3:] // ["_", dir, url, files...]
+	rest := cmd[3:] // ["_", dir, url, nHeaders, headers..., files...]
 	if !sliceContains(rest, "/workspace") || !sliceContains(rest, "https://signed.example/put?sig=abc") ||
 		!sliceContains(rest, "a.zip") || !sliceContains(rest, "b.zip") {
 		t.Errorf("positional args = %v, want dir+url+files", rest)
+	}
+	// The header count ("1") and the header line must be passed positionally.
+	if !sliceContains(rest, "1") || !sliceContains(rest, "If-None-Match: *") {
+		t.Errorf("header count/line missing from positional args: %v", rest)
 	}
 }
 
 func TestDirectUploadCmd_GzipCodec(t *testing.T) {
 	u := NewArtifactUploader(&stubAgentClient{}, "s", nil)
 	u.UseCompression("") // gzip default
-	script := u.directUploadCmd("/w", "https://u", []string{"x"})[2]
+	script := u.directUploadCmd("/w", "https://u", nil, []string{"x"})[2]
 	if !strings.Contains(script, "gzip -c") || strings.Contains(script, "zstd") {
 		t.Errorf("gzip codec should use gzip, not zstd: %s", script)
 	}

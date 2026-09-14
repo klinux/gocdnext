@@ -42,6 +42,7 @@ for the value-side names.
 | `GOCDNEXT_ARTIFACTS_PROJECT_QUOTA_BYTES` | `107374182400` | Per-project soft cap (100 GiB). 0 disables. |
 | `GOCDNEXT_ARTIFACTS_GLOBAL_QUOTA_BYTES` | `0` | Global hard cap. 0 = disabled. |
 | `GOCDNEXT_ARTIFACTS_MAX_BODY_MB` | `2048` | Per-request body cap on uploads |
+| `GOCDNEXT_ARTIFACT_WRITE_ONCE` | `false` | Sign artifact PUT URLs create-only so a reused/leaked signed URL can't overwrite a confirmed artifact. Opt-in: requires a backend that supports conditional writes (AWS S3, modern MinIO, GCS). No effect on caches (which overwrite by design) or the filesystem backend (already write-once). Enable only after the whole agent fleet is upgraded — see the note below. |
 | `GOCDNEXT_ARTIFACTS_S3_BUCKET` | empty | S3 bucket name (when backend=s3) |
 | `GOCDNEXT_ARTIFACTS_S3_REGION` | `us-east-1` | |
 | `GOCDNEXT_ARTIFACTS_S3_ENDPOINT` | empty | Custom S3-compatible endpoint (MinIO, R2, etc.) |
@@ -54,6 +55,16 @@ for the value-side names.
 | `GOCDNEXT_ARTIFACTS_GCS_ENSURE_BUCKET` | `false` | |
 | `GOCDNEXT_ARTIFACTS_GCS_CREDENTIALS_FILE` | empty | Service-account JSON path |
 | `GOCDNEXT_ARTIFACTS_GCS_CREDENTIALS_JSON` | empty | Service-account JSON content (alternative to file) |
+
+:::caution[Enabling `GOCDNEXT_ARTIFACT_WRITE_ONCE`]
+Write-once signs each artifact upload with a "must not already exist"
+precondition (`If-None-Match: *` on S3, `x-goog-if-generation-match: 0` on GCS).
+The server returns the required header on the upload ticket and the agent echoes
+it, so **upgrade the whole agent fleet before turning the flag on** — an older
+agent that doesn't send the header would fail every upload with a signature
+mismatch. Roll it out in a canary environment first and flip it back off (config
+only, no redeploy) if your object store doesn't support conditional writes.
+:::
 
 ## Cache (per-job content cache, not log archive)
 

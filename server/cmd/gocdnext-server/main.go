@@ -444,7 +444,9 @@ func main() {
 		WithLogBatcherLimits(cfg.LogBufferMaxLines, cfg.LogBufferMaxBytes).
 		WithAutoRegisterToken(cfg.AgentRegistrationToken)
 	if artifactStore != nil {
-		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*time.Minute, 30*24*time.Hour)
+		agentService = agentService.
+			WithArtifactStore(artifactStore, 15*time.Minute, 30*time.Minute, 30*24*time.Hour).
+			WithArtifactWriteOnce(cfg.ArtifactsWriteOnce)
 	}
 
 	// Cold-archive wiring. Resolution table (see docs/log-archive.md
