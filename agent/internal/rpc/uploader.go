@@ -505,19 +505,21 @@ func applyPutHeaders(req *http.Request, tkt *gocdnextv1.ArtifactUploadTicket) {
 }
 
 // putStatusOK reports whether a PUT response status means the object is now
-// in place. A 2xx is the normal success. A 412 (PreconditionFailed) on a
-// create-only PUT means the object ALREADY exists — reached only when a
-// reissued ticket re-PUTs a still-`pending` key whose earlier PUT had landed
-// but wasn't confirmed. That is NOT a failure: the agent still reports the
-// ArtifactRef with its computed sha/size, and the server's confirm re-reads
-// and verifies the on-backend bytes match (identical ⇒ idempotent success;
-// different ⇒ confirm fails on sha mismatch, the correct security outcome).
-// Any other status is a hard error.
-func putStatusOK(status int) (ok bool, hardErr bool) {
+// in place. A 2xx is the normal success. A 412 (PreconditionFailed) is tolerated
+// ONLY when the ticket carried a create-only precondition (createOnly): it then
+// means the object ALREADY exists — reached only when a reissued ticket re-PUTs
+// a still-`pending` key whose earlier PUT had landed but wasn't confirmed. That
+// is NOT a failure: the agent still reports the ArtifactRef with its computed
+// sha/size, and the server's confirm re-reads and verifies the on-backend bytes
+// match (identical ⇒ idempotent success; different ⇒ confirm fails on sha
+// mismatch, the correct security outcome). Without a create-only precondition a
+// 412 is unexpected (a strange backend/policy or an old server) and stays a hard
+// error, preserving the pre-#210 behaviour. Any other status is a hard error.
+func putStatusOK(status int, createOnly bool) (ok bool, hardErr bool) {
 	switch {
 	case status/100 == 2:
 		return true, false
-	case status == http.StatusPreconditionFailed:
+	case status == http.StatusPreconditionFailed && createOnly:
 		return true, false
 	default:
 		return false, true
@@ -599,7 +601,7 @@ func (u *ArtifactUploader) uploadOneFromPod(
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
-	if _, hardErr := putStatusOK(resp.StatusCode); hardErr {
+	if _, hardErr := putStatusOK(resp.StatusCode, len(tkt.GetPutHeaders()) > 0); hardErr {
 		return nil, fmt.Errorf("PUT returned %s", resp.Status)
 	}
 	return &gocdnextv1.ArtifactRef{
@@ -646,7 +648,7 @@ func (u *ArtifactUploader) uploadOne(ctx context.Context, workDir string, tkt *g
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
-	if _, hardErr := putStatusOK(resp.StatusCode); hardErr {
+	if _, hardErr := putStatusOK(resp.StatusCode, len(tkt.GetPutHeaders()) > 0); hardErr {
 		return nil, fmt.Errorf("PUT returned %s", resp.Status)
 	}
 	return &gocdnextv1.ArtifactRef{

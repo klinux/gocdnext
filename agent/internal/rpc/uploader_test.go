@@ -161,21 +161,24 @@ func TestUpload_WriteOnce_SendsHeadersAndTolerates412(t *testing.T) {
 	}
 }
 
-// TestPutStatusOK locks the status classification: 2xx and 412 are "in place",
-// everything else is a hard error.
+// TestPutStatusOK locks the status classification: 2xx is always in place;
+// 412 is tolerated ONLY for a create-only PUT; everything else is a hard error.
 func TestPutStatusOK(t *testing.T) {
 	cases := []struct {
 		code        int
+		createOnly  bool
 		ok, hardErr bool
 	}{
-		{200, true, false}, {201, true, false}, {204, true, false},
-		{412, true, false}, // create-only: already exists, tolerated
-		{403, false, true}, {404, false, true}, {500, false, true}, {409, false, true},
+		{200, false, true, false}, {201, false, true, false}, {204, false, true, false},
+		{200, true, true, false},
+		{412, true, true, false},  // create-only: already exists, tolerated
+		{412, false, false, true}, // 412 WITHOUT create-only is unexpected → hard error
+		{403, true, false, true}, {404, true, false, true}, {500, false, false, true}, {409, true, false, true},
 	}
 	for _, c := range cases {
-		ok, hard := putStatusOK(c.code)
+		ok, hard := putStatusOK(c.code, c.createOnly)
 		if ok != c.ok || hard != c.hardErr {
-			t.Errorf("putStatusOK(%d) = (%v,%v), want (%v,%v)", c.code, ok, hard, c.ok, c.hardErr)
+			t.Errorf("putStatusOK(%d, createOnly=%v) = (%v,%v), want (%v,%v)", c.code, c.createOnly, ok, hard, c.ok, c.hardErr)
 		}
 	}
 }
