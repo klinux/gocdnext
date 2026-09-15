@@ -332,6 +332,12 @@ message ArtifactUploadTicket {
   string                    storage_key = 2;
   string                    put_url    = 3;
   google.protobuf.Timestamp expires_at = 4;
+  // put_headers: request headers the agent MUST send verbatim on the PUT
+  // for the signed URL to validate — e.g. a create-only precondition
+  // (`If-None-Match: *` on S3, `x-goog-if-generation-match: 0` on GCS) when
+  // the server has write-once enabled (#210). Empty for a plain PUT. The
+  // agent echoes these without interpreting them, staying backend-agnostic.
+  map<string, string>       put_headers = 5;
 }
 
 // ── Mensagens SERVER → AGENT ─────────────────────────────────────────

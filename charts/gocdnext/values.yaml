@@ -419,6 +419,13 @@ artifacts:
   # protects against a wedged agent streaming TBs into the
   # backend. MB-units to match the env var.
   maxBodyMB: 2048
+  # writeOnce signs artifact PUT URLs create-only so a reused/leaked signed
+  # URL can't overwrite a confirmed artifact. Opt-in: requires a backend that
+  # supports conditional writes (AWS S3, modern MinIO, GCS). No effect on
+  # caches or the filesystem backend. Enable ONLY after the whole agent fleet
+  # is upgraded — older agents don't send the signed precondition header and
+  # would fail every upload with a signature mismatch.
+  writeOnce: false
 
   filesystem:
     storageClass: ""

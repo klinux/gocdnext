@@ -35,6 +35,12 @@ type Config struct {
 	ArtifactsPublicBase string // external base URL used to build signed URLs
 	ArtifactsSignKeyHex string // hex HMAC key for filesystem signed URLs
 	ArtifactsMaxBodyMB  int64  // PUT body cap in MiB; 0 disables
+	// ArtifactsWriteOnce signs artifact PUT URLs with a create-only
+	// precondition (#210) so a reused/leaked signed URL can't overwrite a
+	// confirmed artifact. Opt-in (default false): requires a backend that
+	// supports conditional writes (AWS S3, modern MinIO, GCS). No effect on
+	// caches, which overwrite a deterministic key by design.
+	ArtifactsWriteOnce bool
 
 	// S3 config (used when ArtifactsBackend == "s3").
 	ArtifactsS3Bucket       string
@@ -269,6 +275,7 @@ func Load() (*Config, error) {
 		ArtifactsS3SecretKey:    env("GOCDNEXT_ARTIFACTS_S3_SECRET_KEY", ""),
 		ArtifactsS3UsePathStyle: strings.EqualFold(env("GOCDNEXT_ARTIFACTS_S3_USE_PATH_STYLE", "false"), "true"),
 		ArtifactsS3EnsureBucket: strings.EqualFold(env("GOCDNEXT_ARTIFACTS_S3_ENSURE_BUCKET", "false"), "true"),
+		ArtifactsWriteOnce:      strings.EqualFold(env("GOCDNEXT_ARTIFACT_WRITE_ONCE", "false"), "true"),
 
 		ArtifactsGCSBucket:          env("GOCDNEXT_ARTIFACTS_GCS_BUCKET", ""),
 		ArtifactsGCSCredentialsFile: env("GOCDNEXT_ARTIFACTS_GCS_CREDENTIALS_FILE", ""),

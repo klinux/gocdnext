@@ -49,6 +49,12 @@ type AgentService struct {
 	artifactPutURLTTL        time.Duration
 	artifactGetURLTTL        time.Duration
 	artifactDefaultRetention time.Duration
+	// artifactWriteOnce, when true, signs artifact PUT URLs with a
+	// create-only precondition (#210) so a reused/leaked signed URL can't
+	// overwrite a confirmed artifact. Opt-in (default off) because it
+	// requires a backend that supports conditional writes (AWS S3, modern
+	// MinIO, GCS). Never applied to cache PUTs — caches overwrite by design.
+	artifactWriteOnce bool
 
 	// checksReporter: optional; nil means "don't report back to GitHub
 	// when a run terminates". Set via WithChecksReporter.
@@ -164,6 +170,15 @@ func (a *AgentService) WithArtifactStore(st artifacts.Store, putURLTTL, getURLTT
 	a.artifactPutURLTTL = putURLTTL
 	a.artifactGetURLTTL = getURLTTL
 	a.artifactDefaultRetention = retention
+	return a
+}
+
+// WithArtifactWriteOnce enables create-only signing for artifact PUT URLs
+// (#210). Off by default; enable only against a backend that supports
+// conditional writes (AWS S3, modern MinIO, GCS) and after the whole agent
+// fleet tolerates a 412 on an already-uploaded key. No effect on cache PUTs.
+func (a *AgentService) WithArtifactWriteOnce(enabled bool) *AgentService {
+	a.artifactWriteOnce = enabled
 	return a
 }
 
@@ -560,9 +575,17 @@ func (a *AgentService) RequestArtifactUpload(ctx context.Context, req *gocdnextv
 		return nil, status.Error(codes.Internal, "persist artifacts")
 	}
 
+	// Artifacts are immutable: when write-once is enabled, sign with a
+	// create-only precondition so a reused/leaked signed URL cannot overwrite
+	// a confirmed artifact (#210). The backend returns the header(s) the agent
+	// must echo on the PUT; we pass them through opaquely.
+	var putOpts []artifacts.PutOption
+	if a.artifactWriteOnce {
+		putOpts = append(putOpts, artifacts.WithCreateOnly())
+	}
 	tickets := make([]*gocdnextv1.ArtifactUploadTicket, 0, len(dedupedPaths))
 	for i, p := range dedupedPaths {
-		signed, err := a.artifactStore.SignedPutURL(ctx, rows[i].StorageKey, a.artifactPutURLTTL)
+		signed, err := a.artifactStore.SignedPutURL(ctx, rows[i].StorageKey, a.artifactPutURLTTL, putOpts...)
 		if err != nil {
 			a.log.Error("artifact upload: sign put failed", "path", p, "err", err)
 			return nil, status.Error(codes.Internal, "sign url")
@@ -572,6 +595,7 @@ func (a *AgentService) RequestArtifactUpload(ctx context.Context, req *gocdnextv
 			StorageKey: rows[i].StorageKey,
 			PutUrl:     signed.URL,
 			ExpiresAt:  timestamppb.New(signed.ExpiresAt),
+			PutHeaders: signed.Headers,
 		})
 	}
 	a.log.Info("artifact upload tickets issued",
