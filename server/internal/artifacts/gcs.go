@@ -102,15 +102,23 @@ func (g *GCSStore) Client() *storage.Client { return g.client }
 // Bucket returns the configured bucket.
 func (g *GCSStore) Bucket() string { return g.bucket }
 
-func (g *GCSStore) SignedPutURL(ctx context.Context, key string, ttl time.Duration) (SignedURL, error) {
-	return g.sign(ctx, key, ttl, "PUT", GetRequest{})
+func (g *GCSStore) SignedPutURL(ctx context.Context, key string, ttl time.Duration, opts ...PutOption) (SignedURL, error) {
+	var reqHeaders map[string]string
+	if ResolvePutOptions(opts).CreateOnly {
+		// GCS precondition: `x-goog-if-generation-match: 0` matches only when
+		// the object does not exist yet, so a reused/leaked signed URL cannot
+		// overwrite a confirmed artifact. It must be folded into the V4
+		// signature (signed extension header) AND echoed by the agent on the PUT.
+		reqHeaders = map[string]string{"x-goog-if-generation-match": "0"}
+	}
+	return g.sign(ctx, key, ttl, "PUT", GetRequest{}, reqHeaders)
 }
 
 func (g *GCSStore) SignedGetURL(ctx context.Context, key string, ttl time.Duration, opts ...GetOption) (SignedURL, error) {
-	return g.sign(ctx, key, ttl, "GET", ResolveGetOptions(opts))
+	return g.sign(ctx, key, ttl, "GET", ResolveGetOptions(opts), nil)
 }
 
-func (g *GCSStore) sign(_ context.Context, key string, ttl time.Duration, method string, req GetRequest) (SignedURL, error) {
+func (g *GCSStore) sign(_ context.Context, key string, ttl time.Duration, method string, req GetRequest, reqHeaders map[string]string) (SignedURL, error) {
 	if g.signerEmail == "" || len(g.signerKeyPEM) == 0 {
 		return SignedURL{}, errors.New("artifacts: gcs: signing key unavailable (configure CredentialsJSON/CredentialsFile)")
 	}
@@ -136,11 +144,17 @@ func (g *GCSStore) sign(_ context.Context, key string, ttl time.Duration, method
 			},
 		}
 	}
+	// Precondition headers (create-only) are signed extension headers: the
+	// value is part of the V4 signature, so the agent must send the exact
+	// same header or the request is rejected as a signature mismatch.
+	for k, v := range reqHeaders {
+		opts.Headers = append(opts.Headers, k+":"+v)
+	}
 	signedURL, err := storage.SignedURL(g.bucket, key, opts)
 	if err != nil {
 		return SignedURL{}, fmt.Errorf("artifacts: gcs: sign %s: %w", method, err)
 	}
-	return SignedURL{URL: signedURL, ExpiresAt: opts.Expires}, nil
+	return SignedURL{URL: signedURL, ExpiresAt: opts.Expires, Headers: reqHeaders}, nil
 }
 
 func (g *GCSStore) Head(ctx context.Context, key string) (int64, error) {

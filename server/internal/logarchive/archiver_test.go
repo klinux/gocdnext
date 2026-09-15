@@ -69,7 +69,7 @@ func (m *memoryBlobs) Head(_ context.Context, key string) (int64, error) {
 	return int64(len(b)), nil
 }
 
-func (m *memoryBlobs) SignedPutURL(context.Context, string, time.Duration) (artifacts.SignedURL, error) {
+func (m *memoryBlobs) SignedPutURL(context.Context, string, time.Duration, ...artifacts.PutOption) (artifacts.SignedURL, error) {
 	return artifacts.SignedURL{}, errors.New("memoryBlobs: signed put not supported")
 }
 func (m *memoryBlobs) SignedGetURL(context.Context, string, time.Duration, ...artifacts.GetOption) (artifacts.SignedURL, error) {

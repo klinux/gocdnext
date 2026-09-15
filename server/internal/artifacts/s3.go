@@ -91,18 +91,28 @@ func (s *S3Store) Bucket() string { return s.bucket }
 // object state directly. Do not use from production code paths.
 func (s *S3Store) Client() *s3.Client { return s.client }
 
-func (s *S3Store) SignedPutURL(ctx context.Context, key string, ttl time.Duration) (SignedURL, error) {
+func (s *S3Store) SignedPutURL(ctx context.Context, key string, ttl time.Duration, opts ...PutOption) (SignedURL, error) {
 	if ttl <= 0 {
 		ttl = 15 * time.Minute
 	}
-	req, err := s.presigner.PresignPutObject(ctx, &s3.PutObjectInput{
+	in := &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
-	}, s3.WithPresignExpires(ttl))
+	}
+	var headers map[string]string
+	if ResolvePutOptions(opts).CreateOnly {
+		// S3 conditional writes: `If-None-Match: *` makes the PUT fail with
+		// 412 PreconditionFailed if the key already holds an object, so a
+		// reused/leaked signed URL cannot overwrite a confirmed artifact.
+		// The SDK folds this into the signed headers; the agent must echo it.
+		in.IfNoneMatch = aws.String("*")
+		headers = map[string]string{"If-None-Match": "*"}
+	}
+	req, err := s.presigner.PresignPutObject(ctx, in, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return SignedURL{}, fmt.Errorf("artifacts: s3: presign put: %w", err)
 	}
-	return SignedURL{URL: req.URL, ExpiresAt: time.Now().Add(ttl)}, nil
+	return SignedURL{URL: req.URL, ExpiresAt: time.Now().Add(ttl), Headers: headers}, nil
 }
 
 func (s *S3Store) SignedGetURL(ctx context.Context, key string, ttl time.Duration, opts ...GetOption) (SignedURL, error) {

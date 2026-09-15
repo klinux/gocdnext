@@ -34,8 +34,13 @@ var ErrAlreadyExists = errors.New("artifacts: object already exists")
 type Store interface {
 	// SignedPutURL returns a URL + expiry that the agent can PUT bytes to
 	// for the given storage_key. TTL is advisory; backends may enforce
-	// their own minimum.
-	SignedPutURL(ctx context.Context, key string, ttl time.Duration) (SignedURL, error)
+	// their own minimum. Optional PutOptions steer the signature — today
+	// only WithCreateOnly, which folds a "must not already exist"
+	// precondition into the signed request so a reused/leaked URL cannot
+	// overwrite an already-uploaded object (#210). When a precondition is
+	// applied the backend also returns the header(s) the agent must echo
+	// on the PUT via SignedURL.Headers.
+	SignedPutURL(ctx context.Context, key string, ttl time.Duration, opts ...PutOption) (SignedURL, error)
 
 	// SignedGetURL returns a URL + expiry that the agent can GET bytes
 	// from for a previously uploaded storage_key. Accepts optional
@@ -118,6 +123,46 @@ func detectContentType(magic []byte) string {
 type SignedURL struct {
 	URL       string
 	ExpiresAt time.Time
+	// Headers are request headers the agent MUST send verbatim on the
+	// PUT for the signature to validate — e.g. the create-only
+	// precondition (`If-None-Match: *` on S3, `x-goog-if-generation-match: 0`
+	// on GCS). Nil/empty for a plain PUT. The agent stays backend-agnostic:
+	// it echoes whatever the server put here without interpreting it.
+	Headers map[string]string
+}
+
+// PutOption modifies a SignedPutURL request. Mirrors GetOption — keeps the
+// interface surface small while letting each backend fold the requested
+// precondition into its own signing scheme.
+type PutOption func(*PutRequest)
+
+// PutRequest is the resolved bag of PutOptions a backend consumes. Exported
+// so concrete stores (in this package) can read it; callers always
+// construct it via PutOption functions.
+type PutRequest struct {
+	// CreateOnly asks the backend to sign a precondition that the object
+	// does not already exist, so a PUT to an occupied key fails (HTTP 412)
+	// instead of overwriting. Used for immutable artifacts, never for
+	// caches (which overwrite a deterministic key by design).
+	CreateOnly bool
+}
+
+// WithCreateOnly requests a create-only (no-overwrite) signed PUT. See
+// PutRequest.CreateOnly.
+func WithCreateOnly() PutOption {
+	return func(r *PutRequest) { r.CreateOnly = true }
+}
+
+// ResolvePutOptions folds a slice of options into a PutRequest. Nil/empty
+// input yields a zero-value PutRequest — the backend's "plain PUT" path.
+func ResolvePutOptions(opts []PutOption) PutRequest {
+	var r PutRequest
+	for _, o := range opts {
+		if o != nil {
+			o(&r)
+		}
+	}
+	return r
 }
 
 // GetOption modifies a SignedGetURL request. Backends read these

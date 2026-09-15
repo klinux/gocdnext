@@ -85,6 +85,8 @@ spec:
               value: {{ .Values.artifacts.globalQuotaBytes | quote }}
             - name: GOCDNEXT_ARTIFACTS_MAX_BODY_MB
               value: {{ .Values.artifacts.maxBodyMB | quote }}
+            - name: GOCDNEXT_ARTIFACT_WRITE_ONCE
+              value: {{ .Values.artifacts.writeOnce | quote }}
             - name: GOCDNEXT_CACHE_TTL_DAYS
               value: {{ .Values.caches.ttlDays | quote }}
             - name: GOCDNEXT_CACHE_PROJECT_QUOTA_BYTES
