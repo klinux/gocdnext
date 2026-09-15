@@ -15,6 +15,13 @@ server:
     repository: gocdnext-server
     tag: ""           # defaults to Chart.appVersion
     pullPolicy: IfNotPresent
+  # Extra annotations for the server Pod template. Useful for metrics scraping
+  # without the Prometheus Operator, e.g.:
+  #   podAnnotations:
+  #     prometheus.io/scrape: "true"
+  #     prometheus.io/port: "8153"
+  #     prometheus.io/path: "/metrics"
+  podAnnotations: {}
   service:
     type: ClusterIP
     httpPort: 8153

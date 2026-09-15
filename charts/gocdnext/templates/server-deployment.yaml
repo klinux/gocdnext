@@ -13,6 +13,10 @@ spec:
   template:
     metadata:
       labels: {{- include "gocdnext.server.selectorLabels" . | nindent 8 }}
+      {{- with .Values.server.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       {{- if eq .Values.secrets.backend "kubernetes" }}
       serviceAccountName: {{ include "gocdnext.server.fullname" . }}
