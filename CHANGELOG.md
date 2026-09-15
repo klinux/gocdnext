@@ -8,6 +8,31 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.112.0 — 2026-09-15
+
+### Added
+
+- **Opt-in write-once artifact uploads (#210).** A new server flag
+  `GOCDNEXT_ARTIFACT_WRITE_ONCE` (chart: `artifacts.writeOnce`, default **off**)
+  signs artifact PUT URLs with a create-only precondition — `If-None-Match: *`
+  on S3, `x-goog-if-generation-match: 0` on GCS — so a reused or leaked signed
+  URL can no longer overwrite an already-confirmed artifact. The precondition is
+  folded into the signature; the backend returns the required header on the
+  upload ticket and the agent echoes it verbatim (staying backend-agnostic). The
+  agent treats a `412` as "already uploaded" only for a create-only PUT (the
+  server's confirm still re-reads and verifies the bytes), so a reissued ticket
+  after a landed-but-unconfirmed PUT is idempotent. Cache uploads are unaffected
+  (they overwrite a deterministic key by design) and the filesystem backend was
+  already write-once. Requires a backend that supports conditional writes (AWS
+  S3, modern MinIO, GCS); enable only after the whole agent fleet is upgraded.
+
+### Changed
+
+- **Community on-ramp (#296).** Added `SECURITY.md` (private disclosure via
+  GitHub Security Advisories), `CODE_OF_CONDUCT.md`, structured issue templates
+  and a PR checklist, and expanded `CONTRIBUTING.md` (corrected dev-setup
+  commands and documented the TDD/security posture).
+
 ## v0.111.0 — 2026-09-14
 
 ### Added
