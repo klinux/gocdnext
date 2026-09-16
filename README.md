@@ -1,19 +1,38 @@
-# gocdnext
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/src/assets/logo-dark.svg">
+    <img src="docs/src/assets/logo-light.svg" alt="gocdnext" width="300">
+  </picture>
+</p>
 
-> Modern CI/CD orchestrator. Cherry-picks the good ideas from **GoCD** (VSM,
-> fanout, pipeline dependencies, stage/job model), **Woodpecker** (plugin =
-> container), and **GitLab CI** (stages, rules, needs, matrix, extends).
-> Written in Go. UI in Next.js. Container-native. Webhook-first.
+<p align="center">
+  <b>Modern CI/CD orchestrator.</b> The good ideas from <b>GoCD</b> (VSM, fanout, pipeline<br>
+  dependencies), <b>Woodpecker</b> (plugin = container) and <b>GitLab CI</b> (stages, needs,<br>
+  matrix), rebuilt in Go. Container-native · webhook-first · VSM-driven.
+</p>
 
-Status: **active development** — v0.x, minor bumps may carry breaking
-changes until 1.0. Public repo, shipping monthly.
+<p align="center">
+  <a href="https://github.com/klinux/gocdnext/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/klinux/gocdnext/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/klinux/gocdnext/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/klinux/gocdnext?color=14b8a6&label=release"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-1F6FEB"></a>
+  <a href="https://klinux.github.io/gocdnext/docs/"><img alt="Docs" src="https://img.shields.io/badge/docs-Starlight-0ea5e9"></a>
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white">
+</p>
 
-📚 **Docs**: <https://klinux.github.io/gocdnext/docs/>
+<p align="center">
+  <a href="https://codespaces.new/klinux/gocdnext"><img alt="Open in GitHub Codespaces" src="https://github.com/codespaces/badge.svg"></a>
+  <a href="https://gitpod.io/#https://github.com/klinux/gocdnext"><img alt="Open in Gitpod" src="https://img.shields.io/badge/Gitpod-ready--to--code-908a85?logo=gitpod"></a>
+</p>
 
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/klinux/gocdnext)
-[![Open in Gitpod](https://img.shields.io/badge/Gitpod-ready--to--code-908a85?logo=gitpod)](https://gitpod.io/#https://github.com/klinux/gocdnext)
+<p align="center">
+  <sub><b>Status:</b> active development — v0.x, minor bumps may carry breaking changes until 1.0 · shipping monthly</sub>
+</p>
 
-![Dashboard](docs/public/screenshots/01-dashboard.png)
+<p align="center">
+  <a href="docs/public/screenshots/01-dashboard.png"><img src="docs/public/screenshots/01-dashboard.png" alt="gocdnext dashboard" width="92%"></a>
+</p>
+
+---
 
 ## Why another CI tool?
 
@@ -203,7 +222,7 @@ your tooling prefers.
 ```bash
 helm repo add gocdnext https://klinux.github.io/gocdnext
 helm repo update
-helm install gocd gocdnext/gocdnext --version 0.88.1 \
+helm install gocd gocdnext/gocdnext --version 0.112.0 \
   --set devDatabase.enabled=true \
   --set agent.tokenSecret.value="$(openssl rand -hex 32)" \
   --set webhookToken.value="$(openssl rand -hex 32)" \
@@ -214,7 +233,7 @@ helm install gocd gocdnext/gocdnext --version 0.88.1 \
 **OCI** (Helm 3.8+):
 
 ```bash
-helm install gocd oci://ghcr.io/klinux/charts/gocdnext --version 0.88.1 \
+helm install gocd oci://ghcr.io/klinux/charts/gocdnext --version 0.112.0 \
   --set devDatabase.enabled=true \
   ...
 ```
@@ -232,7 +251,7 @@ See the [Architecture deep-dive](https://klinux.github.io/gocdnext/docs/concepts
 
 ![Architecture](docs/public/imgs/architecture.png)
 
-## What's shipped (v0.88.1)
+## What's shipped (v0.112.0)
 
 - **Pipeline core** — `.gocdnext/` folder, stage/job/needs/matrix, materials
   (git + upstream), webhook-first ingest with polling fallback.
