@@ -29,7 +29,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/public/screenshots/01-dashboard.png"><img src="docs/public/screenshots/01-dashboard.png" alt="gocdnext dashboard" width="92%"></a>
+  <a href="docs/public/screenshots/03-project-pipelines.png"><img src="docs/public/screenshots/03-project-pipelines.png" alt="gocdnext — projects and pipelines" width="92%"></a>
 </p>
 
 ---
@@ -81,10 +81,10 @@ Differentiators vs. GitHub Actions / Tekton / Woodpecker:
       <p align="center"><sub>Run detail — Jobs / Tests / Artifacts tabs with live log stream</sub></p>
     </td>
     <td width="50%">
-      <a href="docs/public/screenshots/03-project-pipelines.png">
-        <img src="docs/public/screenshots/03-project-pipelines.png" alt="Project pipelines" />
+      <a href="docs/public/screenshots/01-dashboard.png">
+        <img src="docs/public/screenshots/01-dashboard.png" alt="Dashboard" />
       </a>
-      <p align="center"><sub>Project pipelines with bottleneck pill + stage strip</sub></p>
+      <p align="center"><sub>Dashboard — projects overview with health + activity</sub></p>
     </td>
   </tr>
   <tr>
