@@ -32,7 +32,24 @@ WHERE (@status_filter::text = '' OR r.status = @status_filter::text)
   AND (@cause_filter::text = '' OR r.cause = @cause_filter::text)
   AND (@project_slug::text = '' OR p.slug = @project_slug::text)
   AND (@pipeline_filter::text = '' OR pl.name = @pipeline_filter::text)
-ORDER BY r.created_at DESC
+-- Sort: whitelisted key+dir pairs via CASE (sqlc-safe; nothing is
+-- interpolated). Empty sort_key falls through to the default
+-- created_at DESC timeline. NULLS LAST keeps never-started runs at
+-- the bottom for started/duration in both directions.
+ORDER BY
+  CASE WHEN @sort_key::text = 'started'  AND @sort_dir::text = 'asc'  THEN r.started_at END ASC NULLS LAST,
+  CASE WHEN @sort_key::text = 'started'  AND @sort_dir::text = 'desc' THEN r.started_at END DESC NULLS LAST,
+  CASE WHEN @sort_key::text = 'duration' AND @sort_dir::text = 'asc'  THEN EXTRACT(EPOCH FROM (COALESCE(r.finished_at, NOW()) - r.started_at)) END ASC NULLS LAST,
+  CASE WHEN @sort_key::text = 'duration' AND @sort_dir::text = 'desc' THEN EXTRACT(EPOCH FROM (COALESCE(r.finished_at, NOW()) - r.started_at)) END DESC NULLS LAST,
+  CASE WHEN @sort_key::text = 'counter'  AND @sort_dir::text = 'asc'  THEN r.counter END ASC,
+  CASE WHEN @sort_key::text = 'counter'  AND @sort_dir::text = 'desc' THEN r.counter END DESC,
+  CASE WHEN @sort_key::text = 'pipeline' AND @sort_dir::text = 'asc'  THEN p.slug || '/' || pl.name END ASC,
+  CASE WHEN @sort_key::text = 'pipeline' AND @sort_dir::text = 'desc' THEN p.slug || '/' || pl.name END DESC,
+  CASE WHEN @sort_key::text = 'status'   AND @sort_dir::text = 'asc'  THEN r.status END ASC,
+  CASE WHEN @sort_key::text = 'status'   AND @sort_dir::text = 'desc' THEN r.status END DESC,
+  CASE WHEN @sort_key::text = 'cause'    AND @sort_dir::text = 'asc'  THEN r.cause END ASC,
+  CASE WHEN @sort_key::text = 'cause'    AND @sort_dir::text = 'desc' THEN r.cause END DESC,
+  r.created_at DESC
 LIMIT $1 OFFSET @row_offset::bigint;
 
 -- name: CountRunsGlobal :one

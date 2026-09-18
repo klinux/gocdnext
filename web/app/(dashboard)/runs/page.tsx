@@ -1,21 +1,20 @@
-import Link from "next/link";
-import type { Metadata, Route } from "next";
 import { Activity, X } from "lucide-react";
-
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Pagination } from "@/components/shared/pagination";
+import type { Metadata, Route } from "next";
+import Link from "next/link";
 import { FilterSelect } from "@/components/runs/filter-select.client";
 import { RunsTable } from "@/components/runs/runs-table";
-import {
-  listGlobalRuns,
-  listPipelineNames,
-  listProjects,
-} from "@/server/queries/projects";
+import { Pagination } from "@/components/shared/pagination";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import {
+	listGlobalRuns,
+	listPipelineNames,
+	listProjects,
+} from "@/server/queries/projects";
 
 export const metadata: Metadata = {
-  title: "Runs — gocdnext",
+	title: "Runs — gocdnext",
 };
 
 export const dynamic = "force-dynamic";
@@ -23,11 +22,13 @@ export const dynamic = "force-dynamic";
 const PAGE_SIZE = 25;
 
 type SearchParams = {
-  status?: string;
-  cause?: string;
-  project?: string;
-  pipeline?: string;
-  offset?: string;
+	status?: string;
+	cause?: string;
+	project?: string;
+	pipeline?: string;
+	offset?: string;
+	sort?: string;
+	dir?: string;
 };
 
 // Valid values for the filter chips. Keep in sync with the
@@ -35,212 +36,229 @@ type SearchParams = {
 // Schedule + poll were added when the project-cron + polling
 // features shipped — old chip list missed them.
 const STATUSES = [
-  "queued",
-  "running",
-  "success",
-  "failed",
-  "canceled",
+	"queued",
+	"running",
+	"success",
+	"failed",
+	"canceled",
 ] as const;
 const CAUSES = [
-  "webhook",
-  "pull_request",
-  "upstream",
-  "manual",
-  "schedule",
-  "poll",
+	"webhook",
+	"pull_request",
+	"upstream",
+	"manual",
+	"schedule",
+	"poll",
 ] as const;
 
 export default async function RunsListPage({
-  searchParams,
+	searchParams,
 }: {
-  searchParams: Promise<SearchParams>;
+	searchParams: Promise<SearchParams>;
 }) {
-  const sp = await searchParams;
-  const offset = sp.offset ? Math.max(0, Number.parseInt(sp.offset, 10)) : 0;
-  const status = typeof sp.status === "string" ? sp.status : undefined;
-  const cause = typeof sp.cause === "string" ? sp.cause : undefined;
-  const project = typeof sp.project === "string" ? sp.project : undefined;
-  const pipeline = typeof sp.pipeline === "string" ? sp.pipeline : undefined;
+	const sp = await searchParams;
+	const offset = sp.offset ? Math.max(0, Number.parseInt(sp.offset, 10)) : 0;
+	const status = typeof sp.status === "string" ? sp.status : undefined;
+	const cause = typeof sp.cause === "string" ? sp.cause : undefined;
+	const project = typeof sp.project === "string" ? sp.project : undefined;
+	const pipeline = typeof sp.pipeline === "string" ? sp.pipeline : undefined;
+	// Column sort: validated again by the API (whitelist); here we only
+	// normalize so header links and pagination echo consistent values.
+	const sort = typeof sp.sort === "string" ? sp.sort : undefined;
+	const dir = sp.dir === "asc" || sp.dir === "desc" ? sp.dir : undefined;
 
-  // Option lists ride along with the page fetch: the /runs page is
-  // force-dynamic already, and both lists are tiny (slugs + distinct
-  // pipeline names), so three parallel calls beat a client waterfall.
-  const [data, projects, pipelineNames] = await Promise.all([
-    listGlobalRuns({
-      limit: PAGE_SIZE,
-      offset,
-      status,
-      cause,
-      project,
-      pipeline,
-    }),
-    listProjects(),
-    listPipelineNames(),
-  ]);
+	// Option lists ride along with the page fetch: the /runs page is
+	// force-dynamic already, and both lists are tiny (slugs + distinct
+	// pipeline names), so three parallel calls beat a client waterfall.
+	const [data, projects, pipelineNames] = await Promise.all([
+		listGlobalRuns({
+			limit: PAGE_SIZE,
+			offset,
+			status,
+			cause,
+			project,
+			pipeline,
+			sort,
+			dir,
+		}),
+		listProjects(),
+		listPipelineNames(),
+	]);
 
-  const anyActive = Boolean(status || cause || project || pipeline);
+	const anyActive = Boolean(status || cause || project || pipeline);
 
-  return (
-    <section className="space-y-5">
-      <header>
-        <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <Activity className="h-6 w-6 text-brand-500" aria-hidden />
-          Runs
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {data.total.toLocaleString()} run{data.total === 1 ? "" : "s"} across
-          every project
-          {data.runs.length > 0 ? (
-            <>
-              {" · "}showing {Math.min(offset + 1, data.total)}–
-              {Math.min(offset + data.runs.length, data.total)}
-            </>
-          ) : null}
-          .
-        </p>
-      </header>
+	return (
+		<section className="space-y-5">
+			<header>
+				<h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+					<Activity className="h-6 w-6 text-brand-500" aria-hidden />
+					Runs
+				</h2>
+				<p className="mt-1 text-sm text-muted-foreground">
+					{data.total.toLocaleString()} run{data.total === 1 ? "" : "s"} across
+					every project
+					{data.runs.length > 0 ? (
+						<>
+							{" · "}showing {Math.min(offset + 1, data.total)}–
+							{Math.min(offset + data.runs.length, data.total)}
+						</>
+					) : null}
+					.
+				</p>
+			</header>
 
-      <div className="space-y-2.5 rounded-lg border bg-card p-3">
-        <FilterRow
-          label="Status"
-          param="status"
-          value={status}
-          options={STATUSES}
-          context={{ status, cause, project, pipeline }}
-        />
-        <FilterRow
-          label="Cause"
-          param="cause"
-          value={cause}
-          options={CAUSES}
-          context={{ status, cause, project, pipeline }}
-        />
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 w-14 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Scope
-          </span>
-          <FilterSelect
-            param="project"
-            value={project}
-            placeholder="All projects"
-            options={projects.map((p) => ({ value: p.slug, label: p.name }))}
-            context={{ status, cause, pipeline }}
-          />
-          <FilterSelect
-            param="pipeline"
-            value={pipeline}
-            placeholder="All pipelines"
-            options={pipelineNames.map((n) => ({ value: n, label: n }))}
-            context={{ status, cause, project }}
-          />
-        </div>
-        {project || pipeline || anyActive ? (
-          <div className="flex flex-wrap items-center gap-2 border-t pt-2.5">
-            {project ? (
-              <Link
-                href={qs({ status, cause, pipeline })}
-                className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs hover:bg-muted"
-              >
-                project: <span className="font-mono">{project}</span>
-                <X className="size-3 text-muted-foreground" aria-hidden />
-              </Link>
-            ) : null}
-            {pipeline ? (
-              <Link
-                href={qs({ status, cause, project })}
-                className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs hover:bg-muted"
-              >
-                pipeline: <span className="font-mono">{pipeline}</span>
-                <X className="size-3 text-muted-foreground" aria-hidden />
-              </Link>
-            ) : null}
-            {anyActive ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="ml-auto h-7 text-xs"
-                nativeButton={false}
-                render={<Link href={"/runs" as Route}>Clear all filters</Link>}
-              />
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+			<div className="space-y-2.5 rounded-lg border bg-card p-3">
+				<FilterRow
+					label="Status"
+					param="status"
+					value={status}
+					options={STATUSES}
+					context={{ status, cause, project, pipeline, sort, dir }}
+				/>
+				<FilterRow
+					label="Cause"
+					param="cause"
+					value={cause}
+					options={CAUSES}
+					context={{ status, cause, project, pipeline, sort, dir }}
+				/>
+				<div className="flex flex-wrap items-center gap-1.5">
+					<span className="mr-1 w-14 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+						Scope
+					</span>
+					<FilterSelect
+						param="project"
+						value={project}
+						placeholder="All projects"
+						options={projects.map((p) => ({ value: p.slug, label: p.name }))}
+						context={{ status, cause, pipeline, sort, dir }}
+					/>
+					<FilterSelect
+						param="pipeline"
+						value={pipeline}
+						placeholder="All pipelines"
+						options={pipelineNames.map((n) => ({ value: n, label: n }))}
+						context={{ status, cause, project, sort, dir }}
+					/>
+				</div>
+				{project || pipeline || anyActive ? (
+					<div className="flex flex-wrap items-center gap-2 border-t pt-2.5">
+						{project ? (
+							<Link
+								href={qs({ status, cause, pipeline, sort, dir })}
+								className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs hover:bg-muted"
+							>
+								project: <span className="font-mono">{project}</span>
+								<X className="size-3 text-muted-foreground" aria-hidden />
+							</Link>
+						) : null}
+						{pipeline ? (
+							<Link
+								href={qs({ status, cause, project, sort, dir })}
+								className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs hover:bg-muted"
+							>
+								pipeline: <span className="font-mono">{pipeline}</span>
+								<X className="size-3 text-muted-foreground" aria-hidden />
+							</Link>
+						) : null}
+						{anyActive ? (
+							<Button
+								variant="ghost"
+								size="sm"
+								className="ml-auto h-7 text-xs"
+								nativeButton={false}
+								render={<Link href={"/runs" as Route}>Clear all filters</Link>}
+							/>
+						) : null}
+					</div>
+				) : null}
+			</div>
 
-      <RunsTable
-        runs={data.runs}
-        variant="global"
-        emptyMessage={
-          anyActive
-            ? "No runs match your filters."
-            : "No runs yet — push a commit to a connected repo to see one here."
-        }
-      />
+			<RunsTable
+				runs={data.runs}
+				variant="global"
+				sort={sort}
+				dir={dir}
+				sortParams={{ status, cause, project, pipeline }}
+				sortBasePath="/runs"
+				emptyMessage={
+					anyActive
+						? "No runs match your filters."
+						: "No runs yet — push a commit to a connected repo to see one here."
+				}
+			/>
 
-      <Pagination
-        offset={offset}
-        total={data.total}
-        pageSize={PAGE_SIZE}
-        basePath="/runs"
-        params={{ status, cause, project, pipeline }}
-      />
-    </section>
-  );
+			<Pagination
+				offset={offset}
+				total={data.total}
+				pageSize={PAGE_SIZE}
+				basePath="/runs"
+				params={{ status, cause, project, pipeline, sort, dir }}
+			/>
+		</section>
+	);
 }
 
 function FilterRow<T extends string>({
-  label,
-  param,
-  value,
-  options,
-  context,
+	label,
+	param,
+	value,
+	options,
+	context,
 }: {
-  label: string;
-  param: "status" | "cause";
-  value: string | undefined;
-  options: readonly T[];
-  context: { status?: string; cause?: string; project?: string; pipeline?: string };
+	label: string;
+	param: "status" | "cause";
+	value: string | undefined;
+	options: readonly T[];
+	context: {
+		status?: string;
+		cause?: string;
+		project?: string;
+		pipeline?: string;
+		sort?: string;
+		dir?: string;
+	};
 }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <span className="mr-1 w-14 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </span>
-      {options.map((opt) => {
-        const active = value === opt;
-        const next = qs({
-          ...context,
-          [param]: active ? undefined : opt,
-        });
-        return (
-          <Link
-            key={opt}
-            href={next}
-            className="no-underline"
-            aria-current={active ? "true" : undefined}
-          >
-            <Badge
-              variant={active ? "default" : "outline"}
-              className={cn(
-                "cursor-pointer capitalize transition-colors",
-                !active && "hover:bg-muted",
-              )}
-            >
-              {opt}
-            </Badge>
-          </Link>
-        );
-      })}
-    </div>
-  );
+	return (
+		<div className="flex flex-wrap items-center gap-1.5">
+			<span className="mr-1 w-14 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+				{label}
+			</span>
+			{options.map((opt) => {
+				const active = value === opt;
+				const next = qs({
+					...context,
+					[param]: active ? undefined : opt,
+				});
+				return (
+					<Link
+						key={opt}
+						href={next}
+						className="no-underline"
+						aria-current={active ? "true" : undefined}
+					>
+						<Badge
+							variant={active ? "default" : "outline"}
+							className={cn(
+								"cursor-pointer capitalize transition-colors",
+								!active && "hover:bg-muted",
+							)}
+						>
+							{opt}
+						</Badge>
+					</Link>
+				);
+			})}
+		</div>
+	);
 }
 
 // qs builds a `/runs?...` Route preserving non-undefined keys.
 function qs(params: Record<string, string | undefined>): Route {
-  const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v != null && v !== "") q.set(k, v);
-  }
-  const s = q.toString();
-  return (s ? `/runs?${s}` : "/runs") as Route;
+	const q = new URLSearchParams();
+	for (const [k, v] of Object.entries(params)) {
+		if (v != null && v !== "") q.set(k, v);
+	}
+	const s = q.toString();
+	return (s ? `/runs?${s}` : "/runs") as Route;
 }

@@ -120,6 +120,12 @@ type RunsFilter struct {
 	// repeat across projects — which is exactly what "show me every
 	// failed deploy" wants.
 	Pipeline string
+	// SortKey/SortDir order the page server-side so sorting stays
+	// correct across pagination. Both empty = default timeline
+	// (created_at DESC). Values are whitelisted at the API edge;
+	// the SQL treats anything unknown as "no sort".
+	SortKey string
+	SortDir string
 }
 
 // ListRunsGlobal returns a slice of GlobalRunSummary matching the
@@ -136,6 +142,8 @@ func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, offset int64, f
 		CauseFilter:    filter.Cause,
 		ProjectSlug:    filter.ProjectSlug,
 		PipelineFilter: filter.Pipeline,
+		SortKey:        filter.SortKey,
+		SortDir:        filter.SortDir,
 		RowOffset:      offset,
 	})
 	if err != nil {

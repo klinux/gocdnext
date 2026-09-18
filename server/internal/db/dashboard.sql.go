@@ -258,8 +258,21 @@ WHERE ($2::text = '' OR r.status = $2::text)
   AND ($3::text = '' OR r.cause = $3::text)
   AND ($4::text = '' OR p.slug = $4::text)
   AND ($5::text = '' OR pl.name = $5::text)
-ORDER BY r.created_at DESC
-LIMIT $1 OFFSET $6::bigint
+ORDER BY
+  CASE WHEN $6::text = 'started'  AND $7::text = 'asc'  THEN r.started_at END ASC NULLS LAST,
+  CASE WHEN $6::text = 'started'  AND $7::text = 'desc' THEN r.started_at END DESC NULLS LAST,
+  CASE WHEN $6::text = 'duration' AND $7::text = 'asc'  THEN EXTRACT(EPOCH FROM (COALESCE(r.finished_at, NOW()) - r.started_at)) END ASC NULLS LAST,
+  CASE WHEN $6::text = 'duration' AND $7::text = 'desc' THEN EXTRACT(EPOCH FROM (COALESCE(r.finished_at, NOW()) - r.started_at)) END DESC NULLS LAST,
+  CASE WHEN $6::text = 'counter'  AND $7::text = 'asc'  THEN r.counter END ASC,
+  CASE WHEN $6::text = 'counter'  AND $7::text = 'desc' THEN r.counter END DESC,
+  CASE WHEN $6::text = 'pipeline' AND $7::text = 'asc'  THEN p.slug || '/' || pl.name END ASC,
+  CASE WHEN $6::text = 'pipeline' AND $7::text = 'desc' THEN p.slug || '/' || pl.name END DESC,
+  CASE WHEN $6::text = 'status'   AND $7::text = 'asc'  THEN r.status END ASC,
+  CASE WHEN $6::text = 'status'   AND $7::text = 'desc' THEN r.status END DESC,
+  CASE WHEN $6::text = 'cause'    AND $7::text = 'asc'  THEN r.cause END ASC,
+  CASE WHEN $6::text = 'cause'    AND $7::text = 'desc' THEN r.cause END DESC,
+  r.created_at DESC
+LIMIT $1 OFFSET $8::bigint
 `
 
 type ListRunsGlobalParams struct {
@@ -268,6 +281,8 @@ type ListRunsGlobalParams struct {
 	CauseFilter    string
 	ProjectSlug    string
 	PipelineFilter string
+	SortKey        string
+	SortDir        string
 	RowOffset      int64
 }
 
@@ -297,6 +312,10 @@ type ListRunsGlobalRow struct {
 // lookups. All filter params accept the empty string as "no filter"
 // so the same query drives the dashboard widget (no filters) and
 // the /runs page (every filter the UI exposes).
+// Sort: whitelisted key+dir pairs via CASE (sqlc-safe; nothing is
+// interpolated). Empty sort_key falls through to the default
+// created_at DESC timeline. NULLS LAST keeps never-started runs at
+// the bottom for started/duration in both directions.
 func (q *Queries) ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) ([]ListRunsGlobalRow, error) {
 	rows, err := q.db.Query(ctx, listRunsGlobal,
 		arg.Limit,
@@ -304,6 +323,8 @@ func (q *Queries) ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) 
 		arg.CauseFilter,
 		arg.ProjectSlug,
 		arg.PipelineFilter,
+		arg.SortKey,
+		arg.SortDir,
 		arg.RowOffset,
 	)
 	if err != nil {

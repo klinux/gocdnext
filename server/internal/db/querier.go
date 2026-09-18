@@ -1561,6 +1561,10 @@ type Querier interface {
 	// lookups. All filter params accept the empty string as "no filter"
 	// so the same query drives the dashboard widget (no filters) and
 	// the /runs page (every filter the UI exposes).
+	// Sort: whitelisted key+dir pairs via CASE (sqlc-safe; nothing is
+	// interpolated). Empty sort_key falls through to the default
+	// created_at DESC timeline. NULLS LAST keeps never-started runs at
+	// the bottom for started/duration in both directions.
 	ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) ([]ListRunsGlobalRow, error)
 	// The runs a freeze is currently holding, so unfreeze can NOTIFY each one
 	// awake instead of waiting up to a full scheduler tick.

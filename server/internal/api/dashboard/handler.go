@@ -29,6 +29,14 @@ type Handler struct {
 	log   *slog.Logger
 }
 
+
+// sortableRunColumns is the /runs sort whitelist. Keep in sync with
+// the ORDER BY CASEs in db/queries/dashboard.sql (ListRunsGlobal).
+var sortableRunColumns = map[string]bool{
+	"started": true, "duration": true, "counter": true,
+	"pipeline": true, "status": true, "cause": true,
+}
+
 func NewHandler(s *store.Store, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
@@ -61,6 +69,8 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 //   - cause (optional filter: webhook | pull_request | upstream | manual)
 //   - project (optional project slug filter)
 //   - pipeline (optional pipeline NAME filter, e.g. "deploy")
+//   - sort (optional column sort: started | duration | counter |
+//     pipeline | status | cause) + dir (asc | desc, default desc)
 //
 // Response includes `total` alongside the slice so the UI can
 // render "N of M" without a second call.
@@ -96,6 +106,16 @@ func (h *Handler) RunsGlobal(w http.ResponseWriter, r *http.Request) {
 		Cause:       r.URL.Query().Get("cause"),
 		ProjectSlug: r.URL.Query().Get("project"),
 		Pipeline:    r.URL.Query().Get("pipeline"),
+	}
+	// Column sorting for the /runs table. Whitelisted here (not in
+	// SQL) so an unknown key/dir degrades to the default timeline
+	// instead of 500ing; the SQL CASE only matches these values.
+	if k := r.URL.Query().Get("sort"); sortableRunColumns[k] {
+		d := r.URL.Query().Get("dir")
+		if d != "asc" && d != "desc" {
+			d = "desc"
+		}
+		filter.SortKey, filter.SortDir = k, d
 	}
 
 	runs, err := h.store.ListRunsGlobal(r.Context(), limit, offset, filter)
