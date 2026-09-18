@@ -229,7 +229,7 @@ func (q *Queries) ListPipelineNames(ctx context.Context) ([]string, error) {
 	return items, nil
 }
 
-const listRunsGlobal = `-- name: ListRunsGlobal :many
+const listRunsGlobalDefault = `-- name: ListRunsGlobalDefault :many
 SELECT r.id,
        r.pipeline_id,
        pl.name         AS pipeline_name,
@@ -239,9 +239,6 @@ SELECT r.id,
        r.counter,
        r.cause,
        r.status,
-       -- queue_reason rides along so the runs list can explain a held run
-       -- ("Frozen: production") without a per-row lookup — same rationale as
-       -- cancel_reason above.
        r.queue_reason,
        r.cancel_reason,
        r.superseded_by,
@@ -258,11 +255,11 @@ WHERE ($2::text = '' OR r.status = $2::text)
   AND ($3::text = '' OR r.cause = $3::text)
   AND ($4::text = '' OR p.slug = $4::text)
   AND ($5::text = '' OR pl.name = $5::text)
-ORDER BY r.created_at DESC
+ORDER BY r.created_at DESC, r.id DESC
 LIMIT $1 OFFSET $6::bigint
 `
 
-type ListRunsGlobalParams struct {
+type ListRunsGlobalDefaultParams struct {
 	Limit          int32
 	StatusFilter   string
 	CauseFilter    string
@@ -271,7 +268,7 @@ type ListRunsGlobalParams struct {
 	RowOffset      int64
 }
 
-type ListRunsGlobalRow struct {
+type ListRunsGlobalDefaultRow struct {
 	ID           pgtype.UUID
 	PipelineID   pgtype.UUID
 	PipelineName string
@@ -292,13 +289,17 @@ type ListRunsGlobalRow struct {
 	TriggeredBy  *string
 }
 
-// Cross-project timeline: most recent runs first. Carries the
-// pipeline + project names so list views can link without per-row
-// lookups. All filter params accept the empty string as "no filter"
-// so the same query drives the dashboard widget (no filters) and
-// the /runs page (every filter the UI exposes).
-func (q *Queries) ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) ([]ListRunsGlobalRow, error) {
-	rows, err := q.db.Query(ctx, listRunsGlobal,
+// Cross-project timeline, most recent first — o hot path. Same shape
+// que ListRunsGlobalSorted (o handler seleciona uma OU outra), sem
+// CASE ORDER BY. Serve o dashboard widget e o /runs sem sort explícito.
+// Query separada é planner-friendly: sem expressão dependente de
+// parâmetro no ORDER BY, um índice `runs(created_at DESC, id)` futuro
+// pode ser usado (com o CASE, o planner não conseguiria).
+// CR klinux (#301): id DESC como tiebreaker final garante ordem total
+// e paginação estável (evita duplicar/pular linhas em OFFSET quando
+// created_at empata).
+func (q *Queries) ListRunsGlobalDefault(ctx context.Context, arg ListRunsGlobalDefaultParams) ([]ListRunsGlobalDefaultRow, error) {
+	rows, err := q.db.Query(ctx, listRunsGlobalDefault,
 		arg.Limit,
 		arg.StatusFilter,
 		arg.CauseFilter,
@@ -310,9 +311,143 @@ func (q *Queries) ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) 
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListRunsGlobalRow{}
+	items := []ListRunsGlobalDefaultRow{}
 	for rows.Next() {
-		var i ListRunsGlobalRow
+		var i ListRunsGlobalDefaultRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PipelineID,
+			&i.PipelineName,
+			&i.ProjectID,
+			&i.ProjectSlug,
+			&i.ProjectName,
+			&i.Counter,
+			&i.Cause,
+			&i.Status,
+			&i.QueueReason,
+			&i.CancelReason,
+			&i.SupersededBy,
+			&i.HasServices,
+			&i.ServiceNames,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.TriggeredBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsGlobalSorted = `-- name: ListRunsGlobalSorted :many
+SELECT r.id,
+       r.pipeline_id,
+       pl.name         AS pipeline_name,
+       p.id            AS project_id,
+       p.slug          AS project_slug,
+       p.name          AS project_name,
+       r.counter,
+       r.cause,
+       r.status,
+       r.queue_reason,
+       r.cancel_reason,
+       r.superseded_by,
+       r.has_services,
+       r.service_names,
+       r.created_at,
+       r.started_at,
+       r.finished_at,
+       r.triggered_by
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects  p  ON p.id  = pl.project_id
+WHERE ($2::text = '' OR r.status = $2::text)
+  AND ($3::text = '' OR r.cause = $3::text)
+  AND ($4::text = '' OR p.slug = $4::text)
+  AND ($5::text = '' OR pl.name = $5::text)
+ORDER BY
+  CASE WHEN $6::text = 'started'  AND $7::text = 'asc'  THEN r.started_at END ASC NULLS LAST,
+  CASE WHEN $6::text = 'started'  AND $7::text = 'desc' THEN r.started_at END DESC NULLS LAST,
+  CASE WHEN $6::text = 'duration' AND $7::text = 'asc'  THEN EXTRACT(EPOCH FROM (COALESCE(r.finished_at, NOW()) - r.started_at)) END ASC NULLS LAST,
+  CASE WHEN $6::text = 'duration' AND $7::text = 'desc' THEN EXTRACT(EPOCH FROM (COALESCE(r.finished_at, NOW()) - r.started_at)) END DESC NULLS LAST,
+  CASE WHEN $6::text = 'counter'  AND $7::text = 'asc'  THEN r.counter END ASC,
+  CASE WHEN $6::text = 'counter'  AND $7::text = 'desc' THEN r.counter END DESC,
+  CASE WHEN $6::text = 'pipeline' AND $7::text = 'asc'  THEN p.slug || '/' || pl.name END ASC,
+  CASE WHEN $6::text = 'pipeline' AND $7::text = 'desc' THEN p.slug || '/' || pl.name END DESC,
+  CASE WHEN $6::text = 'status'   AND $7::text = 'asc'  THEN r.status END ASC,
+  CASE WHEN $6::text = 'status'   AND $7::text = 'desc' THEN r.status END DESC,
+  CASE WHEN $6::text = 'cause'    AND $7::text = 'asc'  THEN r.cause END ASC,
+  CASE WHEN $6::text = 'cause'    AND $7::text = 'desc' THEN r.cause END DESC,
+  r.created_at DESC,
+  r.id DESC
+LIMIT $1 OFFSET $8::bigint
+`
+
+type ListRunsGlobalSortedParams struct {
+	Limit          int32
+	StatusFilter   string
+	CauseFilter    string
+	ProjectSlug    string
+	PipelineFilter string
+	SortKey        string
+	SortDir        string
+	RowOffset      int64
+}
+
+type ListRunsGlobalSortedRow struct {
+	ID           pgtype.UUID
+	PipelineID   pgtype.UUID
+	PipelineName string
+	ProjectID    pgtype.UUID
+	ProjectSlug  string
+	ProjectName  string
+	Counter      int64
+	Cause        string
+	Status       string
+	QueueReason  *string
+	CancelReason *string
+	SupersededBy pgtype.UUID
+	HasServices  bool
+	ServiceNames []string
+	CreatedAt    pgtype.Timestamptz
+	StartedAt    pgtype.Timestamptz
+	FinishedAt   pgtype.Timestamptz
+	TriggeredBy  *string
+}
+
+// Cross-project timeline com sort explícito do usuário. Usado só quando
+// o handler recebe um sort_key na URL — evita taxar o hot path (widget
+// do dashboard + /runs sem sort) com o CASE (o handler roteia pra
+// ListRunsGlobalDefault nesses casos). CR klinux (#301): mantém CASE
+// só aqui, onde faz sentido pagar o custo por sort do usuário.
+// Tiebreakers: created_at DESC (mesmo default) e id DESC (ordem total
+// pra paginação estável em sorts de baixa cardinalidade como status/
+// cause, onde muitos empates são resolvidos pelos tiebreakers).
+// NULLS LAST em started/duration mantém runs nunca-iniciados no fim
+// em ambas as direções.
+func (q *Queries) ListRunsGlobalSorted(ctx context.Context, arg ListRunsGlobalSortedParams) ([]ListRunsGlobalSortedRow, error) {
+	rows, err := q.db.Query(ctx, listRunsGlobalSorted,
+		arg.Limit,
+		arg.StatusFilter,
+		arg.CauseFilter,
+		arg.ProjectSlug,
+		arg.PipelineFilter,
+		arg.SortKey,
+		arg.SortDir,
+		arg.RowOffset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunsGlobalSortedRow{}
+	for rows.Next() {
+		var i ListRunsGlobalSortedRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.PipelineID,

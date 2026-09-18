@@ -1556,12 +1556,27 @@ type Querier interface {
 	// crash.
 	ListRunningJobsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListRunningJobsForAgentRow, error)
 	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
-	// Cross-project timeline: most recent runs first. Carries the
-	// pipeline + project names so list views can link without per-row
-	// lookups. All filter params accept the empty string as "no filter"
-	// so the same query drives the dashboard widget (no filters) and
-	// the /runs page (every filter the UI exposes).
-	ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) ([]ListRunsGlobalRow, error)
+	// Cross-project timeline, most recent first — o hot path. Same shape
+	// que ListRunsGlobalSorted (o handler seleciona uma OU outra), sem
+	// CASE ORDER BY. Serve o dashboard widget e o /runs sem sort explícito.
+	// Query separada é planner-friendly: sem expressão dependente de
+	// parâmetro no ORDER BY, um índice `runs(created_at DESC, id)` futuro
+	// pode ser usado (com o CASE, o planner não conseguiria).
+	// CR klinux (#301): id DESC como tiebreaker final garante ordem total
+	// e paginação estável (evita duplicar/pular linhas em OFFSET quando
+	// created_at empata).
+	ListRunsGlobalDefault(ctx context.Context, arg ListRunsGlobalDefaultParams) ([]ListRunsGlobalDefaultRow, error)
+	// Cross-project timeline com sort explícito do usuário. Usado só quando
+	// o handler recebe um sort_key na URL — evita taxar o hot path (widget
+	// do dashboard + /runs sem sort) com o CASE (o handler roteia pra
+	// ListRunsGlobalDefault nesses casos). CR klinux (#301): mantém CASE
+	// só aqui, onde faz sentido pagar o custo por sort do usuário.
+	// Tiebreakers: created_at DESC (mesmo default) e id DESC (ordem total
+	// pra paginação estável em sorts de baixa cardinalidade como status/
+	// cause, onde muitos empates são resolvidos pelos tiebreakers).
+	// NULLS LAST em started/duration mantém runs nunca-iniciados no fim
+	// em ambas as direções.
+	ListRunsGlobalSorted(ctx context.Context, arg ListRunsGlobalSortedParams) ([]ListRunsGlobalSortedRow, error)
 	// The runs a freeze is currently holding, so unfreeze can NOTIFY each one
 	// awake instead of waiting up to a full scheduler tick.
 	//
