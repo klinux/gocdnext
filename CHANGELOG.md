@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.113.0 — 2026-09-18
+
+### Added
+
+- **Sortable columns on the `/runs` table (#301).** Click a header to sort the
+  global runs timeline by started time, duration, counter, pipeline, status or
+  cause (asc/desc). Sorting is server-side so it stays correct across pagination;
+  the sort key/direction are whitelisted at the API edge and applied via
+  parameterized `CASE` expressions (no interpolation). The default (unsorted)
+  view keeps its own `created_at DESC, id` query so the dashboard widget and the
+  first `/runs` load stay on the lean, index-friendly path; a stable `id`
+  tiebreaker keeps pagination deterministic on ties.
+
 ## v0.112.0 — 2026-09-15
 
 ### Added
