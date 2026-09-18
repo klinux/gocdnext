@@ -132,22 +132,33 @@ type RunsFilter struct {
 // filter, paged by limit/offset. Offset defaults to 0 when negative.
 // Used by both the dashboard widget (filter empty, limit=20) and
 // the /runs page (full filter surface, paginated).
+//
+// Routing (CR klinux #301): filter.SortKey empty → hot path
+// ListRunsGlobalDefault (sem CASE, planner-friendly pra futuro
+// índice created_at DESC, id); com sort explícito → ListRunsGlobalSorted
+// (CASE ORDER BY). Isso mantém o widget do dashboard + /runs sem sort
+// baratos e confina o custo do CASE aos sorts iniciados pelo usuário.
 func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, offset int64, filter RunsFilter) ([]GlobalRunSummary, error) {
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := s.q.ListRunsGlobal(ctx, db.ListRunsGlobalParams{
+	if filter.SortKey == "" {
+		return s.listRunsGlobalDefault(ctx, limit, offset, filter)
+	}
+	return s.listRunsGlobalSorted(ctx, limit, offset, filter)
+}
+
+func (s *Store) listRunsGlobalDefault(ctx context.Context, limit int32, offset int64, filter RunsFilter) ([]GlobalRunSummary, error) {
+	rows, err := s.q.ListRunsGlobalDefault(ctx, db.ListRunsGlobalDefaultParams{
 		Limit:          limit,
 		StatusFilter:   filter.Status,
 		CauseFilter:    filter.Cause,
 		ProjectSlug:    filter.ProjectSlug,
 		PipelineFilter: filter.Pipeline,
-		SortKey:        filter.SortKey,
-		SortDir:        filter.SortDir,
 		RowOffset:      offset,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("store: list runs global: %w", err)
+		return nil, fmt.Errorf("store: list runs global (default): %w", err)
 	}
 	out := make([]GlobalRunSummary, 0, len(rows))
 	for _, r := range rows {
@@ -163,6 +174,48 @@ func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, offset int64, f
 				ServiceNames: r.ServiceNames,
 				// Same as the project cards: the global runs list must be able
 				// to explain a held run (#202) without a per-row lookup.
+				QueueReason:  stringValue(r.QueueReason),
+				CancelReason: stringValue(r.CancelReason),
+				SupersededBy: pgUUIDPtr(r.SupersededBy),
+				CreatedAt:    r.CreatedAt.Time,
+				StartedAt:    pgTimePtr(r.StartedAt),
+				FinishedAt:   pgTimePtr(r.FinishedAt),
+				TriggeredBy:  stringValue(r.TriggeredBy),
+			},
+			ProjectID:   fromPgUUID(r.ProjectID),
+			ProjectSlug: r.ProjectSlug,
+			ProjectName: r.ProjectName,
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) listRunsGlobalSorted(ctx context.Context, limit int32, offset int64, filter RunsFilter) ([]GlobalRunSummary, error) {
+	rows, err := s.q.ListRunsGlobalSorted(ctx, db.ListRunsGlobalSortedParams{
+		Limit:          limit,
+		StatusFilter:   filter.Status,
+		CauseFilter:    filter.Cause,
+		ProjectSlug:    filter.ProjectSlug,
+		PipelineFilter: filter.Pipeline,
+		SortKey:        filter.SortKey,
+		SortDir:        filter.SortDir,
+		RowOffset:      offset,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list runs global (sorted): %w", err)
+	}
+	out := make([]GlobalRunSummary, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, GlobalRunSummary{
+			RunSummary: RunSummary{
+				ID:           fromPgUUID(r.ID),
+				PipelineID:   fromPgUUID(r.PipelineID),
+				PipelineName: r.PipelineName,
+				Counter:      r.Counter,
+				Cause:        r.Cause,
+				Status:       r.Status,
+				HasServices:  r.HasServices,
+				ServiceNames: r.ServiceNames,
 				QueueReason:  stringValue(r.QueueReason),
 				CancelReason: stringValue(r.CancelReason),
 				SupersededBy: pgUUIDPtr(r.SupersededBy),

@@ -1,9 +1,13 @@
--- name: ListRunsGlobal :many
--- Cross-project timeline: most recent runs first. Carries the
--- pipeline + project names so list views can link without per-row
--- lookups. All filter params accept the empty string as "no filter"
--- so the same query drives the dashboard widget (no filters) and
--- the /runs page (every filter the UI exposes).
+-- name: ListRunsGlobalDefault :many
+-- Cross-project timeline, most recent first — o hot path. Same shape
+-- que ListRunsGlobalSorted (o handler seleciona uma OU outra), sem
+-- CASE ORDER BY. Serve o dashboard widget e o /runs sem sort explícito.
+-- Query separada é planner-friendly: sem expressão dependente de
+-- parâmetro no ORDER BY, um índice `runs(created_at DESC, id)` futuro
+-- pode ser usado (com o CASE, o planner não conseguiria).
+-- CR klinux (#301): id DESC como tiebreaker final garante ordem total
+-- e paginação estável (evita duplicar/pular linhas em OFFSET quando
+-- created_at empata).
 SELECT r.id,
        r.pipeline_id,
        pl.name         AS pipeline_name,
@@ -13,9 +17,6 @@ SELECT r.id,
        r.counter,
        r.cause,
        r.status,
-       -- queue_reason rides along so the runs list can explain a held run
-       -- ("Frozen: production") without a per-row lookup — same rationale as
-       -- cancel_reason above.
        r.queue_reason,
        r.cancel_reason,
        r.superseded_by,
@@ -32,10 +33,45 @@ WHERE (@status_filter::text = '' OR r.status = @status_filter::text)
   AND (@cause_filter::text = '' OR r.cause = @cause_filter::text)
   AND (@project_slug::text = '' OR p.slug = @project_slug::text)
   AND (@pipeline_filter::text = '' OR pl.name = @pipeline_filter::text)
--- Sort: whitelisted key+dir pairs via CASE (sqlc-safe; nothing is
--- interpolated). Empty sort_key falls through to the default
--- created_at DESC timeline. NULLS LAST keeps never-started runs at
--- the bottom for started/duration in both directions.
+ORDER BY r.created_at DESC, r.id DESC
+LIMIT $1 OFFSET @row_offset::bigint;
+
+-- name: ListRunsGlobalSorted :many
+-- Cross-project timeline com sort explícito do usuário. Usado só quando
+-- o handler recebe um sort_key na URL — evita taxar o hot path (widget
+-- do dashboard + /runs sem sort) com o CASE (o handler roteia pra
+-- ListRunsGlobalDefault nesses casos). CR klinux (#301): mantém CASE
+-- só aqui, onde faz sentido pagar o custo por sort do usuário.
+-- Tiebreakers: created_at DESC (mesmo default) e id DESC (ordem total
+-- pra paginação estável em sorts de baixa cardinalidade como status/
+-- cause, onde muitos empates são resolvidos pelos tiebreakers).
+-- NULLS LAST em started/duration mantém runs nunca-iniciados no fim
+-- em ambas as direções.
+SELECT r.id,
+       r.pipeline_id,
+       pl.name         AS pipeline_name,
+       p.id            AS project_id,
+       p.slug          AS project_slug,
+       p.name          AS project_name,
+       r.counter,
+       r.cause,
+       r.status,
+       r.queue_reason,
+       r.cancel_reason,
+       r.superseded_by,
+       r.has_services,
+       r.service_names,
+       r.created_at,
+       r.started_at,
+       r.finished_at,
+       r.triggered_by
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects  p  ON p.id  = pl.project_id
+WHERE (@status_filter::text = '' OR r.status = @status_filter::text)
+  AND (@cause_filter::text = '' OR r.cause = @cause_filter::text)
+  AND (@project_slug::text = '' OR p.slug = @project_slug::text)
+  AND (@pipeline_filter::text = '' OR pl.name = @pipeline_filter::text)
 ORDER BY
   CASE WHEN @sort_key::text = 'started'  AND @sort_dir::text = 'asc'  THEN r.started_at END ASC NULLS LAST,
   CASE WHEN @sort_key::text = 'started'  AND @sort_dir::text = 'desc' THEN r.started_at END DESC NULLS LAST,
@@ -49,7 +85,8 @@ ORDER BY
   CASE WHEN @sort_key::text = 'status'   AND @sort_dir::text = 'desc' THEN r.status END DESC,
   CASE WHEN @sort_key::text = 'cause'    AND @sort_dir::text = 'asc'  THEN r.cause END ASC,
   CASE WHEN @sort_key::text = 'cause'    AND @sort_dir::text = 'desc' THEN r.cause END DESC,
-  r.created_at DESC
+  r.created_at DESC,
+  r.id DESC
 LIMIT $1 OFFSET @row_offset::bigint;
 
 -- name: CountRunsGlobal :one
