@@ -166,6 +166,78 @@ func TestListRunsGlobal_EmptyFilter(t *testing.T) {
 	}
 }
 
+// TestListRunsGlobal_StablePaginationOnTies prova paginação estável quando
+// muitos runs empatam em created_at (comum em sorts de baixa cardinalidade
+// como status/cause). CR klinux (#301): sem `r.id` como tiebreaker final,
+// OFFSET pagination pode duplicar ou pular linhas nos limites de página.
+//
+// Setup: 10 runs com created_at próximos (mesma pipeline, seed em burst).
+// Paginamos com limit=3, iterando offset=0,3,6,9. Concatenar as páginas
+// deve dar EXATAMENTE 10 runs distintas — sem repetir nem sumir.
+func TestListRunsGlobal_StablePaginationOnTies(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelines := seedTwoProjectsWithDeploy(t, s, ctx)
+	for i := 1; i <= 10; i++ {
+		insertRun(t, pool, ctx, pipelines["payments/build"], i, "manual", "success")
+	}
+
+	seen := make(map[string]bool)
+	total := 0
+	for _, offset := range []int64{0, 3, 6, 9} {
+		page, err := s.ListRunsGlobal(ctx, 3, offset, store.RunsFilter{})
+		if err != nil {
+			t.Fatalf("list offset=%d: %v", offset, err)
+		}
+		for _, r := range page {
+			id := r.ID.String()
+			if seen[id] {
+				t.Fatalf("row %s repeated across pages (offset=%d) — paginação instável", id, offset)
+			}
+			seen[id] = true
+			total++
+		}
+	}
+	if total != 10 {
+		t.Fatalf("total = %d, want 10 (rows perdidas ou paginação repetiu)", total)
+	}
+}
+
+// TestListRunsGlobal_SortRoutesToSorted prova que passar SortKey usa
+// ListRunsGlobalSorted (CASE ORDER BY) — smoke test do roteamento
+// pós-CR do klinux (#301). Sem SortKey → hot path (default query, sem
+// CASE); com SortKey → sorted query (com CASE). Aqui só validamos que
+// ambos caminhos retornam sem erro e o filtro é respeitado.
+func TestListRunsGlobal_SortRoutesToSorted(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelines := seedTwoProjectsWithDeploy(t, s, ctx)
+	insertRun(t, pool, ctx, pipelines["payments/deploy"], 1, "manual", "success")
+	insertRun(t, pool, ctx, pipelines["storefront/deploy"], 1, "manual", "success")
+
+	// Hot path (sem sort).
+	def, err := s.ListRunsGlobal(ctx, 100, 0, store.RunsFilter{})
+	if err != nil {
+		t.Fatalf("default: %v", err)
+	}
+	if len(def) != 2 {
+		t.Fatalf("default rows = %d, want 2", len(def))
+	}
+
+	// Sorted path — status asc.
+	sorted, err := s.ListRunsGlobal(ctx, 100, 0, store.RunsFilter{SortKey: "status", SortDir: "asc"})
+	if err != nil {
+		t.Fatalf("sorted: %v", err)
+	}
+	if len(sorted) != 2 {
+		t.Fatalf("sorted rows = %d, want 2", len(sorted))
+	}
+}
+
 // TestListPipelineNames_DistinctSorted verifies the dropdown source:
 // distinct names, sorted, no duplicate `deploy` across projects.
 func TestListPipelineNames_DistinctSorted(t *testing.T) {

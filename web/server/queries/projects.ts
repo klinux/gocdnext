@@ -6,77 +6,77 @@ import { cookies } from "next/headers";
 
 import { env } from "@/lib/env";
 import type {
-  AgentDetail,
-  AgentSummary,
-  CachesList,
-  DashboardMetrics,
-  DeployTargetsList,
-  DeploymentsList,
-  EnvironmentsList,
-  FindingsList,
-  GlobalRunSummary,
-  PluginsList,
-  ProjectDetail,
-  ProjectSummary,
-  ProjectVSM,
-  RolloutsList,
-  RunDetail,
-  RunsListResponse,
-  SecretsList,
-  TestResultsResponse,
+	AgentDetail,
+	AgentSummary,
+	CachesList,
+	DashboardMetrics,
+	DeploymentsList,
+	DeployTargetsList,
+	EnvironmentsList,
+	FindingsList,
+	GlobalRunSummary,
+	PluginsList,
+	ProjectDetail,
+	ProjectSummary,
+	ProjectVSM,
+	RolloutsList,
+	RunDetail,
+	RunsListResponse,
+	SecretsList,
+	TestResultsResponse,
 } from "@/types/api";
 
 type ListResponse = { projects: ProjectSummary[] };
 
 async function readJSON<T>(path: string, init?: RequestInit): Promise<T> {
-  const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
-  // Forward the browser's session cookie to the control plane so
-  // protected RSC fetches don't 401 when auth is enabled. Missing
-  // cookie = no header added (the control plane treats that as
-  // anonymous, exactly like a fresh curl).
-  const store = await cookies();
-  const session = store.get("gocdnext_session")?.value;
-  const res = await fetch(url, {
-    cache: "no-store",
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new GocdnextAPIError(
-      `GET ${url} returned ${res.status}: ${body.slice(0, 200)}`,
-      res.status,
-    );
-  }
-  return (await res.json()) as T;
+	const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
+	// Forward the browser's session cookie to the control plane so
+	// protected RSC fetches don't 401 when auth is enabled. Missing
+	// cookie = no header added (the control plane treats that as
+	// anonymous, exactly like a fresh curl).
+	const store = await cookies();
+	const session = store.get("gocdnext_session")?.value;
+	const res = await fetch(url, {
+		cache: "no-store",
+		...init,
+		headers: {
+			Accept: "application/json",
+			...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+			...(init?.headers ?? {}),
+		},
+	});
+	if (!res.ok) {
+		const body = await res.text();
+		throw new GocdnextAPIError(
+			`GET ${url} returned ${res.status}: ${body.slice(0, 200)}`,
+			res.status,
+		);
+	}
+	return (await res.json()) as T;
 }
 
 export class GocdnextAPIError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message);
-    this.name = "GocdnextAPIError";
-  }
+	constructor(
+		message: string,
+		public readonly status: number,
+	) {
+		super(message);
+		this.name = "GocdnextAPIError";
+	}
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
-  const { projects } = await readJSON<ListResponse>("/api/v1/projects");
-  return projects;
+	const { projects } = await readJSON<ListResponse>("/api/v1/projects");
+	return projects;
 }
 
 export async function getProjectDetail(
-  slug: string,
-  runs = 25,
+	slug: string,
+	runs = 25,
 ): Promise<ProjectDetail> {
-  return readJSON<ProjectDetail>(
-    `/api/v1/projects/${encodeURIComponent(slug)}?runs=${runs}`,
-  );
+	return readJSON<ProjectDetail>(
+		`/api/v1/projects/${encodeURIComponent(slug)}?runs=${runs}`,
+	);
 }
 
 // Per-project log archive override (null = inherit global). Surfaced
@@ -85,201 +85,211 @@ export async function getProjectDetail(
 // echoes the global policy + backend availability so the UI hint
 // can render the resolved state without an extra admin RPC.
 export type LogArchiveSettings = {
-  enabled: boolean | null;
-  global_policy?: string;
-  has_artifact_backend: boolean;
+	enabled: boolean | null;
+	global_policy?: string;
+	has_artifact_backend: boolean;
 };
 export async function getProjectLogArchive(
-  slug: string,
+	slug: string,
 ): Promise<LogArchiveSettings> {
-  return readJSON<LogArchiveSettings>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/log-archive`,
-  );
+	return readJSON<LogArchiveSettings>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/log-archive`,
+	);
 }
 
 export type CheckReportingMode = "both" | "check_run" | "commit_status";
 export type CheckReportingSettings = {
-  mode: CheckReportingMode;
-  default_mode: string;
+	mode: CheckReportingMode;
+	default_mode: string;
 };
 export async function getProjectCheckReporting(
-  slug: string,
+	slug: string,
 ): Promise<CheckReportingSettings> {
-  return readJSON<CheckReportingSettings>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/check-reporting`,
-  );
+	return readJSON<CheckReportingSettings>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/check-reporting`,
+	);
 }
 
 // Required pipelines for PR merge: the chosen set, the selectable (PR-firing)
 // set, the repo provider, the exact required contexts, and the last GitHub
 // ruleset sync state (so the card can surface synced / failed / drift).
 export type RequiredChecksSyncStatus =
-  | "not_configured"
-  | "pending"
-  | "synced"
-  | "failed"
-  | "skipped";
+	| "not_configured"
+	| "pending"
+	| "synced"
+	| "failed"
+	| "skipped";
 export type RequiredChecksSync = {
-  status: RequiredChecksSyncStatus;
-  ruleset_id?: number;
-  synced_at?: string;
-  error?: string;
-  needs_admin?: boolean;
+	status: RequiredChecksSyncStatus;
+	ruleset_id?: number;
+	synced_at?: string;
+	error?: string;
+	needs_admin?: boolean;
 };
 export type RequiredChecksSettings = {
-  pipelines: string[];
-  available_pipelines: string[];
-  provider: string;
-  status_contexts: string[];
-  sync: RequiredChecksSync;
+	pipelines: string[];
+	available_pipelines: string[];
+	provider: string;
+	status_contexts: string[];
+	sync: RequiredChecksSync;
 };
 export async function getProjectRequiredChecks(
-  slug: string,
+	slug: string,
 ): Promise<RequiredChecksSettings> {
-  return readJSON<RequiredChecksSettings>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/required-checks`,
-  );
+	return readJSON<RequiredChecksSettings>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/required-checks`,
+	);
 }
 
 export type ProjectBadgeSettings = {
-  enabled: boolean;
+	enabled: boolean;
 };
 export async function getProjectBadge(
-  slug: string,
+	slug: string,
 ): Promise<ProjectBadgeSettings> {
-  return readJSON<ProjectBadgeSettings>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/badge`,
-  );
+	return readJSON<ProjectBadgeSettings>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/badge`,
+	);
 }
 
 export async function getRunDetail(
-  id: string,
-  logsPerJob = 200,
-  // logsHeadPerJob defaults to a chunky 500 so the operator sees the
-  // build's startup (Gradle daemon banner, dep resolution from
-  // Nexus, JDK toolchain selection, classpath assembly). Combined
-  // with the existing tail at `logsPerJob`, a 23k-line build now
-  // shows "head + (~21k omitted) + tail" instead of just the last
-  // 200 lines. Cap=2000 server-side either way.
-  logsHeadPerJob = 500,
+	id: string,
+	logsPerJob = 200,
+	// logsHeadPerJob defaults to a chunky 500 so the operator sees the
+	// build's startup (Gradle daemon banner, dep resolution from
+	// Nexus, JDK toolchain selection, classpath assembly). Combined
+	// with the existing tail at `logsPerJob`, a 23k-line build now
+	// shows "head + (~21k omitted) + tail" instead of just the last
+	// 200 lines. Cap=2000 server-side either way.
+	logsHeadPerJob = 500,
 ): Promise<RunDetail> {
-  return readJSON<RunDetail>(
-    `/api/v1/runs/${encodeURIComponent(id)}?logs=${logsPerJob}&head=${logsHeadPerJob}`,
-  );
+	return readJSON<RunDetail>(
+		`/api/v1/runs/${encodeURIComponent(id)}?logs=${logsPerJob}&head=${logsHeadPerJob}`,
+	);
 }
 
 export async function getRunTests(id: string): Promise<TestResultsResponse> {
-  return readJSON<TestResultsResponse>(
-    `/api/v1/runs/${encodeURIComponent(id)}/tests`,
-  );
+	return readJSON<TestResultsResponse>(
+		`/api/v1/runs/${encodeURIComponent(id)}/tests`,
+	);
 }
 
 export async function getProjectVSM(slug: string): Promise<ProjectVSM> {
-  return readJSON<ProjectVSM>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/vsm`,
-  );
+	return readJSON<ProjectVSM>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/vsm`,
+	);
 }
 
 export async function getDashboardMetrics(): Promise<DashboardMetrics> {
-  return readJSON<DashboardMetrics>("/api/v1/dashboard/metrics");
+	return readJSON<DashboardMetrics>("/api/v1/dashboard/metrics");
 }
 
 // RunsQuery mirrors the backend /api/v1/runs query string; every
 // field optional so the dashboard widget passes just `limit` and
 // the /runs page passes the full set.
 export type RunsQuery = {
-  limit?: number;
-  offset?: number;
-  status?: string;
-  cause?: string;
-  project?: string;
-  pipeline?: string;
+	limit?: number;
+	offset?: number;
+	status?: string;
+	cause?: string;
+	project?: string;
+	pipeline?: string;
+	// Server-side column sort (whitelisted by the API; anything
+	// unknown degrades to the default created_at DESC timeline).
+	sort?: string;
+	dir?: "asc" | "desc";
 };
 
 export async function listGlobalRuns(
-  opts: RunsQuery = {},
+	opts: RunsQuery = {},
 ): Promise<RunsListResponse> {
-  const qs = new URLSearchParams({ limit: String(opts.limit ?? 20) });
-  if (opts.offset) qs.set("offset", String(opts.offset));
-  if (opts.status) qs.set("status", opts.status);
-  if (opts.cause) qs.set("cause", opts.cause);
-  if (opts.project) qs.set("project", opts.project);
-  if (opts.pipeline) qs.set("pipeline", opts.pipeline);
-  return readJSON<RunsListResponse>(`/api/v1/runs?${qs.toString()}`);
+	const qs = new URLSearchParams({ limit: String(opts.limit ?? 20) });
+	if (opts.offset) qs.set("offset", String(opts.offset));
+	if (opts.status) qs.set("status", opts.status);
+	if (opts.cause) qs.set("cause", opts.cause);
+	if (opts.project) qs.set("project", opts.project);
+	if (opts.pipeline) qs.set("pipeline", opts.pipeline);
+	if (opts.sort) qs.set("sort", opts.sort);
+	if (opts.dir) qs.set("dir", opts.dir);
+	return readJSON<RunsListResponse>(`/api/v1/runs?${qs.toString()}`);
 }
 
 // listPipelineNames feeds the /runs pipeline filter dropdown —
 // distinct names across every project ("build", "deploy", ...).
 export async function listPipelineNames(): Promise<string[]> {
-  const { names } = await readJSON<{ names: string[] }>(
-    "/api/v1/pipelines/names",
-  );
-  return names;
+	const { names } = await readJSON<{ names: string[] }>(
+		"/api/v1/pipelines/names",
+	);
+	return names;
 }
 
 // listGlobalRunsOnly is the legacy shape the dashboard widget used
 // (bare slice, no envelope). Kept so we don't tear up that code
 // path in this slice — v2 can migrate it when convenient.
-export async function listGlobalRunsOnly(limit = 20): Promise<GlobalRunSummary[]> {
-  const env = await listGlobalRuns({ limit });
-  return env.runs;
+export async function listGlobalRunsOnly(
+	limit = 20,
+): Promise<GlobalRunSummary[]> {
+	const env = await listGlobalRuns({ limit });
+	return env.runs;
 }
 
 export async function listAgents(): Promise<AgentSummary[]> {
-  const { agents } = await readJSON<{ agents: AgentSummary[] }>("/api/v1/agents");
-  return agents;
+	const { agents } = await readJSON<{ agents: AgentSummary[] }>(
+		"/api/v1/agents",
+	);
+	return agents;
 }
 
 export async function getAgentDetail(id: string): Promise<AgentDetail> {
-  return readJSON<AgentDetail>(`/api/v1/agents/${encodeURIComponent(id)}`);
+	return readJSON<AgentDetail>(`/api/v1/agents/${encodeURIComponent(id)}`);
 }
 
 // SecretsQuery is the pagination window for the secrets list. Both
 // fields optional so callers that don't paginate (the CLI-parity
 // happy path) keep working with the server defaults.
 export type SecretsQuery = {
-  limit?: number;
-  offset?: number;
+	limit?: number;
+	offset?: number;
 };
 
 export async function listSecrets(
-  slug: string,
-  opts: SecretsQuery = {},
+	slug: string,
+	opts: SecretsQuery = {},
 ): Promise<SecretsList> {
-  const qs = new URLSearchParams({ limit: String(opts.limit ?? 50) });
-  if (opts.offset) qs.set("offset", String(opts.offset));
-  return readJSON<SecretsList>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/secrets?${qs.toString()}`,
-  );
+	const qs = new URLSearchParams({ limit: String(opts.limit ?? 50) });
+	if (opts.offset) qs.set("offset", String(opts.offset));
+	return readJSON<SecretsList>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/secrets?${qs.toString()}`,
+	);
 }
 
 export async function listCaches(slug: string): Promise<CachesList> {
-  return readJSON<CachesList>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/caches`,
-  );
+	return readJSON<CachesList>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/caches`,
+	);
 }
 
 // Environments tab (#39): each environment with its current deploy.
 // The per-environment history timeline is fetched lazily client-side
 // (see EnvironmentCard) so the tab load stays a single request.
 export async function listEnvironments(
-  slug: string,
+	slug: string,
 ): Promise<EnvironmentsList> {
-  return readJSON<EnvironmentsList>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/environments`,
-  );
+	return readJSON<EnvironmentsList>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/environments`,
+	);
 }
 
 export async function listEnvironmentDeployments(
-  slug: string,
-  environmentId: string,
-  opts: { limit?: number; cursor?: string } = {},
+	slug: string,
+	environmentId: string,
+	opts: { limit?: number; cursor?: string } = {},
 ): Promise<DeploymentsList> {
-  const qs = new URLSearchParams({ limit: String(opts.limit ?? 50) });
-  if (opts.cursor) qs.set("cursor", opts.cursor);
-  return readJSON<DeploymentsList>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/environments/${encodeURIComponent(environmentId)}/deployments?${qs.toString()}`,
-  );
+	const qs = new URLSearchParams({ limit: String(opts.limit ?? 50) });
+	if (opts.cursor) qs.set("cursor", opts.cursor);
+	return readJSON<DeploymentsList>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/environments/${encodeURIComponent(environmentId)}/deployments?${qs.toString()}`,
+	);
 }
 
 // Native deploy targets (ADR-0001). The endpoint is MAINTAINER-gated, so a viewer's
@@ -288,21 +298,21 @@ export async function listEnvironmentDeployments(
 // viewer-readable and simply omits the maintainer-only native row. Any other status
 // (e.g. 500) still throws.
 export async function listDeployTargets(
-  slug: string,
+	slug: string,
 ): Promise<DeployTargetsList> {
-  try {
-    return await readJSON<DeployTargetsList>(
-      `/api/v1/projects/${encodeURIComponent(slug)}/deploy-targets`,
-    );
-  } catch (err) {
-    if (
-      err instanceof GocdnextAPIError &&
-      (err.status === 401 || err.status === 403 || err.status === 501)
-    ) {
-      return { deploy_targets: [] };
-    }
-    throw err;
-  }
+	try {
+		return await readJSON<DeployTargetsList>(
+			`/api/v1/projects/${encodeURIComponent(slug)}/deploy-targets`,
+		);
+	} catch (err) {
+		if (
+			err instanceof GocdnextAPIError &&
+			(err.status === 401 || err.status === 403 || err.status === 501)
+		) {
+			return { deploy_targets: [] };
+		}
+		throw err;
+	}
 }
 
 // listRollouts reads the in-flight argo-rollouts for a project scoped to a
@@ -310,78 +320,78 @@ export async function listDeployTargets(
 // viewer's RSC fetch 403s, which the page surfaces as an access note rather
 // than crashing. `rollouts` is always an array on the wire.
 export async function listRollouts(
-  slug: string,
-  cluster: string,
-  namespace: string,
+	slug: string,
+	cluster: string,
+	namespace: string,
 ): Promise<RolloutsList> {
-  const qs = new URLSearchParams({ cluster, namespace });
-  return readJSON<RolloutsList>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/rollouts?${qs.toString()}`,
-  );
+	const qs = new URLSearchParams({ cluster, namespace });
+	return readJSON<RolloutsList>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/rollouts?${qs.toString()}`,
+	);
 }
 
 // listFindings reads the project's security findings (latest run per pipeline),
 // filterable by severity/tool/rule, paginated.
 export async function listFindings(
-  slug: string,
-  opts: {
-    severity?: string;
-    tool?: string;
-    rule?: string;
-    includeResolved?: boolean;
-    limit?: number;
-    offset?: number;
-  } = {},
+	slug: string,
+	opts: {
+		severity?: string;
+		tool?: string;
+		rule?: string;
+		includeResolved?: boolean;
+		limit?: number;
+		offset?: number;
+	} = {},
 ): Promise<FindingsList> {
-  const qs = new URLSearchParams();
-  if (opts.severity) qs.set("severity", opts.severity);
-  if (opts.tool) qs.set("tool", opts.tool);
-  if (opts.rule) qs.set("rule", opts.rule);
-  if (opts.includeResolved) qs.set("include_resolved", "1");
-  if (opts.limit) qs.set("limit", String(opts.limit));
-  if (opts.offset) qs.set("offset", String(opts.offset));
-  const q = qs.toString();
-  return readJSON<FindingsList>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/findings${q ? `?${q}` : ""}`,
-  );
+	const qs = new URLSearchParams();
+	if (opts.severity) qs.set("severity", opts.severity);
+	if (opts.tool) qs.set("tool", opts.tool);
+	if (opts.rule) qs.set("rule", opts.rule);
+	if (opts.includeResolved) qs.set("include_resolved", "1");
+	if (opts.limit) qs.set("limit", String(opts.limit));
+	if (opts.offset) qs.set("offset", String(opts.offset));
+	const q = qs.toString();
+	return readJSON<FindingsList>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/findings${q ? `?${q}` : ""}`,
+	);
 }
 
 export type ProjectNotification = {
-  on: "failure" | "success" | "always" | "canceled";
-  uses: string;
-  with?: Record<string, string>;
-  secrets?: string[];
+	on: "failure" | "success" | "always" | "canceled";
+	uses: string;
+	with?: Record<string, string>;
+	secrets?: string[];
 };
 
 export async function listProjectNotifications(
-  slug: string,
+	slug: string,
 ): Promise<{ notifications: ProjectNotification[] }> {
-  return readJSON<{ notifications: ProjectNotification[] }>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/notifications`,
-  );
+	return readJSON<{ notifications: ProjectNotification[] }>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/notifications`,
+	);
 }
 
 export type ProjectCron = {
-  id: string;
-  project_id: string;
-  name: string;
-  expression: string;
-  pipeline_ids: string[];
-  enabled: boolean;
-  last_fired_at?: string;
-  created_by?: string;
-  created_at: string;
-  updated_at: string;
+	id: string;
+	project_id: string;
+	name: string;
+	expression: string;
+	pipeline_ids: string[];
+	enabled: boolean;
+	last_fired_at?: string;
+	created_by?: string;
+	created_at: string;
+	updated_at: string;
 };
 
 export async function listProjectCrons(
-  slug: string,
+	slug: string,
 ): Promise<{ crons: ProjectCron[] }> {
-  return readJSON<{ crons: ProjectCron[] }>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/crons`,
-  );
+	return readJSON<{ crons: ProjectCron[] }>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/crons`,
+	);
 }
 
 export async function listPlugins(): Promise<PluginsList> {
-  return readJSON<PluginsList>("/api/v1/plugins");
+	return readJSON<PluginsList>("/api/v1/plugins");
 }
