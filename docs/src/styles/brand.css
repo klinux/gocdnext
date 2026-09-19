@@ -55,14 +55,15 @@
  * gap (text → TOC) — visually lopsided and the body feels compressed.
  *
  * Two changes:
- * 1. Widen --sl-content-width from 45rem to 52rem so prose breathes
- *    on wide screens (still inside the 75–90 char/line readability
- *    band at our font-size).
+ * 1. Widen --sl-content-width from 45rem to 64rem so the body uses the
+ *    wide-screen space instead of sitting in a narrow column with heavy
+ *    L/R gutters. Prose stays comfortable and code blocks (long CLI
+ *    commands, YAML) wrap far less.
  * 2. Re-center content within the main pane (margin-inline: auto)
  *    when sidebar + TOC are both visible. The L/R gutters balance.
  */
 :root {
-  --sl-content-width: 52rem;
+  --sl-content-width: 64rem;
 }
 
 @media (min-width: 72rem) {
