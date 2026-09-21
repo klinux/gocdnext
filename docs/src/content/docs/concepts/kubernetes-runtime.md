@@ -209,8 +209,16 @@ only — shared mode and the Shell/Docker engines ignore these fields.
 
 ## RBAC
 
-The agent's ServiceAccount needs the following at the namespace it
-runs jobs in:
+There are **two ServiceAccounts** in the loop, in two different
+clusters — don't confuse them:
+
+- **Agent SA** — where the agent itself runs job pods (chart-provisioned,
+  release namespace).
+- **Deployer SA** — where the agent's `kubectl`/`kustomize`/`helm`
+  invocations land on the target cluster (customer-provisioned,
+  authenticated via a kubeconfig passed to the plugin).
+
+### Agent SA — namespace the agent runs jobs in
 
 | Resource | Verbs | Why |
 |---|---|---|
@@ -224,6 +232,55 @@ runs jobs in:
 The Helm chart wires this up. `pods/exec` is the one that's specific
 to isolated mode; if you've tightened the chart-provided ClusterRole
 in your fork, check it's still granted.
+
+### Deployer SA — target cluster (kubeconfig)
+
+Plugins like `plugin-kubectl`, `plugin-kustomize`, and `plugin-helm`
+authenticate to the *target* cluster with a kubeconfig you supply via
+the job's `kubeconfig:` input (typically a base64-encoded Secret token
+for a ServiceAccount that lives in the target cluster). The chart
+does **not** provision this SA — customers create it in whichever
+namespace of the target cluster their tooling lives.
+
+The verbs that SA needs depend on what your pipelines actually do.
+This is the minimum set that lets the standard "apply + wait + read
+logs on failure" flow work end-to-end without silent gaps:
+
+| Resource | Verbs | Why |
+|---|---|---|
+| `deployments`, `statefulsets`, `daemonsets` (apps) | `get`, `list`, `watch`, `create`, `patch`, `update` | Everything `kubectl apply` and `rollout status` needs |
+| `services`, `configmaps`, `secrets` (core) | `get`, `list`, `watch`, `create`, `patch`, `update` | Same for the non-workload objects most manifests carry |
+| `jobs`, `cronjobs` (batch) | `get`, `list`, `watch`, `create`, `delete`, `patch` | DB migrations and other one-shots — `create` + `delete --ignore-not-found` for idempotent re-runs |
+| **`pods`** | `get`, `list`, `watch` | Look up Job-owned pods by label to inspect / tail — *not* `create` (that's the workload controller's job) |
+| **`pods/log`** | `get` | **Tail Job pod logs** — see failure mode below |
+| `pods/status` | `get` | Poll terminal container status when `wait --for=condition=complete` isn't enough (e.g. reading `exitCode` off a specific container) |
+| `events` | `get`, `list`, `watch` | `kubectl describe` includes Events; useful when a pod is stuck `Pending` or `ImagePullBackOff` |
+
+> **Failure mode: `pods/log` forbidden after a successful Job.** The
+> most common miss is `pods/log` (or the whole `pods` verb set)
+> being absent from the Deployer SA. Symptom:
+>
+> ```
+> Error from server (Forbidden): pods "migration-<app>-1.<n>.<sha>-<hash>" is forbidden:
+>   User "system:serviceaccount:<ns>:<deployer-sa>" cannot get resource "pods/log"
+>   in API group "" in the namespace "<target-ns>"
+> ```
+>
+> The Job itself **completed** — the migration ran, data was
+> mutated. What failed is the *log fetch* the plugin does when
+> `wait` returns, which the run then reports as a failure. Operators
+> then re-run and either double-mutate (if the migration isn't
+> idempotent) or paper over the error.
+>
+> Fix: add `pods` (`get`, `list`, `watch`) + `pods/log` (`get`) to the
+> Deployer SA's Role/ClusterRole scoped to the target namespace.
+> `pods/log` is the load-bearing one — `pods/list` alone lets `kubectl
+> get pods -l job-name=…` work but not `kubectl logs`.
+
+If your setup uses a **cluster-scoped** ClusterRole for the Deployer
+SA (common when it deploys across many namespaces), keep the same
+verbs — the resources listed above are all namespaced, so the
+ClusterRoleBinding just fans them out.
 
 ## Failure modes
 
