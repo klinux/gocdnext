@@ -8,6 +8,30 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.114.0 — 2026-09-21
+
+### Added
+
+- **`plugin-kubectl` `continue_on_error` input (#303, #304).** When set to
+  `"true"`, a non-zero `kubectl` exit is downgraded to a warning and the job
+  still succeeds — off by default, so `apply`/`rollout`/`wait` failures stay
+  real. It exists for **diagnostic** commands whose failure must not fail the
+  run: the canonical case is a `logs` step that tails a migration Job's pod
+  *after* a `wait --for=condition=complete` already confirmed the Job finished.
+  Without it, a target-cluster ServiceAccount missing `pods/log` makes
+  `kubectl logs` return `Forbidden` and fails a run whose migration already
+  ran — so operators re-run and double-mutate. Now the run's success follows
+  the Job outcome, not the log read.
+
+### Changed
+
+- **Docs: Kubernetes runtime RBAC split by ServiceAccount (#302)** — the agent
+  SA (chart-provisioned) vs the deployer SA (customer-provisioned on the target
+  cluster), with the minimum verbs for the standard apply → wait → tail-logs
+  flow, and the `pods/log` failure mode called out.
+- **Docs: wider content column** — `--sl-content-width` 52rem → 64rem so the
+  docs body uses the space on wide screens instead of a narrow column.
+
 ## v0.113.0 — 2026-09-18
 
 ### Added
