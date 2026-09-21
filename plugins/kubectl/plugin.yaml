@@ -25,6 +25,17 @@ inputs:
       Default namespace for the command (equivalent to `-n`).
       Commands that already specify `-n` override this at their own
       position in the arg list.
+  continue_on_error:
+    required: false
+    description: >
+      When "true", a non-zero kubectl exit is downgraded to a WARNING and
+      the job still succeeds. Use it ONLY for diagnostic commands whose
+      failure must not fail the run — the canonical case is a `logs` step
+      that tails a migration Job's pod AFTER a `wait --for=condition=complete`
+      already confirmed the Job finished: if the target-cluster SA lacks
+      `pods/log`, `kubectl logs` returns Forbidden and would otherwise fail a
+      run whose migration already succeeded (→ re-run → double-mutate). Off by
+      default — never set it on apply/rollout/wait, whose failures are real.
 
 examples:
   - name: apply manifests with service account
@@ -48,3 +59,16 @@ examples:
       with:
         kubeconfig: ${{ PROD_KUBECONFIG_B64 }}
         command: rollout status deploy/api -n prod
+
+  - name: tail a completed migration Job's log without failing the run
+    description: >
+      The previous job already ran `wait --for=condition=complete` on the
+      Job — this one only surfaces its output. `continue_on_error` keeps a
+      `pods/log` Forbidden (or a GC'd pod) from failing a run whose
+      migration already succeeded.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-kubectl@v1
+      with:
+        command: logs job/migration-api-1.${CI_UPSTREAM_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}
+        namespace: prod
+        continue_on_error: "true"
