@@ -75,7 +75,7 @@ func NewVaultBackend(ctx context.Context, cfg VaultConfig) (*VaultBackend, error
 	// segment, as the Vault UI shows it). mount set → paths are relative to
 	// it. No silent "secret" default — that prepended secret/data/ to an
 	// already-complete path and 403'd operators whose engine is mounted
-	// elsewhere (e.g. cora/data/...).
+	// elsewhere (e.g. kv/data/...).
 	b := &VaultBackend{client: client, mount: cfg.KVMount, cfg: cfg}
 	if err := b.authenticate(ctx); err != nil {
 		return nil, err
