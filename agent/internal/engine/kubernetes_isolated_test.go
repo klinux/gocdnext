@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -661,6 +662,15 @@ func TestWaitForTaskStarted_TimesOutOnImagePullBackOff(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error when task stays in Waiting")
 	}
+	// Isolated path must not be blind: ImagePullBackOff is retriable so it
+	// rides the StartupTimeout, but the reason is folded into the error and
+	// it's classified ErrPodNeverStarted so the runner force-deletes the pod.
+	if !errors.Is(err, ErrPodNeverStarted) {
+		t.Errorf("error %v should wrap ErrPodNeverStarted", err)
+	}
+	if !strings.Contains(err.Error(), "ImagePullBackOff") {
+		t.Errorf("isolated task timeout must surface the reason, got %q", err.Error())
+	}
 }
 
 func TestWaitForTaskStarted_OKWhenTaskRunning(t *testing.T) {
@@ -984,5 +994,56 @@ func TestBuildIsolatedJobPodSpec_WorkspaceDefaultsWhenNoOverride(t *testing.T) {
 	}
 	if spec.StorageClassName == nil || *spec.StorageClassName != "pd-ssd" {
 		t.Errorf("workspace default class: want pd-ssd, got %v", spec.StorageClassName)
+	}
+}
+
+// TestAnnotateStartupErr pins the correctness properties the re-review flagged.
+// Classification keys off the RETURNED error, not the wait context, so an
+// inherited parent deadline behaves identically to our StartupTimeout.
+func TestAnnotateStartupErr(t *testing.T) {
+	apiErr := errors.New("apiserver boom")
+	tests := []struct {
+		name         string
+		err          error
+		waiting      string
+		wantNever    bool // wraps ErrPodNeverStarted
+		wantDeadline bool // preserves context.DeadlineExceeded in the chain
+		wantMsg      string
+		wantNoMsg    string
+	}{
+		{"nil passes through", nil, "", false, false, "", ""},
+		// Timeout (ours or inherited from the parent): classified, and the
+		// context.DeadlineExceeded is KEPT in the chain (not stripped). No fixed
+		// duration is claimed.
+		{"deadline, no waiting", context.DeadlineExceeded, "", true, true, "never reached Running", ""},
+		{"deadline folds in waiting", context.DeadlineExceeded, `container "task": ImagePullBackOff`, true, true, "ImagePullBackOff", "after"},
+		// A real API error (not a deadline) is returned verbatim — closes the
+		// race where a parent deadline fires at the same instant as an API error.
+		{"real API error not masked", apiErr, `container "task": ImagePullBackOff`, false, false, "apiserver boom", "ImagePullBackOff"},
+		// Cancellation is not a startup timeout — returned verbatim.
+		{"cancel not reclassified", context.Canceled, "", false, false, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := annotateStartupErr(tt.err, "p", tt.waiting)
+			if tt.err == nil {
+				if got != nil {
+					t.Fatalf("want nil, got %v", got)
+				}
+				return
+			}
+			if errors.Is(got, ErrPodNeverStarted) != tt.wantNever {
+				t.Errorf("ErrPodNeverStarted=%v, want %v (err=%v)", errors.Is(got, ErrPodNeverStarted), tt.wantNever, got)
+			}
+			if errors.Is(got, context.DeadlineExceeded) != tt.wantDeadline {
+				t.Errorf("DeadlineExceeded-in-chain=%v, want %v (err=%v)", errors.Is(got, context.DeadlineExceeded), tt.wantDeadline, got)
+			}
+			if tt.wantMsg != "" && !strings.Contains(got.Error(), tt.wantMsg) {
+				t.Errorf("err %q missing %q", got.Error(), tt.wantMsg)
+			}
+			if tt.wantNoMsg != "" && strings.Contains(got.Error(), tt.wantNoMsg) {
+				t.Errorf("err %q must not contain %q", got.Error(), tt.wantNoMsg)
+			}
+		})
 	}
 }
