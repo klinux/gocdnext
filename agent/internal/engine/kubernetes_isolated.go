@@ -758,7 +758,8 @@ func (k *Kubernetes) DeleteIsolatedJobPod(ctx context.Context, podName string) e
 func (k *Kubernetes) WaitForInitStarted(ctx context.Context, podName, initContainerName string) error {
 	startup, cancel := context.WithTimeout(ctx, k.cfg.StartupTimeout)
 	defer cancel()
-	return pollWithBackoff(startup, "init_started", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
+	var lastWaiting string
+	err := pollWithBackoff(startup, "init_started", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
 		pod, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -774,8 +775,18 @@ func (k *Kubernetes) WaitForInitStarted(ctx context.Context, podName, initContai
 		case corev1.PodSucceeded, corev1.PodFailed:
 			return true, nil
 		}
+		// Surface a bad image / missing pull secret / unsatisfiable config
+		// on the prep init container (or the task waiting behind it) so the
+		// isolated job isn't blind — same detection as the shared path.
+		if w, fatal := startupProbe(pod); w != "" {
+			lastWaiting = w
+			if fatal {
+				return false, fmt.Errorf("%w: %s", ErrPodNeverStarted, w)
+			}
+		}
 		return false, nil
 	})
+	return annotateStartupErr(err, podName, lastWaiting)
 }
 
 // WaitForInitTerminated blocks until the named init container of
@@ -841,7 +852,8 @@ func (k *Kubernetes) StreamInitLogs(ctx context.Context, podName, initContainerN
 func (k *Kubernetes) WaitForTaskStarted(ctx context.Context, podName string) error {
 	startup, cancel := context.WithTimeout(ctx, k.cfg.StartupTimeout)
 	defer cancel()
-	return pollWithBackoff(startup, "task_started", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
+	var lastWaiting string
+	err := pollWithBackoff(startup, "task_started", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
 		pod, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -860,8 +872,17 @@ func (k *Kubernetes) WaitForTaskStarted(ctx context.Context, podName string) err
 		case corev1.PodSucceeded, corev1.PodFailed:
 			return true, nil
 		}
+		// Task image stuck pulling / config error: surface it instead of a
+		// blind timeout (prep already succeeded, so this is the task image).
+		if w, fatal := startupProbe(pod); w != "" {
+			lastWaiting = w
+			if fatal {
+				return false, fmt.Errorf("%w: %s", ErrPodNeverStarted, w)
+			}
+		}
 		return false, nil
 	})
+	return annotateStartupErr(err, podName, lastWaiting)
 }
 
 // StreamTaskLogs streams the "task" container's log stream.

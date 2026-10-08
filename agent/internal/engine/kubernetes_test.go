@@ -378,19 +378,130 @@ func TestKubernetes_RunScript_FailedReturnsExitCode(t *testing.T) {
 
 func TestKubernetes_RunScript_StartupTimeout(t *testing.T) {
 	cfg := engine.KubernetesConfig{StartupTimeout: 50 * time.Millisecond}
-	k, _ := newFakeEngine(t, cfg)
-	// Don't drive anything — Pod stays Pending, startup timer fires.
+	k, cli := newFakeEngine(t, cfg)
+	var mu sync.Mutex
+	deleted := false
+	cli.PrependReactor("delete", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		deleted = true
+		mu.Unlock()
+		return false, nil, nil
+	})
+	// Don't drive anything — Pod stays Pending with NO ContainerStatus ever
+	// published (unschedulable / stuck ContainerCreating shape), startup timer
+	// fires.
 	start := time.Now()
 	_, err := k.RunScript(context.Background(), engine.ScriptSpec{Script: "true"})
 	if err == nil {
 		t.Fatal("expected startup timeout error")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		// wait.PollUntilContextCancel wraps; accept either.
-		t.Logf("err chain: %v", err)
+	// Even with no ContainerStatus to probe, a startup timeout means the pod
+	// never reached Running: it must be classified so the caller force-deletes
+	// it (no ghost run) rather than leaving it to be retained.
+	if !errors.Is(err, engine.ErrPodNeverStarted) {
+		t.Errorf("startup timeout should wrap ErrPodNeverStarted, got %v", err)
+	}
+	mu.Lock()
+	gone := deleted
+	mu.Unlock()
+	if !gone {
+		t.Error("timed-out pod must be force-deleted even without a ContainerStatus")
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Errorf("took too long: %v", time.Since(start))
+	}
+}
+
+// A Pod stuck Pending on a bad image / pull backoff / unsatisfiable config
+// must surface the reason + image in the error (so it lands in the job log,
+// not a blind timeout) AND be force-deleted (so a late pull can't ghost-run
+// the task after the job was failed). Non-recoverable reasons fail fast;
+// retriable pull states ride the StartupTimeout — never failed early, since
+// k8s keeps retrying and an early fail risks both a false failure on a blip
+// and a ghost run.
+func TestKubernetes_RunScript_StartupFailureSurfacedAndPodDeleted(t *testing.T) {
+	const img = "registry.example.com/ci/app:v1"
+	tests := []struct {
+		name     string
+		reason   string
+		timeout  time.Duration
+		wantFast bool // fatal → fails before the timeout; retriable → rides it
+	}{
+		{"invalid image name (fatal)", "InvalidImageName", 10 * time.Second, true},
+		{"image pull backoff (retriable)", "ImagePullBackOff", 120 * time.Millisecond, false},
+		// CreateContainerConfigError is NOT terminal — a referenced Secret may
+		// just not have propagated yet — so it must ride the timeout, not fail fast.
+		{"config error (retriable)", "CreateContainerConfigError", 120 * time.Millisecond, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k, cli := newFakeEngine(t, engine.KubernetesConfig{
+				DefaultImage:   img,
+				StartupTimeout: tt.timeout,
+				PollInterval:   5 * time.Millisecond,
+			})
+			var mu sync.Mutex
+			deleted := false
+			cli.PrependReactor("delete", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+				mu.Lock()
+				deleted = true
+				mu.Unlock()
+				return false, nil, nil
+			})
+			// Return a Pending Pod whose task container is Waiting with the
+			// reason. Built inline (no tracker Get) so the reactor doesn't
+			// recurse into itself.
+			cli.PrependReactor("get", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+				name := a.(k8stesting.GetAction).GetName()
+				return true, &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "gocdnext-tests"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+						ContainerStatuses: []corev1.ContainerStatus{{
+							Name:  "task",
+							Image: img,
+							State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+								Reason:  tt.reason,
+								Message: "pull access denied, repository does not exist or may require authorization",
+							}},
+						}},
+					},
+				}, nil
+			})
+
+			start := time.Now()
+			_, err := k.RunScript(context.Background(), engine.ScriptSpec{Script: "true"})
+			elapsed := time.Since(start)
+			if err == nil {
+				t.Fatal("expected a startup failure error")
+			}
+			if !errors.Is(err, engine.ErrPodNeverStarted) {
+				t.Errorf("error %v should wrap ErrPodNeverStarted", err)
+			}
+			if !strings.Contains(err.Error(), tt.reason) {
+				t.Errorf("error %q should name the reason %q", err.Error(), tt.reason)
+			}
+			if !strings.Contains(err.Error(), img) {
+				t.Errorf("error %q should name the image", err.Error())
+			}
+			if tt.wantFast && elapsed > 5*time.Second {
+				t.Errorf("fatal reason should fail fast; took %v", elapsed)
+			}
+			// Retriable reasons must RIDE the StartupTimeout, never fail fast
+			// (k8s keeps retrying; an early fail risks a false failure on a blip
+			// and a ghost run). Guards against a regression back to fail-fast.
+			if !tt.wantFast && elapsed < tt.timeout {
+				t.Errorf("retriable reason should wait the %s timeout, failed fast in %v", tt.timeout, elapsed)
+			}
+			// Ghost-run prevention: a never-started pod must be deleted
+			// regardless of jobCleanup.onFailure (default keeps failed pods).
+			mu.Lock()
+			gone := deleted
+			mu.Unlock()
+			if !gone {
+				t.Error("startup-failed pod must be force-deleted")
+			}
+		})
 	}
 }
 

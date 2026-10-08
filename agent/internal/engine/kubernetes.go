@@ -449,9 +449,16 @@ func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error
 	// delete here would no-op and leak the DinD pod — the same override
 	// maybeCleanup already applies on the sibling branch.
 	success := runErr == nil && finalExit == 0
-	if spec.Docker {
+	switch {
+	case spec.Docker:
 		k.bestEffortDeletePod(ctx, name)
-	} else {
+	case errors.Is(runErr, ErrPodNeverStarted):
+		// Never reached Running: no task logs to keep, and a retained Pod
+		// stuck pulling could still pull + run the task AFTER we reported
+		// the job failed (ghost run). Force-delete regardless of
+		// jobCleanup.onFailure.
+		k.bestEffortDeletePod(ctx, name)
+	default:
 		k.maybeCleanup(ctx, name, success)
 	}
 
@@ -630,7 +637,8 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 func (k *Kubernetes) waitForRunning(ctx context.Context, name string) error {
 	startup, cancel := context.WithTimeout(ctx, k.cfg.StartupTimeout)
 	defer cancel()
-	return pollWithBackoff(startup, "running", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
+	var lastWaiting string
+	err := pollWithBackoff(startup, "running", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
 		pod, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -639,8 +647,117 @@ func (k *Kubernetes) waitForRunning(ctx context.Context, name string) error {
 		case corev1.PodRunning, corev1.PodSucceeded, corev1.PodFailed:
 			return true, nil
 		}
+		if w, fatal := startupProbe(pod); w != "" {
+			lastWaiting = w
+			if fatal {
+				return false, fmt.Errorf("%w: %s", ErrPodNeverStarted, w)
+			}
+		}
 		return false, nil
 	})
+	return annotateStartupErr(err, name, lastWaiting)
+}
+
+// ErrPodNeverStarted marks a wait that ended because the Pod never
+// reached Running — either a fatal container/image config error, or a
+// StartupTimeout with the container still Waiting. Callers force-delete
+// such a Pod regardless of jobCleanup.onFailure: a retained Pod stuck in
+// ImagePullBackOff can still pull and RUN the task AFTER the job was
+// reported failed (a ghost run), and there are no task logs to keep.
+var ErrPodNeverStarted = errors.New("pod did not reach Running")
+
+// neverRecoverReasons are container State.Waiting.Reason values a Pod can
+// never recover from on its own — the image reference itself is invalid, or
+// pull is forbidden and the image is absent. Only these fail the job
+// immediately; the reference cannot become valid within the Pod's life, so
+// there is no pull to eventually succeed and run the task.
+//
+// EVERYTHING else rides the StartupTimeout (with the reason folded into the
+// error so it is not blind), because it may self-heal:
+//   - ErrImagePull / ImagePullBackOff / RegistryUnavailable / ImageInspectError:
+//     k8s keeps retrying the pull with backoff.
+//   - CreateContainerConfigError: a referenced Secret/ConfigMap may just not
+//     have propagated yet, or the kubelet cache is briefly unavailable; the
+//     kubelet retries and the container can still start.
+//
+// Failing those early would both turn a transient blip into a hard failure AND
+// risk the Pod pulling + running the task after the job was reported failed.
+var neverRecoverReasons = map[string]bool{
+	"InvalidImageName":    true,
+	"ErrInvalidImageName": true,
+	"ErrImageNeverPull":   true, // imagePullPolicy=Never + image absent on node
+}
+
+// benignWaiting are normal transient Waiting reasons not worth surfacing
+// as the blocker in a startup timeout.
+var benignWaiting = map[string]bool{
+	"ContainerCreating": true,
+	"PodInitializing":   true,
+}
+
+// startupProbe scans a Pending Pod's init + task containers and returns
+// (waiting, fatal): `waiting` is a job-log string for the first
+// container in a non-benign Waiting state (ImagePullBackOff included),
+// used to enrich an otherwise-blind startup timeout; `fatal` is true
+// only when that reason is in neverRecoverReasons (fail now). Init
+// containers are checked first — in isolated mode the `prep` init
+// container pulls the agent image, and a stall there is just as blinding
+// as the task container's.
+func startupProbe(pod *corev1.Pod) (waiting string, fatal bool) {
+	scan := func(statuses []corev1.ContainerStatus) (string, bool, bool) {
+		for _, cs := range statuses {
+			w := cs.State.Waiting
+			if w == nil || w.Reason == "" || benignWaiting[w.Reason] {
+				continue
+			}
+			msg := fmt.Sprintf("container %q image %q: %s", cs.Name, cs.Image, w.Reason)
+			if detail := strings.TrimSpace(w.Message); detail != "" {
+				msg += " — " + detail
+			}
+			return msg, neverRecoverReasons[w.Reason], true
+		}
+		return "", false, false
+	}
+	if msg, f, ok := scan(pod.Status.InitContainerStatuses); ok {
+		return msg, f
+	}
+	if msg, f, ok := scan(pod.Status.ContainerStatuses); ok {
+		return msg, f
+	}
+	return "", false
+}
+
+// annotateStartupErr turns a raw startup-wait error into a descriptive,
+// classifiable one, shared by waitForRunning + the isolated init/task
+// waits. nil and an already-fatal probe error pass through.
+//
+// Classification keys off the RETURNED error, not the wait context: a
+// context-deadline end — whether our StartupTimeout OR a shorter deadline
+// inherited from the parent context — means the Pod never reached Running, so
+// it is marked ErrPodNeverStarted (caller force-deletes → no ghost run) even
+// when no ContainerStatus was ever published (unschedulable, stuck
+// ContainerCreating, PVC never bound). The underlying context error is
+// PRESERVED in the chain (errors.Is(…, context.DeadlineExceeded) still holds —
+// deciding off the error, not startup.Err(), is what makes this robust against
+// an inherited deadline), and the last-seen Waiting reason is folded in when
+// present. No fixed duration is claimed, since the deadline that fired may have
+// been the parent's, not StartupTimeout.
+//
+// A cancellation or a real (non-transient) API error pollWithBackoff surfaced
+// is NOT a deadline: it is returned UNCHANGED — never reclassified, and never
+// masked behind a Waiting reason observed earlier (which also closes the race
+// where the parent deadline fires at the same instant as an API error).
+func annotateStartupErr(err error, name, lastWaiting string) error {
+	if err == nil || errors.Is(err, ErrPodNeverStarted) {
+		return err
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		if lastWaiting != "" {
+			return fmt.Errorf("%w: pod %q never reached Running (%w): %s", ErrPodNeverStarted, name, err, lastWaiting)
+		}
+		return fmt.Errorf("%w: pod %q never reached Running: %w", ErrPodNeverStarted, name, err)
+	}
+	return err
 }
 
 // waitForTaskTerminated polls the task container's status and
