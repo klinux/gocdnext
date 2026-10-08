@@ -313,7 +313,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		msg := "prep startup timeout: " + err.Error()
 		r.emitLog(a, &seq, "stderr", msg)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
-		r.cleanupIsolatedPod(ctx, k, podName, false)
+		// Never started → force-delete so a late image pull can't run the
+		// task after we've reported the job failed (ghost run).
+		r.forceDeleteIsolatedPod(k, podName)
 		return
 	}
 
@@ -401,7 +403,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		msg := "task startup timeout: " + err.Error()
 		r.emitLog(a, &seq, "stderr", msg)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
-		r.cleanupIsolatedPod(ctx, k, podName, false)
+		// Never started → force-delete (see forceDeleteIsolatedPod): avoids
+		// a ghost run if the task image finally pulls after we failed.
+		r.forceDeleteIsolatedPod(k, podName)
 		return
 	}
 
@@ -646,6 +650,20 @@ func (r *Runner) cleanupIsolatedPod(ctx context.Context, k *engine.Kubernetes, p
 	defer cancel()
 	if err := k.DeleteIsolatedJobPod(delCtx, podName); err != nil {
 		r.cfg.Logger.Warn("runner: cleanup isolated pod failed", "err", err, "pod", podName)
+	}
+}
+
+// forceDeleteIsolatedPod deletes the pod unconditionally — used when the
+// pod NEVER started (prep/task stuck Waiting on a bad image / pull
+// backoff / config error). Unlike cleanupIsolatedPod it ignores
+// jobCleanup.onFailure: a retained Pod stuck in ImagePullBackOff could
+// still pull and run the task AFTER the job was reported failed (a ghost
+// run), and a never-started pod has no task logs worth keeping.
+func (r *Runner) forceDeleteIsolatedPod(k *engine.Kubernetes, podName string) {
+	delCtx, cancel := context.WithTimeout(context.Background(), cleanupIsolatedPodDeleteTimeout)
+	defer cancel()
+	if err := k.DeleteIsolatedJobPod(delCtx, podName); err != nil {
+		r.cfg.Logger.Warn("runner: force-delete isolated pod failed", "err", err, "pod", podName)
 	}
 }
 
