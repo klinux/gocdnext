@@ -8,6 +8,33 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.115.0 — 2026-10-08
+
+### Added
+
+- **Image-pull / startup failures now surface in the job log (#306).** When a
+  job Pod is stuck `Pending` on a bad image, a missing pull secret, denied
+  registry auth or an unschedulable spec, the Kubernetes engine inspects the
+  container (and init-container) waiting state and fails the job with the
+  container, image and reason — in **both** the shared and isolated workspace
+  modes — instead of burning down the startup timeout and reporting a blind,
+  generic timeout. Truly terminal reasons (`InvalidImageName`,
+  `ErrInvalidImageName`, `ErrImageNeverPull`) fail fast; retriable ones
+  (`ErrImagePull`, `ImagePullBackOff`, `RegistryUnavailable`,
+  `ImageInspectError`, `CreateContainerConfigError`) ride the startup timeout
+  with the reason folded into the error, since k8s keeps retrying the pull and
+  an early fail would both turn a transient blip into a false failure and risk
+  a ghost run.
+
+### Fixed
+
+- **Ghost run after a startup failure (#306).** A Pod that never reached
+  Running is now force-deleted regardless of `jobCleanup.onFailure`, so a late
+  image pull can't execute the task *after* the job was already reported
+  failed. Classification keys off the returned error (robust to a deadline
+  inherited from the parent context), preserves `context.DeadlineExceeded` in
+  the chain, and never masks a real API error or a cancellation.
+
 ## v0.114.0 — 2026-09-21
 
 ### Added
