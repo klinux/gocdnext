@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.116.0 — 2026-10-09
+
 ### Added
 
 - **`governed_envs` on approval gates.** `GET /api/v1/runs/{id}` (`JobDetail`)
