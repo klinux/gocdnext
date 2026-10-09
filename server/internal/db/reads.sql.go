@@ -634,27 +634,29 @@ func (q *Queries) ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) (
 }
 
 const listJobRunsForRuns = `-- name: ListJobRunsForRuns :many
-SELECT run_id, stage_run_id, id, name, status, started_at, finished_at
+SELECT run_id, stage_run_id, id, name, status, started_at, finished_at, approval_gate
 FROM job_runs
 WHERE run_id = ANY($1::uuid[])
 ORDER BY run_id, stage_run_id, name
 `
 
 type ListJobRunsForRunsRow struct {
-	RunID      pgtype.UUID
-	StageRunID pgtype.UUID
-	ID         pgtype.UUID
-	Name       string
-	Status     string
-	StartedAt  pgtype.Timestamptz
-	FinishedAt pgtype.Timestamptz
+	RunID        pgtype.UUID
+	StageRunID   pgtype.UUID
+	ID           pgtype.UUID
+	Name         string
+	Status       string
+	StartedAt    pgtype.Timestamptz
+	FinishedAt   pgtype.Timestamptz
+	ApprovalGate bool
 }
 
 // Batch-loads job_runs for every run whose id is in the input
 // array. The project detail page renders a GitLab-style pipeline
 // flow per pipeline, each stage box listing its jobs — fetching
 // these per pipeline would mean N queries. This single scan
-// covers the card set.
+// covers the card set. approval_gate lets the caller fetch run snapshots only
+// for runs that actually carry a gate (governed_envs / freeze annotation).
 func (q *Queries) ListJobRunsForRuns(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListJobRunsForRunsRow, error) {
 	rows, err := q.db.Query(ctx, listJobRunsForRuns, dollar_1)
 	if err != nil {
@@ -672,6 +674,7 @@ func (q *Queries) ListJobRunsForRuns(ctx context.Context, dollar_1 []pgtype.UUID
 			&i.Status,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.ApprovalGate,
 		); err != nil {
 			return nil, err
 		}
@@ -941,10 +944,10 @@ type ListRunSnapshotsForFreezeRow struct {
 }
 
 // Focused, project-scoped batch fetch of the IMMUTABLE run snapshots
-// (runs.definition, migration 00067) for a handful of runs that have an
-// awaiting_approval gate on the project-detail strip (#227). Run ONLY when at
-// least one approval is waiting, so the common poll never pays it — unlike the
-// shared LatestRun query (which also feeds VSM), this never touches the hot path.
+// (runs.definition, migration 00067) for the runs on the project-detail strip
+// that carry an approval gate (#227 freeze badge, governed_envs). Run ONLY when
+// at least one latest run has a gate, so a gate-less project's poll never pays
+// it — unlike the shared LatestRun query (which also feeds VSM).
 // The pl.project_id predicate isolates by construction; '{}' (orphaned) snapshots
 // are excluded so the caller falls back to "no badge".
 func (q *Queries) ListRunSnapshotsForFreeze(ctx context.Context, arg ListRunSnapshotsForFreezeParams) ([]ListRunSnapshotsForFreezeRow, error) {

@@ -213,6 +213,9 @@ type JobRunSummaryLite struct {
 	// JobDetail; omitted for every non-held gate.
 	HeldByFreeze bool     `json:"held_by_freeze,omitempty"`
 	FrozenEnvs   []string `json:"frozen_envs,omitempty"`
+	// GovernedEnvs is the same field as JobDetail.GovernedEnvs, set on every
+	// approval gate (awaiting or decided) of the project-detail strip.
+	GovernedEnvs []string `json:"governed_envs,omitempty"`
 }
 
 // DefinitionJob pairs a job name with its stage and marks manual
@@ -378,6 +381,14 @@ type JobDetail struct {
 	// authoritative. Omitted (false/absent) for every non-held gate.
 	HeldByFreeze bool     `json:"held_by_freeze,omitempty"`
 	FrozenEnvs   []string `json:"frozen_envs,omitempty"`
+	// GovernedEnvs names every environment this approval gate releases —
+	// domain.GovernedFreezeEnvs over the run's IMMUTABLE SNAPSHOT (deploy: and
+	// bare environment: jobs it governs; sorted, deduped). Set on every gate,
+	// awaiting or decided, regardless of freeze state, so a client can say
+	// "awaiting approval for production" without re-deriving the gate graph.
+	// FrozenEnvs is always a subset of it. Omitted for non-gate jobs, for a gate
+	// that governs no environment, and for a run without a snapshot.
+	GovernedEnvs []string `json:"governed_envs,omitempty"`
 
 	// Notification metadata — populated only for synthetic jobs
 	// in the `_notifications` stage. The UI keys off NotifyOn
@@ -799,7 +810,7 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 		if err != nil {
 			return ProjectDetail{}, fmt.Errorf("store: list job runs: %w", err)
 		}
-		var awaitingGates []projAwaitingGate
+		var gates []projGate
 		for _, jr := range jobRows {
 			pos, ok := stageByID[fromPgUUID(jr.StageRunID)]
 			if !ok {
@@ -813,20 +824,22 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 				StartedAt:  pgTimePtr(jr.StartedAt),
 				FinishedAt: pgTimePtr(jr.FinishedAt),
 			})
-			// Correlate an awaiting gate by run_id + job_run_id (NOT gate name —
-			// different pipelines routinely name a gate "approve"), so the freeze
+			// Correlate a gate by run_id + job_run position (NOT gate name —
+			// different pipelines routinely name a gate "approve"), so the
 			// annotation stamps the right node from the right run's snapshot.
-			if jr.Status == "awaiting_approval" {
-				awaitingGates = append(awaitingGates, projAwaitingGate{
+			if jr.ApprovalGate {
+				gates = append(gates, projGate{
 					pipeline: pos.pipeline, stage: pos.stage, job: len(*jobs) - 1,
 					runID: fromPgUUID(jr.RunID), gate: jr.Name,
+					awaiting: jr.Status == "awaiting_approval",
 				})
 			}
 		}
-		// #227: stamp held_by_freeze on the awaiting gates from each run's IMMUTABLE
-		// snapshot. Costs two focused queries ONLY while an approval is waiting; the
-		// common poll (no awaiting gate) does nothing.
-		s.annotateProjectGateFreezes(ctx, fromPgUUID(proj.ID), detail.Pipelines, awaitingGates)
+		// Stamp governed_envs on every gate and (#227) held_by_freeze on the
+		// awaiting ones, from each run's IMMUTABLE snapshot. One snapshot query
+		// only when a latest run has a gate, plus one freeze lookup only while an
+		// approval is waiting; a gate-less project's poll does nothing.
+		s.annotateProjectGateFreezes(ctx, fromPgUUID(proj.ID), detail.Pipelines, gates)
 	}
 	for _, r := range runs {
 		detail.Runs = append(detail.Runs, RunSummary{
@@ -1055,10 +1068,11 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 	}
 
 	jobsByStage := map[uuid.UUID][]JobDetail{}
-	// Track whether any gate is awaiting during the existing mapping pass, so the
-	// freeze annotation (a snapshot decode + a query) is reached only when needed —
-	// no extra full-jobs scan in the common case (#227, review).
-	hasAwaitingGate := false
+	// Track whether the run has any gate during the existing mapping pass, so the
+	// gate annotation (a snapshot decode, plus a freeze query only while a gate is
+	// awaiting) is reached only when needed — no extra full-jobs scan in the
+	// common gate-less case (#227, review).
+	hasGate := false
 	for _, j := range jobs {
 		jd := JobDetail{
 			ID:                  fromPgUUID(j.ID),
@@ -1083,8 +1097,8 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 			DecidedAt:           pgTimePtr(j.DecidedAt),
 			Decision:            stringValue(j.Decision),
 		}
-		if jd.ApprovalGate && jd.Status == "awaiting_approval" {
-			hasAwaitingGate = true
+		if jd.ApprovalGate {
+			hasGate = true
 		}
 		if j.AgentID.Valid {
 			aid := fromPgUUID(j.AgentID)
@@ -1190,13 +1204,14 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 		jobsByStage[jd.StageRunID] = append(jobsByStage[jd.StageRunID], jd)
 	}
 
-	// #227: annotate each awaiting approval gate with its freeze-hold state,
-	// computed from the run's IMMUTABLE SNAPSHOT (the exact set the approve /
-	// expiry paths block on). Reached only when a gate is awaiting AND the run
-	// carries a real snapshot (has_run_snapshot) — an orphaned '{}' run fell back
-	// to the live def for Notifications, which must never drive the freeze badge.
-	// When has_run_snapshot is true, run.PipelineDefinition IS that snapshot.
-	if hasAwaitingGate && run.HasRunSnapshot {
+	// Annotate approval gates with their governed envs and (#227) each awaiting
+	// gate with its freeze-hold state, both computed from the run's IMMUTABLE
+	// SNAPSHOT (the exact set the approve / expiry paths block on). Reached only
+	// when the run has a gate AND carries a real snapshot (has_run_snapshot) — an
+	// orphaned '{}' run fell back to the live def for Notifications, which must
+	// never drive the gate annotation. When has_run_snapshot is true,
+	// run.PipelineDefinition IS that snapshot.
+	if hasGate && run.HasRunSnapshot {
 		s.annotateGateFreezes(ctx, jobsByStage, runID, fromPgUUID(run.ProjectID), run.PipelineDefinition)
 	}
 
@@ -1255,18 +1270,19 @@ func noteFreezeAnnotationErr(surface, kind string, projectID, runID uuid.UUID, e
 	slog.Default().Warn("gate freeze annotation degraded — Approve left enabled", attrs...)
 }
 
-// annotateGateFreezes stamps HeldByFreeze + FrozenEnvs onto every awaiting
-// approval gate whose governed environment is currently frozen (#227). It uses
-// the run's IMMUTABLE SNAPSHOT (domain.GovernedFreezeEnvs) — the exact env set
-// the approve/expiry paths block on — so the read-side badge can never disagree
-// with the write-side block. It mutates jobsByStage in place.
+// annotateGateFreezes stamps GovernedEnvs onto every approval gate and
+// HeldByFreeze + FrozenEnvs onto every awaiting gate whose governed environment
+// is currently frozen (#227). Both come from the run's IMMUTABLE SNAPSHOT
+// (domain.GovernedFreezeEnvs) — the exact env set the approve/expiry paths block
+// on — so the read-side badge can never disagree with the write-side block. It
+// mutates jobsByStage in place.
 //
-// Fail-safe: it carries no freeze fields (rather than blanking the page or
-// inventing a hold) when no gate governs any env, the snapshot won't decode, or
-// the freeze lookup errors — the last two also bump
-// metrics.RunDetailFreezeAnnotationErrors + a sampled log, since a persistent
-// degradation silently leaves Approve enabled. The caller reaches this only when
-// a gate is awaiting AND the run carries a real snapshot.
+// Fail-safe: it carries no gate fields (rather than blanking the page or
+// inventing a hold) when the snapshot won't decode, and no freeze fields when no
+// awaiting gate governs any env or the freeze lookup errors — the decode and
+// lookup failures also bump metrics.GateFreezeAnnotationErrors + a sampled log,
+// since a persistent degradation silently leaves Approve enabled. The caller
+// reaches this only when the run has a gate AND carries a real snapshot.
 func (s *Store) annotateGateFreezes(
 	ctx context.Context, jobsByStage map[uuid.UUID][]JobDetail, runID, projectID uuid.UUID, snapshot []byte,
 ) {
@@ -1277,7 +1293,7 @@ func (s *Store) annotateGateFreezes(
 	gateNames := map[string]struct{}{}
 	for _, jds := range jobsByStage {
 		for _, jd := range jds {
-			if awaiting(jd) {
+			if jd.ApprovalGate {
 				gateNames[jd.Name] = struct{}{}
 			}
 		}
@@ -1292,18 +1308,30 @@ func (s *Store) annotateGateFreezes(
 		return // graceful: a bad snapshot never blanks the page or invents a hold
 	}
 
-	// Per-gate governed freeze envs (sorted) + the union to freeze-check once.
+	// Per-gate governed freeze envs (sorted), stamped on every gate; the union
+	// over AWAITING gates only is freeze-checked once.
 	perGate := make(map[string][]string, len(gateNames))
-	union := map[string]struct{}{}
 	for name := range gateNames {
-		envs := def.GovernedFreezeEnvs(name)
-		perGate[name] = envs
-		for _, e := range envs {
-			union[e] = struct{}{}
+		perGate[name] = def.GovernedFreezeEnvs(name)
+	}
+	union := map[string]struct{}{}
+	for stageID := range jobsByStage {
+		jds := jobsByStage[stageID]
+		for i := range jds {
+			jd := &jds[i]
+			if !jd.ApprovalGate {
+				continue
+			}
+			jd.GovernedEnvs = perGate[jd.Name]
+			if awaiting(*jd) {
+				for _, e := range jd.GovernedEnvs {
+					union[e] = struct{}{}
+				}
+			}
 		}
 	}
 	if len(union) == 0 {
-		return // gates govern no env → nothing to hold
+		return // awaiting gates govern no env → nothing to hold
 	}
 	names := make([]string, 0, len(union))
 	for e := range union {
@@ -1343,32 +1371,34 @@ func (s *Store) annotateGateFreezes(
 	}
 }
 
-// projAwaitingGate locates one awaiting approval gate on the project-detail strip
-// — by index into detail.Pipelines[].LatestRunStages[].Jobs — plus the run + gate
-// name it came from, so the freeze pass stamps the exact node from the RIGHT run's
-// snapshot (correlated by run_id + job_run position, never by gate name).
-type projAwaitingGate struct {
+// projGate locates one approval gate on the project-detail strip — by index into
+// detail.Pipelines[].LatestRunStages[].Jobs — plus the run + gate name it came
+// from, so the annotation pass stamps the exact node from the RIGHT run's snapshot
+// (correlated by run_id + job_run position, never by gate name).
+type projGate struct {
 	pipeline, stage, job int
 	runID                uuid.UUID
 	gate                 string
+	awaiting             bool
 }
 
-// annotateProjectGateFreezes stamps HeldByFreeze/FrozenEnvs onto the project
-// strip's awaiting approval gates (#227), from each run's IMMUTABLE snapshot — the
-// exact set the approve/expiry paths block on. Runs only when a gate is awaiting,
-// then issues exactly two focused queries: one project-scoped snapshot batch + one
-// project-wide FrozenEnvironments. Fail-safe: an undecodable snapshot degrades ONLY
-// its run; a query error drops all badges but never blanks the strip; both bump
-// the metric + a sampled log.
+// annotateProjectGateFreezes stamps GovernedEnvs onto every approval gate on the
+// project strip and HeldByFreeze/FrozenEnvs onto the awaiting ones (#227), from
+// each run's IMMUTABLE snapshot — the exact set the approve/expiry paths block on.
+// Runs only when a latest run has a gate: one project-scoped snapshot batch, plus
+// one project-wide FrozenEnvironments only when an awaiting gate governs an env.
+// Fail-safe: an undecodable snapshot degrades ONLY its run; a query error drops
+// the affected fields but never blanks the strip; both bump the metric + a
+// sampled log.
 func (s *Store) annotateProjectGateFreezes(
-	ctx context.Context, projectID uuid.UUID, pipelines []PipelineSummary, awaiting []projAwaitingGate,
+	ctx context.Context, projectID uuid.UUID, pipelines []PipelineSummary, gates []projGate,
 ) {
-	if len(awaiting) == 0 {
+	if len(gates) == 0 {
 		return
 	}
-	runSet := make(map[uuid.UUID]struct{}, len(awaiting))
-	for _, a := range awaiting {
-		runSet[a.runID] = struct{}{}
+	runSet := make(map[uuid.UUID]struct{}, len(gates))
+	for _, g := range gates {
+		runSet[g.runID] = struct{}{}
 	}
 	runIDs := make([]pgtype.UUID, 0, len(runSet))
 	for id := range runSet {
@@ -1393,18 +1423,20 @@ func (s *Store) annotateProjectGateFreezes(
 		defByRun[fromPgUUID(r.RunID)] = def
 	}
 
-	// Per gate: governed freeze envs from ITS run's snapshot; union to check once.
-	govByGate := make([][]string, len(awaiting))
+	// Per gate: governed freeze envs from ITS run's snapshot, stamped on the node;
+	// the union over AWAITING gates is freeze-checked once.
 	union := map[string]struct{}{}
-	for i, a := range awaiting {
-		def, ok := defByRun[a.runID] // absent when the run had a '{}' or undecodable snapshot
+	for _, g := range gates {
+		def, ok := defByRun[g.runID] // absent when the run had a '{}' or undecodable snapshot
 		if !ok {
 			continue
 		}
-		envs := def.GovernedFreezeEnvs(a.gate)
-		govByGate[i] = envs
-		for _, e := range envs {
-			union[e] = struct{}{}
+		jd := &pipelines[g.pipeline].LatestRunStages[g.stage].Jobs[g.job]
+		jd.GovernedEnvs = def.GovernedFreezeEnvs(g.gate)
+		if g.awaiting {
+			for _, e := range jd.GovernedEnvs {
+				union[e] = struct{}{}
+			}
 		}
 	}
 	if len(union) == 0 {
@@ -1426,15 +1458,18 @@ func (s *Store) annotateProjectGateFreezes(
 	for _, e := range frozen {
 		frozenSet[e] = struct{}{}
 	}
-	for i, a := range awaiting {
+	for _, g := range gates {
+		if !g.awaiting {
+			continue
+		}
+		jd := &pipelines[g.pipeline].LatestRunStages[g.stage].Jobs[g.job]
 		var held []string // preserves GovernedFreezeEnvs' sorted order
-		for _, e := range govByGate[i] {
+		for _, e := range jd.GovernedEnvs {
 			if _, ok := frozenSet[e]; ok {
 				held = append(held, e)
 			}
 		}
 		if len(held) > 0 {
-			jd := &pipelines[a.pipeline].LatestRunStages[a.stage].Jobs[a.job]
 			jd.FrozenEnvs = held
 			jd.HeldByFreeze = true
 		}

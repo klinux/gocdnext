@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **`governed_envs` on approval gates.** `GET /api/v1/runs/{id}` (`JobDetail`)
+  and `GET /api/v1/projects/{slug}` (the latest-run strip's
+  `JobRunSummaryLite`) now carry, on every approval-gate job — awaiting or
+  decided — the sorted list of environments the gate releases: the `deploy:`
+  and bare `environment:` jobs it governs, resolved from the run's immutable
+  definition snapshot with the same gate graph the change-freeze uses. It is
+  present with or without a freeze, so a client can render "awaiting approval
+  for production" without re-implementing the gate graph; `frozen_envs` is
+  always a subset of it and keeps its meaning. Purely additive: omitted for
+  non-gate jobs, for a gate that governs no environment, and for runs without
+  a snapshot. The project strip now fetches run snapshots whenever a latest
+  run carries a gate (one batched query), not only while one is awaiting.
+
 ## v0.115.0 — 2026-10-08
 
 ### Added
