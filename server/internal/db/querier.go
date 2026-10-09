@@ -1313,7 +1313,8 @@ type Querier interface {
 	// array. The project detail page renders a GitLab-style pipeline
 	// flow per pipeline, each stage box listing its jobs — fetching
 	// these per pipeline would mean N queries. This single scan
-	// covers the card set.
+	// covers the card set. approval_gate lets the caller fetch run snapshots only
+	// for runs that actually carry a gate (governed_envs / freeze annotation).
 	ListJobRunsForRuns(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListJobRunsForRunsRow, error)
 	// Lean projection (name + matrix_key + status) used by the scheduler's
 	// needs-satisfaction gate. Loaded ONCE per dispatch tick and consulted
@@ -1518,10 +1519,10 @@ type Querier interface {
 	// array returns all of that job's artefacts.
 	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
 	// Focused, project-scoped batch fetch of the IMMUTABLE run snapshots
-	// (runs.definition, migration 00067) for a handful of runs that have an
-	// awaiting_approval gate on the project-detail strip (#227). Run ONLY when at
-	// least one approval is waiting, so the common poll never pays it — unlike the
-	// shared LatestRun query (which also feeds VSM), this never touches the hot path.
+	// (runs.definition, migration 00067) for the runs on the project-detail strip
+	// that carry an approval gate (#227 freeze badge, governed_envs). Run ONLY when
+	// at least one latest run has a gate, so a gate-less project's poll never pays
+	// it — unlike the shared LatestRun query (which also feeds VSM).
 	// The pl.project_id predicate isolates by construction; '{}' (orphaned) snapshots
 	// are excluded so the caller falls back to "no badge".
 	ListRunSnapshotsForFreeze(ctx context.Context, arg ListRunSnapshotsForFreezeParams) ([]ListRunSnapshotsForFreezeRow, error)
