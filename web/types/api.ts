@@ -143,6 +143,9 @@ export type JobRunSummaryLite = {
   // the server JSON; omitted for every non-held gate.
   held_by_freeze?: boolean;
   frozen_envs?: string[];
+  // Environments this approval gate releases (any gate status, freeze or not);
+  // frozen_envs is always a subset. Omitted for non-gate jobs.
+  governed_envs?: string[];
 };
 
 export type StageRunSummary = {
@@ -298,6 +301,11 @@ export type JobDetail = {
   // this codebase uses wire keys verbatim (no camelCase mapping).
   held_by_freeze?: boolean;
   frozen_envs?: string[];
+  // governed_envs names every environment this approval gate releases,
+  // from the run's snapshot, whether the gate is awaiting or decided and
+  // regardless of freeze; frozen_envs is always a subset. Omitted for
+  // non-gate jobs and for a gate that governs no environment.
+  governed_envs?: string[];
 
   // Notification-job metadata. Populated only for jobs in the
   // synthetic `_notifications` stage; the UI keys off these to
