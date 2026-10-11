@@ -189,14 +189,20 @@ func buildTaskEnvVars(plain, secret map[string]string, secretName string) []core
 	return out
 }
 
-// EnvSecretName is the Secret a SHARED-mode task pod reads its
-// secret-backed env from. Derived from the pod name so BuildPodSpec
-// (which emits the refs) and RunScript (which creates the object)
-// agree without passing anything between them. Isolated mode has no
-// use for this: it reuses the assignment Secret it already creates.
+// EnvSecretName is the Secret a task pod reads its secret-backed env
+// from, in BOTH workspace modes. Derived from the pod name so the
+// builder that emits the refs (BuildPodSpec / BuildIsolatedJobPodSpec)
+// and the caller that creates the object (RunScript /
+// CreateIsolatedJobPod) agree without passing anything between them.
+//
+// Isolated mode does NOT fold this into the assignment Secret it
+// already creates per job, even though that would save an object: the
+// runner deletes the assignment Secret the moment prep terminates,
+// which is before the kubelet resolves the task container's env. See
+// IsolatedJobSpec.EnvSecretName.
 func EnvSecretName(podName string) string { return podName + "-env" }
 
-// BuildEnvSecret materialises the shared-mode per-pod env Secret.
+// BuildEnvSecret materialises the per-pod env Secret (both modes).
 // Keys come from SecretEnvKey so they match exactly what
 // buildTaskEnvVars referenced.
 //
@@ -204,10 +210,13 @@ func EnvSecretName(podName string) string { return podName + "-env" }
 // API round trip entirely, keeping the common (no-secrets) job on the
 // same number of calls as before #309.
 //
-// Lifetime is the pod's: RunScript patches an ownerReference right
+// Lifetime is the pod's: the caller patches an ownerReference right
 // after the pod is created, so the kubelet's GC removes this with the
 // pod, including when jobCleanup retains a failed pod for debugging
-// (a retained pod keeps a readable Secret, which is the point).
+// (a retained pod keeps a readable Secret, which is the point). That
+// ownerRef is the ONLY thing that reaps it — nothing deletes this
+// Secret explicitly on the happy path, which is what keeps it alive
+// long enough for the task container to start.
 func BuildEnvSecret(name, namespace string, secretEnv map[string]string) (*corev1.Secret, error) {
 	if len(secretEnv) == 0 {
 		return nil, nil
