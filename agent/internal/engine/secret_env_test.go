@@ -246,6 +246,73 @@ func TestBuildTaskEnvVars_NeverFallsBackToInline(t *testing.T) {
 	}
 }
 
+func TestBuildEnvSecret(t *testing.T) {
+	s, err := BuildEnvSecret("gocdnext-job-abc-env", "ci", map[string]string{
+		"GHCR_TOKEN": "ghp_abc",
+		"WEIRD NAME": "pw",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if s.Type != corev1.SecretTypeOpaque {
+		t.Errorf("type = %v", s.Type)
+	}
+	if got := string(s.Data[SecretEnvKey("GHCR_TOKEN")]); got != "ghp_abc" {
+		t.Errorf("data[env.GHCR_TOKEN] = %q", got)
+	}
+	if got := string(s.Data[SecretEnvKey("WEIRD NAME")]); got != "pw" {
+		t.Errorf("data[%s] = %q", SecretEnvKey("WEIRD NAME"), got)
+	}
+	// The documented manual sweep selects on managed-by; without the
+	// label a Secret orphaned by an agent crash before the ownerRef
+	// patch would be invisible to it.
+	if got := s.Labels["app.kubernetes.io/managed-by"]; got != "gocdnext-agent" {
+		t.Errorf("managed-by label = %q", got)
+	}
+}
+
+// TestBuildEnvSecret_NilWhenNothingSensitive is what lets both callers
+// skip the API round trip on the common path.
+func TestBuildEnvSecret_NilWhenNothingSensitive(t *testing.T) {
+	for _, in := range []map[string]string{nil, {}} {
+		s, err := BuildEnvSecret("n", "ci", in)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		if s != nil {
+			t.Errorf("got a Secret for %v, want nil", in)
+		}
+	}
+}
+
+func TestBuildEnvSecret_RejectsOverflow(t *testing.T) {
+	big := map[string]string{"HUGE": string(make([]byte, AssignmentSecretMaxBytes+1))}
+	if _, err := BuildEnvSecret("n", "ci", big); err == nil {
+		t.Fatal("expected overflow error — the apiserver would reject it mid-dispatch instead")
+	}
+}
+
+func TestBuildEnvSecret_RejectsEmptyNames(t *testing.T) {
+	env := map[string]string{"TOKEN": "s3cr3t"}
+	if _, err := BuildEnvSecret("", "ci", env); err == nil {
+		t.Error("expected empty name error")
+	}
+	if _, err := BuildEnvSecret("n", "", env); err == nil {
+		t.Error("expected empty namespace error")
+	}
+}
+
+func TestEnvSecretName(t *testing.T) {
+	if got := EnvSecretName("gocdnext-job-abc"); got != "gocdnext-job-abc-env" {
+		t.Errorf("EnvSecretName = %q", got)
+	}
+	// Must never collide with the assignment Secret of the same pod —
+	// they have different lifetimes and one deletes early.
+	if EnvSecretName("p") == "p-assignment" {
+		t.Error("env secret name collides with the assignment secret name")
+	}
+}
+
 func assertEnvMap(t *testing.T, label string, got, want map[string]string) {
 	t.Helper()
 	if len(got) != len(want) {

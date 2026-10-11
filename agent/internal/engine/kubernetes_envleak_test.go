@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -228,6 +230,7 @@ func TestBuildIsolatedJobPodSpec_NeverInlinesSecretValues(t *testing.T) {
 		Script:               "pnpm test",
 		WorkDir:              "/workspace",
 		AssignmentSecretName: "gocdnext-job-test01-assignment",
+		EnvSecretName:        "gocdnext-job-test01-env",
 		Env:                  leakEnv(),
 		SecretValues:         leakMasks(),
 	})
@@ -238,18 +241,48 @@ func TestBuildIsolatedJobPodSpec_NeverInlinesSecretValues(t *testing.T) {
 	assertNoSecretInPod(t, pod)
 	task := taskContainer(t, pod)
 	assertPlainStillInline(t, task)
-	// Isolated mode reuses the Secret that already carries the
-	// serialised assignment — no extra API object.
-	assertSecretBacked(t, task, "gocdnext-job-test01-assignment")
+	// NOT the assignment Secret: the runner deletes that one as soon as
+	// prep terminates, which is before the kubelet resolves the task
+	// container's env. The env Secret outlives prep.
+	assertSecretBacked(t, task, "gocdnext-job-test01-env")
 }
 
-// TestBuildIsolatedJobPodSpec_PrepMountProjectsOnlyTheAssignment: the
-// assignment Secret now also holds the task's secret env, and a plain
-// Secret volume mount projects EVERY key as a file. prep reads exactly
-// one path, so the projection is narrowed — otherwise each secret
-// would additionally materialise inside the prep container's
-// filesystem for no reason.
-func TestBuildIsolatedJobPodSpec_PrepMountProjectsOnlyTheAssignment(t *testing.T) {
+// TestBuildIsolatedJobPodSpec_RefusesSecretEnvWithoutItsSecret: a
+// secret-backed var with no Secret to resolve from would leave the pod
+// in CreateContainerConfigError. Fail at build time with a message
+// naming the cause instead — and never by falling back to an inline
+// value, which is the leak itself.
+func TestBuildIsolatedJobPodSpec_RefusesSecretEnvWithoutItsSecret(t *testing.T) {
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{
+		WorkspaceMode:      engine.WorkspaceModeIsolated,
+		AgentImage:         "ghcr.io/klinux/gocdnext-agent:test",
+		HousekeeperImage:   "alpine:3.19",
+		DefaultImage:       "alpine:3.19",
+		WorkspaceMountPath: "/workspace",
+		WorkspaceSize:      "10Gi",
+	})
+	_, err := k.BuildIsolatedJobPodSpec(engine.IsolatedJobSpec{
+		RunID:                "run-A",
+		JobID:                "job-B",
+		Image:                "node:20",
+		Script:               "pnpm test",
+		AssignmentSecretName: "gocdnext-job-test01-assignment",
+		// EnvSecretName deliberately empty.
+		Env:          leakEnv(),
+		SecretValues: leakMasks(),
+	})
+	if err == nil {
+		t.Fatal("built a pod with secret-backed env and no env Secret to resolve it from")
+	}
+	if !strings.Contains(err.Error(), "EnvSecretName") {
+		t.Errorf("error = %q, want it to name the missing field", err)
+	}
+}
+
+// TestBuildIsolatedJobPodSpec_NoSecretsNeedsNoEnvSecret keeps the
+// common case free of the new requirement: nothing sensitive, nothing
+// to reference, no error.
+func TestBuildIsolatedJobPodSpec_NoSecretsNeedsNoEnvSecret(t *testing.T) {
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{
 		WorkspaceMode:      engine.WorkspaceModeIsolated,
 		AgentImage:         "ghcr.io/klinux/gocdnext-agent:test",
@@ -264,33 +297,26 @@ func TestBuildIsolatedJobPodSpec_PrepMountProjectsOnlyTheAssignment(t *testing.T
 		Image:                "node:20",
 		Script:               "pnpm test",
 		AssignmentSecretName: "gocdnext-job-test01-assignment",
-		Env:                  leakEnv(),
-		SecretValues:         leakMasks(),
+		Env:                  map[string]string{"CI_BRANCH": "main"},
 	})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-
-	var src *corev1.SecretVolumeSource
-	for _, v := range pod.Spec.Volumes {
-		if v.Name == "assignment" {
-			src = v.Secret
+	for _, e := range taskContainer(t, pod).Env {
+		if e.ValueFrom != nil {
+			t.Errorf("%s: secretKeyRef on a job with no masks", e.Name)
 		}
-	}
-	if src == nil {
-		t.Fatal("no assignment volume")
-	}
-	if len(src.Items) != 1 || src.Items[0].Key != engine.AssignmentSecretKey {
-		t.Errorf("volume items = %+v, want only %s", src.Items, engine.AssignmentSecretKey)
 	}
 }
 
-// TestCreateIsolatedJobPod_SecretCarriesEveryReferencedKey is the
+// TestCreateIsolatedJobPod_EnvSecretCarriesEveryReferencedKey is the
 // anti-drift test for the isolated path: the Pod builder and the
 // Secret builder derive their key sets independently from the same
 // inputs, so a mismatch would strand the job in
-// CreateContainerConfigError. It also pins that assignment.pb survives.
-func TestCreateIsolatedJobPod_SecretCarriesEveryReferencedKey(t *testing.T) {
+// CreateContainerConfigError. It also pins the SPLIT between the two
+// objects — the assignment Secret must keep carrying nothing but the
+// payload, because the runner deletes it the moment prep terminates.
+func TestCreateIsolatedJobPod_EnvSecretCarriesEveryReferencedKey(t *testing.T) {
 	k, cli := newFakeEngine(t, engine.KubernetesConfig{
 		WorkspaceMode:      engine.WorkspaceModeIsolated,
 		AgentImage:         "ghcr.io/klinux/gocdnext-agent:test",
@@ -317,27 +343,122 @@ func TestCreateIsolatedJobPod_SecretCarriesEveryReferencedKey(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	if secretName == "" {
-		t.Fatal("empty secret name")
+		t.Fatal("empty assignment secret name")
 	}
 
 	assertNoSecretInPod(t, pod)
-	refs := assertSecretBacked(t, taskContainer(t, pod), secretName)
+	envSecretName := engine.EnvSecretName(pod.Name)
+	refs := assertSecretBacked(t, taskContainer(t, pod), envSecretName)
 
-	secret, err := cli.CoreV1().Secrets("gocdnext-tests").Get(ctx, secretName, metav1.GetOptions{})
+	envSecret, err := cli.CoreV1().Secrets("gocdnext-tests").Get(ctx, envSecretName, metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("get secret: %v", err)
+		t.Fatalf("get env secret: %v", err)
 	}
 	for key := range refs {
-		if _, ok := secret.Data[key]; !ok {
-			t.Errorf("pod references key %q, absent from the Secret", key)
+		if _, ok := envSecret.Data[key]; !ok {
+			t.Errorf("pod references key %q, absent from the env Secret", key)
 		}
 	}
-	if got := string(secret.Data[engine.AssignmentSecretKey]); got != "serialised-assignment" {
+	if got := string(envSecret.Data[engine.SecretEnvKey("GHCR_TOKEN")]); got != leakToken {
+		t.Errorf("env secret data for GHCR_TOKEN = %q, want the token", got)
+	}
+	// Owned by the pod: nothing else ever deletes it, so a missing
+	// ownerRef means a Secret that leaks for the namespace's lifetime.
+	if len(envSecret.OwnerReferences) != 1 || envSecret.OwnerReferences[0].UID != pod.UID {
+		t.Errorf("env secret ownerRefs = %+v, want one pointing at the pod", envSecret.OwnerReferences)
+	}
+
+	assignment, err := cli.CoreV1().Secrets("gocdnext-tests").Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get assignment secret: %v", err)
+	}
+	if len(assignment.Data) != 1 {
+		t.Errorf("assignment secret data keys = %v, want only the payload", mapKeys(assignment.Data))
+	}
+	if got := string(assignment.Data[engine.AssignmentSecretKey]); got != "serialised-assignment" {
 		t.Errorf("assignment payload = %q, want it preserved", got)
 	}
-	if got := string(secret.Data[engine.SecretEnvKey("GHCR_TOKEN")]); got != leakToken {
-		t.Errorf("secret data for GHCR_TOKEN = %q, want the token", got)
+}
+
+// TestCreateIsolatedJobPod_NoSecretsCreatesNoEnvSecret: the common
+// case must not pay an extra create + patch per job.
+func TestCreateIsolatedJobPod_NoSecretsCreatesNoEnvSecret(t *testing.T) {
+	k, cli := newFakeEngine(t, engine.KubernetesConfig{
+		WorkspaceMode:      engine.WorkspaceModeIsolated,
+		AgentImage:         "ghcr.io/klinux/gocdnext-agent:test",
+		HousekeeperImage:   "alpine:3.19",
+		DefaultImage:       "alpine:3.19",
+		WorkspaceMountPath: "/workspace",
+		WorkspaceSize:      "10Gi",
+	})
+
+	stampPodUID(cli)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pod, _, err := k.CreateIsolatedJobPod(ctx, engine.IsolatedJobSpec{
+		RunID:   "run-A",
+		JobID:   "job-B",
+		Image:   "node:20",
+		Script:  "pnpm test",
+		WorkDir: "/workspace",
+		Env:     map[string]string{"CI_BRANCH": "main"},
+	}, []byte("serialised-assignment"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
 	}
+
+	if _, err := cli.CoreV1().Secrets("gocdnext-tests").Get(ctx, engine.EnvSecretName(pod.Name), metav1.GetOptions{}); !kerrors.IsNotFound(err) {
+		t.Errorf("env secret exists (err=%v) for a job with no sensitive env", err)
+	}
+}
+
+// TestCreateIsolatedJobPod_PodCreateFailureDeletesBothSecrets: both
+// secrets commit before the pod, so a failed pod create must leave
+// neither behind — there is no owner to GC them.
+func TestCreateIsolatedJobPod_PodCreateFailureDeletesBothSecrets(t *testing.T) {
+	k, cli := newFakeEngine(t, engine.KubernetesConfig{
+		WorkspaceMode:      engine.WorkspaceModeIsolated,
+		AgentImage:         "ghcr.io/klinux/gocdnext-agent:test",
+		HousekeeperImage:   "alpine:3.19",
+		DefaultImage:       "alpine:3.19",
+		WorkspaceMountPath: "/workspace",
+		WorkspaceSize:      "10Gi",
+	})
+	cli.PrependReactor("create", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("admission webhook denied the request")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := k.CreateIsolatedJobPod(ctx, engine.IsolatedJobSpec{
+		RunID:        "run-A",
+		JobID:        "job-B",
+		Image:        "node:20",
+		Script:       "pnpm test",
+		WorkDir:      "/workspace",
+		Env:          leakEnv(),
+		SecretValues: leakMasks(),
+	}, []byte("serialised-assignment")); err == nil {
+		t.Fatal("CreateIsolatedJobPod returned nil error on a failed pod create")
+	}
+
+	list, err := cli.CoreV1().Secrets("gocdnext-tests").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list secrets: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Errorf("secrets left behind: %d", len(list.Items))
+	}
+}
+
+func mapKeys(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestRunScript_SharedMode_CreatesEnvSecretBeforePod pins the create

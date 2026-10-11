@@ -26,21 +26,20 @@ const AssignmentSecretMaxBytes = 950 * 1024
 // serialises the proto and passes the bytes — keeping the engine
 // package proto-free.
 //
-// secretEnv is the secret-bearing slice of the task container's env
-// (SplitSecretEnv's second return). Each entry becomes its own data
-// key under the "env." namespace so the task container can reference
-// it with valueFrom.secretKeyRef instead of carrying the value inline
-// in the Pod spec (#309). Riding along in THIS Secret rather than a
-// second object keeps the hot path at one create + one ownerRef
-// patch; the key prefix makes a collision with AssignmentSecretKey
-// impossible. Empty/nil => assignment payload only, the pre-#309
-// shape.
+// This Secret is deliberately SHORT-LIVED: the runner deletes it the
+// instant prep terminates (see execute_isolated.go), so the payload —
+// env values, signed artefact/cache URLs, scripts — does not outlive
+// the one container that needs it, not even on a pod retained for
+// debugging. That is why the task container's secret-bearing env
+// lives in its own object (BuildEnvSecret) instead of riding along
+// here: it must stay readable for as long as the pod can start a
+// container, which is strictly longer.
 //
 // labels carries (run_id, job_id) for orphan-cleanup label
 // selectors. Both are accepted as plain strings and not
 // sanitised here; the caller is responsible for DNS-1123
 // conformance.
-func BuildAssignmentSecret(name, namespace string, assignmentBytes []byte, secretEnv map[string]string, runID, jobID string) (*corev1.Secret, error) {
+func BuildAssignmentSecret(name, namespace string, assignmentBytes []byte, runID, jobID string) (*corev1.Secret, error) {
 	if name == "" {
 		return nil, fmt.Errorf("assignment secret: empty name")
 	}
@@ -53,23 +52,6 @@ func BuildAssignmentSecret(name, namespace string, assignmentBytes []byte, secre
 	if len(assignmentBytes) > AssignmentSecretMaxBytes {
 		return nil, fmt.Errorf("assignment secret: payload %d bytes exceeds max %d",
 			len(assignmentBytes), AssignmentSecretMaxBytes)
-	}
-	data := map[string][]byte{AssignmentSecretKey: assignmentBytes}
-	// The env values are already inside assignmentBytes, so breaking
-	// them out doubles their contribution. The cap is on the TOTAL
-	// because that is what k8s enforces against its 1 MiB Secret
-	// limit — checking only the proto would let a job with a huge
-	// secret (an embedded keystore, a bundled kubeconfig set) sail
-	// past us and be rejected by the apiserver instead, mid-dispatch.
-	total := len(assignmentBytes)
-	for k, v := range secretEnv {
-		key := SecretEnvKey(k)
-		data[key] = []byte(v)
-		total += len(key) + len(v)
-	}
-	if total > AssignmentSecretMaxBytes {
-		return nil, fmt.Errorf("assignment secret: payload+env %d bytes exceeds max %d",
-			total, AssignmentSecretMaxBytes)
 	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "gocdnext-job-assignment",
@@ -88,7 +70,7 @@ func BuildAssignmentSecret(name, namespace string, assignmentBytes []byte, secre
 			Labels:    labels,
 		},
 		Type: corev1.SecretTypeOpaque,
-		Data: data,
+		Data: map[string][]byte{AssignmentSecretKey: assignmentBytes},
 	}, nil
 }
 

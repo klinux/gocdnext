@@ -33,13 +33,17 @@ rules:
   - apiGroups: [""]
     resources: [pods/exec]
     verbs: [create, get]
-  # Secrets: agent creates a per-job Secret and patches its
-  # OwnerReference back to the Pod for automatic GC. Two uses:
-  #   - isolated mode: carries the serialised JobAssignment for the
-  #     prep init container;
-  #   - BOTH modes: holds the job's secret-bearing env so the task
-  #     container can reference it with valueFrom.secretKeyRef instead
-  #     of exposing the values to anyone with `get pods` (#309).
+  # Secrets: agent creates per-job Secrets and patches an
+  # OwnerReference back to the Pod for automatic GC. Two kinds, with
+  # deliberately different lifetimes:
+  #   - isolated mode only: `<pod>-assignment`, the serialised
+  #     JobAssignment for the prep init container. Deleted as soon as
+  #     prep terminates.
+  #   - BOTH modes: `<pod>-env`, the job's secret-bearing env, so the
+  #     task container references it with valueFrom.secretKeyRef
+  #     instead of exposing the values to anyone with `get pods`
+  #     (#309). Lives as long as the pod — the kubelet resolves it
+  #     when it creates the container, i.e. after prep is gone.
   # NOTE the absence of `get`/`list`/`watch`:
   # the engine only ever Create/Patch/Delete'es the secrets it
   # owns and never needs to read another secret's content.
@@ -56,9 +60,10 @@ rules:
   # release its own namespace; the chart's defaults already
   # encourage this via per-release naming.
   #
-  # Both modes use these verbs since v0.117.0 (shared mode creates a
-  # per-pod env Secret); the verb set is unchanged, so no RBAC
-  # re-deploy is needed and mode flips keep working.
+  # Both modes use these verbs since the #309 fix (shared mode also
+  # creates a per-pod env Secret now); the verb set itself is
+  # unchanged, so no RBAC re-deploy is needed and mode flips keep
+  # working.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [create, patch, delete]

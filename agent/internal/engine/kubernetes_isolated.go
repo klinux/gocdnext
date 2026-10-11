@@ -49,7 +49,7 @@ type IsolatedJobSpec struct {
 
 	// SecretValues is JobAssignment.log_masks: every sensitive value
 	// the scheduler resolved into this job. Any Env entry whose value
-	// contains one of these is served from the assignment Secret via
+	// contains one of these is served from the env Secret via
 	// valueFrom.secretKeyRef instead of being inlined in the Pod spec
 	// (#309) — see SplitSecretEnv. Empty/nil => everything inline,
 	// the pre-fix shape.
@@ -74,6 +74,22 @@ type IsolatedJobSpec struct {
 	// caller, carrying the serialised JobAssignment. Mounted on the
 	// "prep" init container at /etc/gocdnext.
 	AssignmentSecretName string
+
+	// EnvSecretName is the Secret the task container's secret-bearing
+	// env resolves from via valueFrom.secretKeyRef (#309). Set by
+	// CreateIsolatedJobPod alongside AssignmentSecretName.
+	//
+	// It is a SEPARATE object from the assignment Secret on purpose:
+	// the runner deletes that one the moment prep terminates, which is
+	// BEFORE the kubelet creates the task container and resolves its
+	// env — sharing it would strand every secret-bearing job in
+	// CreateContainerConfigError. This Secret instead lives as long as
+	// the pod (ownerRef GC).
+	//
+	// Required whenever Env + SecretValues produce at least one
+	// secret-backed var; BuildIsolatedJobPodSpec fails loudly rather
+	// than emit a dangling ref (or, worse, fall back to inlining).
+	EnvSecretName string
 
 	// OutputsRelPath is the workspace-relative path of the
 	// structured-outputs file the task container should write to
@@ -197,9 +213,9 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 	// OutputsRelPath → no env injection, same shape as shared
 	// mode's `if spec.OutputsHostPath != "" {...}` guard.
 	//
-	// Secret-bearing vars resolve from the assignment Secret via
-	// secretKeyRef; plain ones stay inline so `kubectl get pod -o yaml`
-	// still shows CI_BRANCH et al. (#309).
+	// Secret-bearing vars resolve from the env Secret via secretKeyRef;
+	// plain ones stay inline so `kubectl get pod -o yaml` still shows
+	// CI_BRANCH et al. (#309).
 	//
 	// The split runs over spec.Env ALONE, and the outputs var is added
 	// to the plain side afterwards. That is load-bearing: the Secret's
@@ -213,7 +229,10 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 	if spec.OutputsRelPath != "" {
 		plainEnv = withOutputsEnv(plainEnv, path.Join(workDir, spec.OutputsRelPath))
 	}
-	env := buildTaskEnvVars(plainEnv, secretEnv, spec.AssignmentSecretName)
+	if len(secretEnv) > 0 && spec.EnvSecretName == "" {
+		return nil, fmt.Errorf("isolated pod: EnvSecretName required for %d secret-backed env var(s)", len(secretEnv))
+	}
+	env := buildTaskEnvVars(plainEnv, secretEnv, spec.EnvSecretName)
 	if spec.Docker {
 		env = append(env,
 			corev1.EnvVar{Name: "DOCKER_HOST", Value: dindHostIsolated},
@@ -269,17 +288,6 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 			Secret: &corev1.SecretVolumeSource{
 				SecretName:  spec.AssignmentSecretName,
 				DefaultMode: ptr.To[int32](0o400),
-				// Project ONLY the assignment payload. The same Secret
-				// also carries the task container's secret-bearing env
-				// under env.* keys (#309); without this, every one of
-				// them would additionally appear as a file inside prep,
-				// which has no use for them. prep reads exactly one
-				// path (`--assignment`), so narrowing the projection
-				// keeps this mount identical to its pre-#309 shape.
-				Items: []corev1.KeyToPath{{
-					Key:  AssignmentSecretKey,
-					Path: AssignmentSecretKey,
-				}},
 			},
 		},
 	}
@@ -667,10 +675,19 @@ func buildIsolatedInitContainers(
 // payload alive longer than necessary even when the Pod is kept
 // for debugging).
 //
+// A job whose env carries secrets gets a SECOND Secret — the env one
+// (#309) — because the two have different lifetimes: the assignment
+// Secret dies when prep terminates, while the task container's env is
+// resolved by the kubelet AFTER that, and again for as long as the
+// pod can start a container. Only the returned name (the assignment
+// Secret) is the caller's to delete; the env Secret is owned by the
+// pod and reaped with it.
+//
 // Failure modes:
-//   - Secret create fails → return error, no pod created.
-//   - Pod create fails → delete the orphan Secret, return error.
-//   - Secret-owner patch fails → DELETE the secret eagerly (not
+//   - Either Secret create fails → delete whatever committed, return
+//     error, no pod created.
+//   - Pod create fails → delete both orphan Secrets, return error.
+//   - Secret-owner patch fails → DELETE both secrets eagerly (not
 //     waiting for Pod GC, since the ownerRef didn't take), then
 //     return the pod + error so the caller can decide whether to
 //     also tear down the pod.
@@ -678,19 +695,29 @@ func (k *Kubernetes) CreateIsolatedJobPod(ctx context.Context, spec IsolatedJobS
 	if k.cfg.WorkspaceMode != WorkspaceModeIsolated {
 		return nil, "", fmt.Errorf("create isolated pod: engine mode is %q, not isolated", k.cfg.WorkspaceMode)
 	}
-	// Decide names: pod name first (used by the secret too so the
+	// Decide names: pod name first (used by both secrets too so the
 	// orphan reaper can correlate via a shared prefix).
 	podName := k.nowName()
 	secretName := podName + "-assignment"
 	spec.AssignmentSecretName = secretName
 
-	// Create the secret first — pod mount references it. If pod
-	// create fails afterwards we delete the secret to avoid leaks.
-	// The secret-bearing env rides in the same object so the task
-	// container's secretKeyRefs resolve (#309); BuildIsolatedJobPodSpec
-	// re-derives the identical key set from the same two fields.
+	// Create the secrets first — the pod's mount and its env refs
+	// point at them. If pod create fails afterwards we delete them to
+	// avoid leaks. envSecret is nil when the job has nothing
+	// sensitive: no object, no extra API call, and EnvSecretName stays
+	// empty so the pod spec carries no dangling ref.
 	_, secretEnv := SplitSecretEnv(spec.Env, spec.SecretValues)
-	secret, err := BuildAssignmentSecret(secretName, k.cfg.Namespace, assignmentBytes, secretEnv, spec.RunID, spec.JobID)
+	envSecret, err := BuildEnvSecret(EnvSecretName(podName), k.cfg.Namespace, secretEnv)
+	if err != nil {
+		return nil, "", err
+	}
+	envSecretName := ""
+	if envSecret != nil {
+		envSecretName = envSecret.Name
+		spec.EnvSecretName = envSecretName
+	}
+
+	secret, err := BuildAssignmentSecret(secretName, k.cfg.Namespace, assignmentBytes, spec.RunID, spec.JobID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -720,9 +747,26 @@ func (k *Kubernetes) CreateIsolatedJobPod(ctx context.Context, spec IsolatedJobS
 		return nil, "", fmt.Errorf("create assignment secret: %w", err)
 	}
 
+	if envSecret != nil {
+		if err := k.createWithBackoff(cctx, "create_env_secret", func(ctx context.Context) error {
+			_, e := k.client.CoreV1().Secrets(k.cfg.Namespace).Create(ctx, envSecret, metav1.CreateOptions{})
+			return e
+		}); err != nil {
+			// Same ambiguity reasoning as the assignment secret above,
+			// plus the assignment secret already committed and has no
+			// owner yet either — both go.
+			k.bestEffortDeleteSecret(ctx, secretName)
+			if errors.Is(err, errCreateAmbiguous) {
+				k.bestEffortDeleteSecret(ctx, envSecretName)
+			}
+			return nil, "", fmt.Errorf("create env secret: %w", err)
+		}
+	}
+
 	pod, err := k.BuildIsolatedJobPodSpec(spec)
 	if err != nil {
 		k.bestEffortDeleteSecret(ctx, secretName)
+		k.bestEffortDeleteSecret(ctx, envSecretName)
 		return nil, "", err
 	}
 	pod.Name = podName
@@ -735,11 +779,12 @@ func (k *Kubernetes) CreateIsolatedJobPod(ctx context.Context, spec IsolatedJobS
 		}
 		return e
 	}); err != nil {
-		// The secret committed; the pod failed — clean the secret unconditionally
-		// (fresh ctx if the caller's is dead, else it would leak on an external
+		// The secrets committed; the pod failed — clean them unconditionally
+		// (fresh ctx if the caller's is dead, else they would leak on an external
 		// cancel). On an ambiguous pod create, the pod itself may have committed
 		// too — best-effort delete that as well.
 		k.bestEffortDeleteSecret(ctx, secretName)
+		k.bestEffortDeleteSecret(ctx, envSecretName)
 		if errors.Is(err, errCreateAmbiguous) {
 			k.bestEffortDeletePod(ctx, podName)
 		}
@@ -750,6 +795,7 @@ func (k *Kubernetes) CreateIsolatedJobPod(ctx context.Context, spec IsolatedJobS
 		got, gerr := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if gerr != nil {
 			k.bestEffortDeleteSecret(ctx, secretName)
+			k.bestEffortDeleteSecret(ctx, envSecretName)
 			return nil, "", fmt.Errorf("recover isolated pod %s: %w", podName, gerr)
 		}
 		created = got
@@ -763,7 +809,22 @@ func (k *Kubernetes) CreateIsolatedJobPod(ctx context.Context, spec IsolatedJobS
 		// this branch returns secretName="" so the runner won't retry the cleanup —
 		// a ctx-bound delete here would leak it. Caller still gets the pod.
 		k.bestEffortDeleteSecret(ctx, secretName)
+		k.bestEffortDeleteSecret(ctx, envSecretName)
 		return created, "", fmt.Errorf("patch assignment secret owner: %w", err)
+	}
+	// The env Secret's ownerRef is the ONLY thing that reaps it — there
+	// is no explicit delete anywhere, by design (deleting it before the
+	// task container starts is exactly the bug this split avoids). A
+	// failed patch therefore has to tear it down here and fail the job,
+	// or the namespace keeps a Secret nothing owns. Both secrets go and
+	// secretName comes back empty, same contract as the branch above:
+	// the caller tears down the pod and never retries a cleanup.
+	if envSecretName != "" {
+		if err := k.PatchSecretOwner(ctx, envSecretName, created); err != nil {
+			k.bestEffortDeleteSecret(ctx, envSecretName)
+			k.bestEffortDeleteSecret(ctx, secretName)
+			return created, "", fmt.Errorf("patch env secret owner: %w", err)
+		}
 	}
 	return created, secretName, nil
 }
