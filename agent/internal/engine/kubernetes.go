@@ -394,6 +394,33 @@ func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error
 	// reactor. See BuildPodSpec for the workDir-anchored fix.
 	pod := k.BuildPodSpec(spec)
 
+	// Secret-backed env (#309): BuildPodSpec already emitted
+	// secretKeyRefs against EnvSecretName(pod.Name), so the Secret
+	// must exist BEFORE the pod or the kubelet fails the container
+	// with CreateContainerConfigError. Jobs with nothing sensitive
+	// get nil here and skip the API call entirely.
+	_, secretEnv := SplitSecretEnv(spec.Env, spec.SecretValues)
+	envSecretName := ""
+	envSecret, err := BuildEnvSecret(EnvSecretName(pod.Name), k.cfg.Namespace, secretEnv)
+	if err != nil {
+		return -1, fmt.Errorf("engine: kubernetes: build env secret: %w", err)
+	}
+	if envSecret != nil {
+		envSecretName = envSecret.Name
+		if err := k.createWithBackoff(ctx, "create_env_secret", func(ctx context.Context) error {
+			_, e := k.client.CoreV1().Secrets(k.cfg.Namespace).Create(ctx, envSecret, metav1.CreateOptions{})
+			return e
+		}); err != nil {
+			if errors.Is(err, errCreateAmbiguous) {
+				// May have committed with no ownerRef yet — nothing
+				// would GC it, so delete eagerly (same reasoning as
+				// CreateIsolatedJobPod's ambiguous-create branch).
+				k.bestEffortDeleteSecret(ctx, envSecretName)
+			}
+			return -1, fmt.Errorf("engine: kubernetes: create env secret: %w", err)
+		}
+	}
+
 	var created *corev1.Pod
 	if err := k.createWithBackoff(ctx, "create_job_pod", func(ctx context.Context) error {
 		p, e := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
@@ -409,6 +436,9 @@ func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error
 			// so the cleanup still reaches the apiserver. Orphan reaper backstops.
 			k.bestEffortDeletePod(ctx, pod.Name)
 		}
+		// The env Secret committed before the pod; with no pod to own it,
+		// nothing would GC the values. Delete unconditionally here.
+		k.bestEffortDeleteSecret(ctx, envSecretName)
 		return -1, fmt.Errorf("engine: kubernetes: create pod: %w", err)
 	}
 	if created == nil {
@@ -417,11 +447,27 @@ func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error
 		// object we own (unique name) so the waiters have a pod to poll.
 		got, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 		if err != nil {
+			k.bestEffortDeleteSecret(ctx, envSecretName)
 			return -1, fmt.Errorf("engine: kubernetes: recover created pod %s: %w", pod.Name, err)
 		}
 		created = got
 	}
 	name := created.Name
+
+	// OwnerRef the env Secret to the pod so the kubelet's GC removes it
+	// whenever the pod goes away — including the agent-crash path, which
+	// is why this is not left to the explicit cleanup below. A failed
+	// patch means the values would outlive the pod with no owner, so
+	// delete them and fail the job loudly: nothing has run yet, and a
+	// task that cannot read its credentials would fail seconds later
+	// with a far more confusing message.
+	if envSecretName != "" {
+		if err := k.PatchSecretOwner(ctx, envSecretName, created); err != nil {
+			k.bestEffortDeleteSecret(ctx, envSecretName)
+			k.bestEffortDeletePod(ctx, name)
+			return -1, fmt.Errorf("engine: kubernetes: patch env secret owner: %w", err)
+		}
+	}
 
 	var finalExit int
 	runErr := func() error {
@@ -472,6 +518,12 @@ func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error
 // materialised shape without actually submitting it. Pod name is
 // generated here so each spec is reproducible enough to inspect.
 func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
+	// Name is generated up front because the secret-backed env vars
+	// reference a Secret named after the pod (see EnvSecretName):
+	// RunScript re-derives that name from the returned pod.Name, so
+	// the two stay consistent by construction with no post-build
+	// rewrite of the env refs.
+	podName := k.nowName()
 	image := spec.Image
 	if image == "" {
 		image = k.cfg.DefaultImage
@@ -492,15 +544,19 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 	// surfaced in review). Inject inline here so BuildPodSpec is
 	// the single source of truth and tests can assert env without
 	// going through the fake clientset's Create reactor.
-	specEnv := spec.Env
+	//
+	// Secret-bearing vars never reach the Pod spec as a value: they
+	// resolve from a per-pod Secret via secretKeyRef (#309). The split
+	// runs over spec.Env ALONE and the outputs var joins the plain
+	// side afterwards, so RunScript — which populates that Secret from
+	// the same spec.Env — derives an identical key set. The outputs
+	// value is an agent-chosen path, never a credential.
+	plainEnv, secretEnv := SplitSecretEnv(spec.Env, spec.SecretValues)
 	if spec.OutputsHostPath != "" && spec.OutputsRelPath != "" {
-		specEnv = withOutputsEnv(specEnv, path.Join(workDir, spec.OutputsRelPath))
+		plainEnv = withOutputsEnv(plainEnv, path.Join(workDir, spec.OutputsRelPath))
 	}
 
-	env := make([]corev1.EnvVar, 0, len(specEnv)+1)
-	for k, v := range specEnv {
-		env = append(env, corev1.EnvVar{Name: k, Value: v})
-	}
+	env := buildTaskEnvVars(plainEnv, secretEnv, EnvSecretName(podName))
 	if spec.Docker {
 		// Point the task container's Docker clients at the DinD
 		// sidecar over localhost TCP. `DOCKER_TLS_CERTDIR=""` is
@@ -612,7 +668,7 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      k.nowName(),
+			Name:      podName,
 			Namespace: k.cfg.Namespace,
 			Labels:    podLabels(spec),
 		},
@@ -963,7 +1019,14 @@ func (k *Kubernetes) bestEffortDeletePod(ctx context.Context, name string) {
 	})
 }
 
+// bestEffortDeleteSecret tolerates an empty name so cleanup paths can
+// call it unconditionally: shared-mode jobs with no sensitive env
+// never create a Secret, and issuing a DELETE on "" would be a
+// guaranteed-failing round trip on every such failure path.
 func (k *Kubernetes) bestEffortDeleteSecret(ctx context.Context, name string) {
+	if name == "" {
+		return
+	}
 	k.bestEffortDelete(ctx, func(c context.Context) error {
 		return k.client.CoreV1().Secrets(k.cfg.Namespace).Delete(c, name, metav1.DeleteOptions{})
 	})

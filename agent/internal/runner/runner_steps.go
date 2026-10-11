@@ -113,9 +113,15 @@ func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.Ma
 func (r *Runner) runScript(ctx context.Context, workDir, script, image string, docker bool, services servicePhase, env map[string]string, outputs outputsPaths, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
 	r.emitLog(a, seq, "stdout", "$ "+script)
 	return r.cfg.Engine.RunScript(ctx, engine.ScriptSpec{
-		WorkDir:               workDir,
-		Image:                 image,
-		Env:                   env,
+		WorkDir: workDir,
+		Image:   image,
+		Env:     env,
+		// LogMasks is the ledger of every sensitive value in this job;
+		// engines that hand env to a third party use it to keep those
+		// values out (k8s: secretKeyRef instead of an inline Pod-spec
+		// value, #309). Must travel on EVERY spec — an empty list
+		// silently reverts to inlining.
+		SecretValues:          a.GetLogMasks(),
 		Script:                script,
 		Docker:                docker,
 		Network:               services.network,

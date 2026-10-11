@@ -47,6 +47,14 @@ type IsolatedJobSpec struct {
 	// plugin jobs, user-declared env for script jobs).
 	Env map[string]string
 
+	// SecretValues is JobAssignment.log_masks: every sensitive value
+	// the scheduler resolved into this job. Any Env entry whose value
+	// contains one of these is served from the assignment Secret via
+	// valueFrom.secretKeyRef instead of being inlined in the Pod spec
+	// (#309) — see SplitSecretEnv. Empty/nil => everything inline,
+	// the pre-fix shape.
+	SecretValues []string
+
 	// Docker requests a DinD sidecar.
 	Docker bool
 
@@ -188,15 +196,24 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 	// separator regardless of the agent's host OS. Empty
 	// OutputsRelPath → no env injection, same shape as shared
 	// mode's `if spec.OutputsHostPath != "" {...}` guard.
-	specEnv := spec.Env
+	//
+	// Secret-bearing vars resolve from the assignment Secret via
+	// secretKeyRef; plain ones stay inline so `kubectl get pod -o yaml`
+	// still shows CI_BRANCH et al. (#309).
+	//
+	// The split runs over spec.Env ALONE, and the outputs var is added
+	// to the plain side afterwards. That is load-bearing: the Secret's
+	// data keys are populated by CreateIsolatedJobPod from the same
+	// spec.Env, so splitting a DIFFERENT map here could emit a
+	// secretKeyRef for a key the Secret never got, stranding the pod
+	// in CreateContainerConfigError. The outputs value is an
+	// agent-chosen path, never a credential, so keeping it inline
+	// unconditionally is also the right call on its own merits.
+	plainEnv, secretEnv := SplitSecretEnv(spec.Env, spec.SecretValues)
 	if spec.OutputsRelPath != "" {
-		specEnv = withOutputsEnv(specEnv, path.Join(workDir, spec.OutputsRelPath))
+		plainEnv = withOutputsEnv(plainEnv, path.Join(workDir, spec.OutputsRelPath))
 	}
-
-	env := make([]corev1.EnvVar, 0, len(specEnv)+2)
-	for key, v := range specEnv {
-		env = append(env, corev1.EnvVar{Name: key, Value: v})
-	}
+	env := buildTaskEnvVars(plainEnv, secretEnv, spec.AssignmentSecretName)
 	if spec.Docker {
 		env = append(env,
 			corev1.EnvVar{Name: "DOCKER_HOST", Value: dindHostIsolated},
@@ -252,6 +269,17 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 			Secret: &corev1.SecretVolumeSource{
 				SecretName:  spec.AssignmentSecretName,
 				DefaultMode: ptr.To[int32](0o400),
+				// Project ONLY the assignment payload. The same Secret
+				// also carries the task container's secret-bearing env
+				// under env.* keys (#309); without this, every one of
+				// them would additionally appear as a file inside prep,
+				// which has no use for them. prep reads exactly one
+				// path (`--assignment`), so narrowing the projection
+				// keeps this mount identical to its pre-#309 shape.
+				Items: []corev1.KeyToPath{{
+					Key:  AssignmentSecretKey,
+					Path: AssignmentSecretKey,
+				}},
 			},
 		},
 	}
@@ -658,7 +686,11 @@ func (k *Kubernetes) CreateIsolatedJobPod(ctx context.Context, spec IsolatedJobS
 
 	// Create the secret first — pod mount references it. If pod
 	// create fails afterwards we delete the secret to avoid leaks.
-	secret, err := BuildAssignmentSecret(secretName, k.cfg.Namespace, assignmentBytes, spec.RunID, spec.JobID)
+	// The secret-bearing env rides in the same object so the task
+	// container's secretKeyRefs resolve (#309); BuildIsolatedJobPodSpec
+	// re-derives the identical key set from the same two fields.
+	_, secretEnv := SplitSecretEnv(spec.Env, spec.SecretValues)
+	secret, err := BuildAssignmentSecret(secretName, k.cfg.Namespace, assignmentBytes, secretEnv, spec.RunID, spec.JobID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -723,7 +755,7 @@ func (k *Kubernetes) CreateIsolatedJobPod(ctx context.Context, spec IsolatedJobS
 		created = got
 	}
 
-	if err := k.PatchAssignmentSecretOwner(ctx, secretName, created); err != nil {
+	if err := k.PatchSecretOwner(ctx, secretName, created); err != nil {
 		// OwnerRef didn't take — delete the secret eagerly instead of relying on
 		// Pod GC (which wouldn't cascade without the ref). Fresh ctx when the
 		// caller's is dead: if the patch failed because of an external cancel, the
