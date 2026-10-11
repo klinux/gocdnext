@@ -19,7 +19,11 @@ convention that minor bumps may carry breaking changes until 1.0).
   cleanup (restart count, current + previous container state, exit code /
   reason / signal, pod phase + conditions, node, and the resources the spec
   asked for) and the agent logs it: `WARN` when the service was not
-  continuously available, `DEBUG` otherwise. It costs no extra API call — the
+  continuously available, `DEBUG` otherwise. The snapshot carries only
+  bounded fields — no Kubernetes `Message` at any level, since a terminated
+  container's message comes from the workload's `/dev/termination-log` and the
+  agent's log is not masked; `svc_last_terminated` keeps every log key at one
+  stable type. It costs no extra API call — the
   teardown already lists those pods with their status — and needs no new RBAC
   verb. Separately, a job that *reuses* a run-scoped service brought up by a
   sibling now warns in its own log when that pod had already restarted, so the

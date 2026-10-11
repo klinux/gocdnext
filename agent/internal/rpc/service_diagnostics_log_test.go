@@ -62,6 +62,7 @@ func TestServiceLifecycleAck_WarnsWhenServiceWasUnhealthy(t *testing.T) {
 		"run_id=run-1",
 		"service=postgres",
 		"svc_restarts=1",
+		"svc_last_terminated=true",
 		"svc_last_exit_code=137",
 		"svc_last_reason=OOMKilled",
 		"svc_node=node-7",
@@ -108,6 +109,62 @@ func TestServiceLifecycleAck_DebugWhenHealthy(t *testing.T) {
 	}
 	if !strings.Contains(out, "svc_restarts=0") {
 		t.Errorf("log missing the restart count; got %q", out)
+	}
+	// The "did it ever die" bit is always present, so a query on it
+	// never has to special-case a missing field.
+	if !strings.Contains(out, "svc_last_terminated=false") {
+		t.Errorf("log missing svc_last_terminated; got %q", out)
+	}
+	if strings.Contains(out, "svc_last_exit_code") {
+		t.Errorf("exit code emitted for a container that never died; got %q", out)
+	}
+}
+
+// TestServiceLifecycleAck_NeverLogsWorkloadText closes the loop on the
+// exfiltration path at the LAST hop: the agent's slog output. The
+// snapshot drops workload-authored Message fields at extraction
+// (engine.serviceDiagnosticsFromPod), and this asserts nothing
+// reintroduces them downstream — the agent log is not masked, so a
+// secret written to a service container's /dev/termination-log must
+// never reach it.
+func TestServiceLifecycleAck_NeverLogsWorkloadText(t *testing.T) {
+	const secret = "SUPERSECRET_ghp_abc123_from_termination_log"
+
+	var buf bytes.Buffer
+	c := newLogCapturingClient(&buf)
+
+	// A snapshot hand-built with the secret in every text-ish field
+	// that a future refactor might add back.
+	c.ServiceLifecycleAckForTest("run-1")(engine.ServiceLifecycleEvent{
+		Name:    "postgres",
+		PodName: "gocdnext-svc-abc-g0-postgres",
+		Status:  "stopped",
+		Diagnostics: &engine.ServicePodDiagnostics{
+			PodName:    "gocdnext-svc-abc-g0-postgres",
+			Phase:      "Failed",
+			Reason:     "Evicted",
+			NodeName:   "node-7",
+			Conditions: []engine.PodConditionSnapshot{{Type: "Ready", Status: "False", Reason: "ContainersNotReady"}},
+			Containers: []engine.ServiceContainerDiagnostics{{
+				Name:         "service",
+				RestartCount: 1,
+				State:        "waiting",
+				StateReason:  "CrashLoopBackOff",
+				LastTermination: &engine.ContainerTermination{
+					Reason:   "Error",
+					ExitCode: 1,
+				},
+			}},
+		},
+	})
+
+	if out := buf.String(); strings.Contains(out, secret) {
+		t.Errorf("agent log carries workload-authored text: %q", out)
+	}
+	// Sanity: the record was actually emitted, so the assertion above
+	// is not passing on an empty buffer.
+	if out := buf.String(); !strings.Contains(out, "svc_state_reason=CrashLoopBackOff") {
+		t.Errorf("expected the bounded fields to still be logged; got %q", out)
 	}
 }
 
