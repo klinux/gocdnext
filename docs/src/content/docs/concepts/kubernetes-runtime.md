@@ -48,6 +48,8 @@ Pod (job-<run>-<job>)
 ├── volumes:
 │   ├── workspace: ephemeral PVC (storageClassName=<cfg>, RWO)
 │   └── assignment: Secret (JobAssignment serialised .pb)
+│       — deleted the moment prep terminates; see "How job secrets
+│         reach the task container" for the separate env Secret
 ├── initContainers:
 │   └── prep: gocdnext-agent:<version>
 │       command: ["gocdnext-agent", "prep", ...]
@@ -78,6 +80,64 @@ Trade-offs:
 - Materials are cloned **inside** the prep init container, not in the
   agent. Materials that need network egress need the cluster's egress
   policy to allow it from the job namespace.
+
+## How job secrets reach the task container
+
+Secret-bearing env vars are **never** written into the Pod spec as a
+value. They are stored in a Secret and referenced with
+`valueFrom.secretKeyRef`:
+
+```yaml
+# kubectl get pod <job-pod> -o yaml
+containers:
+  - name: task
+    env:
+      - name: CI_BRANCH          # plain: stays readable
+        value: main
+      - name: GHCR_TOKEN         # secret: value lives in the Secret
+        valueFrom:
+          secretKeyRef:
+            name: gocdnext-job-<id>-env
+            key: env.GHCR_TOKEN
+```
+
+Why it matters: `get pods` is a much cheaper RBAC grant than
+`get secrets`, so an inline value would hand every pipeline secret to
+anyone who can run `kubectl get pod -o yaml` in the runners'
+namespace — a read path neither the UI nor log masking covers.
+
+Where the values live — **both modes**: a per-pod Secret named
+`<pod-name>-env`, created just before the pod and `ownerReference`d to
+it, so the kubelet's GC removes it with the pod. A pod retained by
+`cleanupOnFailure: false` keeps its Secret, which is what you want
+while debugging. In shared mode a multi-task job gets one per task pod.
+
+It is deliberately **not** the isolated mode assignment Secret, even
+though that object already exists per job: the agent deletes the
+assignment Secret the instant the `prep` init container terminates, so
+the serialised `JobAssignment` (env, signed URLs, scripts) never
+outlives the one container that needs it. The task container's env is
+resolved by the kubelet *after* that point, so sharing one object would
+leave every secret-bearing job in `CreateContainerConfigError`. Two
+needs, two lifetimes, two objects.
+
+What counts as sensitive is decided by value, not by name: any env
+value that contains one of the job's masked values. That covers
+declared `secrets:`, runner-profile secrets, OIDC `id_tokens`,
+`PLUGIN_KUBECONFIG`, a `PLUGIN_*` input resolved from
+`${{ SECRET }}`, and composed values like
+`DATABASE_URL: postgres://u:${{ PG_PASSWORD }}@db/app`. Values shorter
+than 4 characters are not matched — the same floor log masking uses.
+Everything else (`CI_*`, plugin inputs that are not secrets,
+`GOCDNEXT_OUTPUT_FILE`) stays inline so the Pod spec is still useful
+for debugging.
+
+RBAC is unchanged: the agent Role already carries
+`create`/`patch`/`delete` on `secrets` for the assignment Secret, and
+the kubelet — not the agent — is what reads the keys. `services:` pods
+are not affected: their `environment:` is passed through verbatim
+without `${{ }}` substitution, so a service pod can only carry
+literals written in the YAML (which is not where secrets belong).
 
 ## Cache & artifact compression (gzip / zstd)
 
@@ -226,12 +286,22 @@ clusters — don't confuse them:
 | `pods/log` | `get` | Tail container logs |
 | `pods/exec` | `create` | **Isolated mode**: stream `tar` out of housekeeper sidecar for artefact + cache upload |
 | `pods/status` | `get` | Detect terminal task container status |
-| `secrets` | `create`, `get`, `patch`, `delete` | Materialise the `JobAssignment` for the prep init container; patch owner ref for GC |
+| `secrets` | `create`, `patch`, `delete` | Materialise the `JobAssignment` for the prep init container; hold secret-bearing job env out of the Pod spec (both modes); patch owner ref for GC |
 | `persistentvolumeclaims` | `list`, `delete` | Cleanup recovery if ephemeral PVCs leak (rare; controller usually reaps them) |
 
 The Helm chart wires this up. `pods/exec` is the one that's specific
 to isolated mode; if you've tightened the chart-provided ClusterRole
 in your fork, check it's still granted.
+
+Note the **absence of `get`/`list`/`watch` on `secrets`**: the agent
+only ever creates, owner-refs and deletes the Secrets it made itself,
+and the kubelet — not the agent — is what reads a `secretKeyRef`. Don't
+add `get` to make the env injection work; it isn't needed, and granting
+it turns the agent's ServiceAccount into a generic secret-exfiltration
+path if the binary is ever compromised. The residual risk that remains
+is `patch`/`delete` applying to *any* Secret in the namespace (RBAC has
+no name globbing), which is why the chart's defaults push one namespace
+per agent release.
 
 ### Deployer SA — target cluster (kubeconfig)
 
@@ -302,10 +372,18 @@ to keep the pod alive for the post-task exec window.
 
 **Secret limit.** `JobAssignment` serialisation includes pre-signed
 URLs for artefact downloads and cache fetches. The agent enforces a
-~950 KiB cap on the serialised proto; a job that exceeds it (very
-large `needs_artifacts` lists or hundreds of cache entries) fails
-fast at dispatch with a clear error. Split the work into smaller
-jobs if you hit this.
+~950 KiB cap on it, and the same cap on the env Secret. A job that
+exceeds either (very large `needs_artifacts` lists, hundreds of cache
+entries, or a multi-hundred-KB secret) fails fast at dispatch with a
+clear error instead of being rejected by the apiserver mid-create.
+Split the work into smaller jobs if you hit this.
+
+**`CreateContainerConfigError` on the task container.** The task
+references its secrets by key, so this means the `<pod>-env` Secret or
+one of its keys is missing — expected only if something external
+deleted or mutated it while the pod was starting. Check that no other
+controller is reaping Secrets labelled
+`app.kubernetes.io/managed-by=gocdnext-agent` in the namespace.
 
 ## Migration tips
 

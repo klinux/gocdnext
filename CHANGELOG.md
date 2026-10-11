@@ -8,6 +8,33 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Security
+
+- **Job secrets no longer land in the Kubernetes Pod spec (#309).** With the
+  k8s engine, a job's secret-bearing env reached the task container as plain
+  `EnvVar.Value` entries, so anyone with `get pods` in the runners' namespace
+  could read every pipeline secret via `kubectl get pod -o yaml` — a much
+  cheaper RBAC grant than `get secrets`, and a read path neither the UI nor log
+  masking covered. Those vars now resolve from a Secret through
+  `valueFrom.secretKeyRef`: both modes get a per-pod `<pod>-env` Secret,
+  created just before the pod and owner-ref'd to it so the kubelet GCs it with
+  the pod. It is deliberately a separate object from isolated mode's
+  assignment Secret, which the agent deletes the instant `prep` terminates —
+  the kubelet resolves the task container's env *after* that point, so sharing
+  one object would strand every secret-bearing job in
+  `CreateContainerConfigError`. Sensitivity is decided by VALUE against the job's
+  `log_masks`, which also covers paths a name list could not: `PLUGIN_*` inputs
+  resolved from `${{ SECRET }}`, runner-profile secrets, OIDC `id_tokens`,
+  `PLUGIN_KUBECONFIG`, and composed values like
+  `postgres://u:${{ PG_PASSWORD }}@db/app`. Plain vars (`CI_*`, non-secret
+  plugin inputs, `GOCDNEXT_OUTPUT_FILE`) stay inline, so a Pod spec is still
+  useful for debugging. Jobs with nothing sensitive make no extra API calls.
+  No RBAC change: the agent Role already carried `create`/`patch`/`delete` on
+  `secrets`, and the kubelet — not the agent — reads the keys. The Docker
+  engine already solved this class structurally (values travel in the CLI
+  process's own env, never on argv); `services:` pods are unaffected, since
+  their `environment:` is never `${{ }}`-substituted.
+
 ## v0.116.0 — 2026-10-09
 
 ### Added

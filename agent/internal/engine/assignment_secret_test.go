@@ -23,6 +23,9 @@ func TestBuildAssignmentSecret_HappyPath(t *testing.T) {
 	if !bytes.Equal(s.Data[AssignmentSecretKey], bytesIn) {
 		t.Errorf("data round-trip mismatch")
 	}
+	if len(s.Data) != 1 {
+		t.Errorf("data keys = %d, want ONLY the assignment payload — the task's secret env lives in its own, longer-lived Secret (#309)", len(s.Data))
+	}
 	if s.Labels["gocdnext.io/run-id"] != "run-1" {
 		t.Errorf("run-id label: got %q", s.Labels["gocdnext.io/run-id"])
 	}
@@ -50,7 +53,7 @@ func TestBuildAssignmentSecret_RejectsEmpty(t *testing.T) {
 	}
 }
 
-func TestPatchAssignmentSecretOwner_AppliesOwnerRef(t *testing.T) {
+func TestPatchSecretOwner_AppliesOwnerRef(t *testing.T) {
 	client := fake.NewSimpleClientset(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "s1",
@@ -60,7 +63,7 @@ func TestPatchAssignmentSecretOwner_AppliesOwnerRef(t *testing.T) {
 	k := NewKubernetesWithClient(client, KubernetesConfig{Namespace: "ci"})
 
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p1", UID: types.UID("uid-xyz"), Namespace: "ci"}}
-	if err := k.PatchAssignmentSecretOwner(context.Background(), "s1", pod); err != nil {
+	if err := k.PatchSecretOwner(context.Background(), "s1", pod); err != nil {
 		t.Fatalf("patch: %v", err)
 	}
 

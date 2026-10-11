@@ -26,6 +26,15 @@ const AssignmentSecretMaxBytes = 950 * 1024
 // serialises the proto and passes the bytes — keeping the engine
 // package proto-free.
 //
+// This Secret is deliberately SHORT-LIVED: the runner deletes it the
+// instant prep terminates (see execute_isolated.go), so the payload —
+// env values, signed artefact/cache URLs, scripts — does not outlive
+// the one container that needs it, not even on a pod retained for
+// debugging. That is why the task container's secret-bearing env
+// lives in its own object (BuildEnvSecret) instead of riding along
+// here: it must stay readable for as long as the pod can start a
+// container, which is strictly longer.
+//
 // labels carries (run_id, job_id) for orphan-cleanup label
 // selectors. Both are accepted as plain strings and not
 // sanitised here; the caller is responsible for DNS-1123
@@ -65,14 +74,16 @@ func BuildAssignmentSecret(name, namespace string, assignmentBytes []byte, runID
 	}, nil
 }
 
-// PatchAssignmentSecretOwner applies an OwnerReference to the
-// secret so the kubelet's garbage collector deletes it when the
-// pod disappears (job complete, cancel, agent crash → pod GC).
+// PatchSecretOwner applies an OwnerReference to the secret so the
+// kubelet's garbage collector deletes it when the pod disappears (job
+// complete, cancel, agent crash → pod GC). Used for both per-job
+// Secrets: the isolated-mode assignment Secret and the shared-mode
+// env Secret (#309).
 //
 // Strategic merge patch keeps the existing labels intact while
 // adding the ownerReferences field. Idempotent — calling twice
 // is a successful no-op (kubectl re-applies the same set).
-func (k *Kubernetes) PatchAssignmentSecretOwner(ctx context.Context, secretName string, pod *corev1.Pod) error {
+func (k *Kubernetes) PatchSecretOwner(ctx context.Context, secretName string, pod *corev1.Pod) error {
 	if pod == nil || pod.UID == "" {
 		return fmt.Errorf("patch owner: pod must have a UID (was Create returned?)")
 	}
