@@ -23,8 +23,10 @@ convention that minor bumps may carry breaking changes until 1.0).
   user-visible shape as #305. Liveness is now checked before the IP, and reuse
   validates it alongside provenance (our labels say "we made this pod", not "it
   still works"), so such a job fails immediately naming the service and its exit
-  code, and the service's own state goes to `failed` so the run attributes the
-  failure correctly. A pod that is merely still starting
+  code, and the service's own state goes to `failed` — the agent emits that
+  lifecycle event before failing the job, so the `service_runs` row moves even
+  though the creator had already reported `ready` (`failed` is sticky
+  server-side) and the run attributes the failure correctly. A pod that is merely still starting
   (`ContainerCreating`, image still pulling) is unaffected — that is the normal
   case of a sibling job arriving moments after the creator, and it waits for the
   IP exactly as before.
