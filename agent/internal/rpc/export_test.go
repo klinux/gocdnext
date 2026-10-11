@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 
+	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
@@ -162,6 +163,14 @@ func NewCleanupAckSenderForTest(full bool) CleanupAckRig {
 			}
 		},
 	}
+}
+
+// ServiceLifecycleAckForTest exposes the emitter CleanupRunServices
+// receives, so a test can drive the service-pod diagnostics logging
+// (#305) through the production path instead of reimplementing it.
+// Works with a nil ack bridge: the log happens before the send.
+func (c *Client) ServiceLifecycleAckForTest(runID string) func(engine.ServiceLifecycleEvent) {
+	return c.serviceLifecycleAck(runID)
 }
 
 // CacheProbeScriptForTest exposes the shell script the cache STORE

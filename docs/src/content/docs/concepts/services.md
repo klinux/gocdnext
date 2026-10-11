@@ -109,6 +109,69 @@ Services are not auto-restarted. The model is "the service must
 come up clean once; if it dies, the job dies with it." This keeps
 the failure attribution clear.
 
+## Diagnosing a service that died mid-run
+
+Nothing watches a service pod between `ready` and the run-terminal
+teardown, so a service that was unavailable in the middle of a run used
+to look identical to a healthy one. Two places now report what the pod
+was actually doing (Kubernetes engine):
+
+**In the job log, when a later job reuses the service.** A job that
+joins an already-running run-scoped service prints a warning if the pod
+had already restarted:
+
+```
+$ reusing service postgres from sibling job (run-scoped)
+$ warning: service postgres was not healthy for the whole run so far —
+  restarted 1 time(s), last exit 137 (OOMKilled) (pod gocdnext-svc-…);
+  failures in this job may be caused by the service being unavailable,
+  not by your change
+```
+
+That line exists because the alternative is a developer investigating
+their own diff while the real cause was the platform. It fires only on
+an actual restart or prior termination — a sibling job that arrives
+while the pod is still `ContainerCreating` says nothing, since that is
+ordinary startup.
+
+**In the agent log, at teardown.** The run-terminal cleanup records a
+snapshot per service pod — restart count, current and previous
+container state, exit code / reason / signal, pod phase and conditions,
+node, and the resources the spec asked for. `WARN` when the service was
+not continuously available, `DEBUG` otherwise:
+
+```
+level=WARN msg="service pod was not healthy for the whole run:
+  restarted 1 time(s), last exit 137 (OOMKilled)"
+  run_id=… service=postgres svc_restarts=1 svc_last_exit_code=137
+  svc_last_reason=OOMKilled svc_node=node-7 svc_mem_limit=(none)
+```
+
+A restart, a prior termination, an eviction, or a container that is no
+longer running all count as "not healthy" — including a clean exit 0,
+since a run-scoped service that exits mid-run was absent for every job
+after it.
+
+### Known blind spot
+
+`svc_mem_limit=(none)` is not a formatting artefact: service pods carry
+no resource requests or limits, so their memory ceiling is the node's
+(or a namespace `LimitRange` default).
+
+That matters for the case this telemetry does **not** catch. If the
+node's OOM killer takes a *child* process while the container's main
+process survives — a Postgres backend being killed while the postmaster
+runs crash recovery, which from inside the job reads as
+`57P01` → `57P03` → recovery — then the container never restarted,
+`svc_restarts` stays 0, and the snapshot reports a healthy service. The
+evidence for that case lives in the node's `SystemOOM` event and kernel
+log, which the agent's Role cannot read (it grants no `events`).
+
+If a job fails with connection errors mid-run and the snapshot looks
+clean, check the node: `kubectl get events --field-selector
+reason=SystemOOM` and the kubelet/kernel log for the node named in
+`svc_node`.
+
 ## Limits
 
 - One container/Pod per service entry. To run e.g. a Postgres + a

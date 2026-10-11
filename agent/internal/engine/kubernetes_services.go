@@ -216,6 +216,24 @@ func (k *Kubernetes) EnsureServices(
 		}
 		if log != nil {
 			log("stdout", fmt.Sprintf("$ reusing service %s from sibling job (run-scoped)", svc.Name))
+			// The Get above is the only mid-run look anyone takes at a
+			// service pod, so spend it: if the service already died and
+			// came back, say so in THIS job's log. Without it, the
+			// consumer job just fails with N errors in unrelated code
+			// and whoever is on call investigates their own change
+			// (#305).
+			//
+			// Died, not Unhealthy: the reuser usually arrives while the
+			// creator's pod is still ContainerCreating, and "not
+			// running yet" is not a fault — waitForPodIP below is what
+			// handles startup. Only an actual restart / prior
+			// termination earns a line here, so a dozen jobs reusing a
+			// healthy service stay quiet.
+			if d := serviceDiagnosticsFromPod(existing); d.Died() {
+				log("stderr", fmt.Sprintf(
+					"$ warning: service %s was not healthy for the whole run so far — %s (pod %s); failures in this job may be caused by the service being unavailable, not by your change",
+					svc.Name, d.Summary(), existing.Name))
+			}
 		}
 	}
 
@@ -510,6 +528,13 @@ func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string, maxGe
 						Name:    svcName,
 						PodName: pod.Name,
 						Status:  "stopped",
+						// The List above already fetched status, so the
+						// snapshot is free here — and this is the ONLY
+						// point where anything looks at a service pod's
+						// health between `ready` and its deletion (#305).
+						// Taken from the pre-delete object: reading it
+						// after the Delete would race the API server.
+						Diagnostics: serviceDiagnosticsFromPod(&pod),
 					})
 				}
 			}
