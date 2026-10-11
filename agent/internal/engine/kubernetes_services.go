@@ -228,6 +228,31 @@ func (k *Kubernetes) EnsureServices(
 		// early, well-worded one, that one is the backstop that also
 		// covers the creator path and a service dying mid-wait.
 		if death := servicePodDeath(existing); death != "" {
+			// Emit `failed` BEFORE returning. The server moves a
+			// service_runs row only on a ServiceLifecycle event, so
+			// returning straight out would leave the row on whatever
+			// the CREATOR last reported — `ready` — until the
+			// run-terminal cleanup stamped `stopped`. The UI would
+			// show the service green while this job failed because of
+			// it, which is the exact attribution bug #305 is about,
+			// just reached from the other side.
+			//
+			// ready → failed is applied server-side (the sticky guard
+			// only protects an existing `failed` from being
+			// overwritten), and the ownership gate on `failed` is
+			// satisfied because this agent owns the job that is
+			// running right now.
+			emit(ServiceLifecycleEvent{
+				Name:    svc.Name,
+				Image:   svc.Image,
+				PodName: name,
+				Status:  "failed",
+				// The cause only — no "re-run the pipeline" advice.
+				// This string lands in the service's row and renders in
+				// the service popover, where the question being asked
+				// is "why is it red", not "what do I do now".
+				Error: "no longer serving: " + death,
+			})
 			return noop, fmt.Errorf(
 				"kubernetes engine: service %q (pod %s) was started by an earlier job of this run and is no longer serving: %s — run-scoped services are not recreated automatically, so this job cannot run; re-run the pipeline",
 				svc.Name, name, death)

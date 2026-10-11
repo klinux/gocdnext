@@ -108,6 +108,18 @@ func (r *lifecycleRecorder) statuses() []string {
 	return out
 }
 
+func (r *lifecycleRecorder) withStatus(status string) []engine.ServiceLifecycleEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []engine.ServiceLifecycleEvent
+	for _, e := range r.events {
+		if e.Status == status {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 type logRecorder struct {
 	mu    sync.Mutex
 	lines []string
@@ -189,6 +201,37 @@ func TestEnsureServices_RefusesToAdoptADeadServicePod(t *testing.T) {
 				}
 			}
 
+			// Not emitting `ready` is only half of it: the server moves
+			// a service_runs row ONLY on a ServiceLifecycle event, so
+			// without an explicit `failed` the row keeps whatever the
+			// creator last reported — `ready` — until cleanup stamps
+			// `stopped`. The service would render green while this job
+			// failed because of it.
+			failed := lc.withStatus("failed")
+			if len(failed) != 1 {
+				t.Fatalf("want exactly 1 failed event, got %d (events = %v)", len(failed), lc.statuses())
+			}
+			evt := failed[0]
+			if evt.Name != "postgres" {
+				t.Errorf("failed event Name = %q, want postgres", evt.Name)
+			}
+			if evt.Image != "postgres:17-alpine" {
+				t.Errorf("failed event Image = %q, want the declared image", evt.Image)
+			}
+			if evt.PodName != podName {
+				t.Errorf("failed event PodName = %q, want %q", evt.PodName, podName)
+			}
+			// The row's error renders in the service popover, so it has
+			// to carry the cause, not just "it failed".
+			for _, want := range tt.wantIn {
+				if want == "postgres" {
+					continue // service name, asserted on Name above
+				}
+				if !strings.Contains(evt.Error, want) {
+					t.Errorf("failed event Error = %q, missing %q", evt.Error, want)
+				}
+			}
+
 			// And the job log must not claim a successful reuse.
 			if got := lg.joined(); strings.Contains(got, "reusing service postgres") {
 				t.Errorf("logged a successful reuse of a dead pod:\n%s", got)
@@ -228,6 +271,9 @@ func TestEnsureServices_StillAdoptsALiveServicePod(t *testing.T) {
 	}
 	if !sawReady {
 		t.Errorf("no ready event for a live reused service; events = %v", lc.statuses())
+	}
+	if got := lc.withStatus("failed"); len(got) != 0 {
+		t.Errorf("emitted %d failed event(s) for a live service: %+v", len(got), got)
 	}
 }
 

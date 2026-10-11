@@ -87,8 +87,10 @@ container terminated with exit 137 (OOMKilled) — run-scoped services are
 not recreated automatically, so this job cannot run; re-run the pipeline
 ```
 
-The service's own state goes to `failed`, so the run attributes the
-failure to the service rather than to the job. A pod that is merely
+The service's own state goes to `failed` (the agent emits the lifecycle
+event before failing the job, so the row moves even though the creator
+had already reported `ready` — `failed` wins and is sticky), so the run
+attributes the failure to the service rather than to the job. A pod that is merely
 still starting (`ContainerCreating`, or an image still pulling) is not
 "dead" — the usual case of a sibling job arriving moments after the
 creator waits for the IP exactly as the creator does.
