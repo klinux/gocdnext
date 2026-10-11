@@ -9,7 +9,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
 )
@@ -305,10 +307,16 @@ func TestEnsureServices_AdoptsAPodThatIsStillStarting(t *testing.T) {
 	}
 }
 
-// TestEnsureServices_CreatorPathReportsDeathBeforeIP keeps the original
-// startup-failure message meaningful: when the pod never got an IP, the
-// error still says so rather than reporting a stale-IP adoption.
-func TestEnsureServices_CreatorPathReportsDeathBeforeIP(t *testing.T) {
+// TestEnsureServices_RefusesReuseOfAPodThatDiedWithoutAnIP covers the
+// early reuse check against a pod that died before it ever served:
+// liveness is judged on phase + container state, not on the presence of
+// an IP, so the refusal must fire here too.
+//
+// (This used to be named for the creator path, which it never
+// exercised: seeding the pod makes Create return AlreadyExists, so the
+// early reuse check catches it and waitForPodIP is never reached. The
+// creator path has its own test below.)
+func TestEnsureServices_RefusesReuseOfAPodThatDiedWithoutAnIP(t *testing.T) {
 	k, cli := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
 	const runID = "runnoipsvc01"
 	putServicePod(t, cli, "gocdnext-tests", runID, "postgres", corev1.PodStatus{
@@ -327,5 +335,106 @@ func TestEnsureServices_CreatorPathReportsDeathBeforeIP(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exit 1") {
 		t.Errorf("error %q should carry the exit code", err)
+	}
+}
+
+// TestEnsureServices_CreatorPathRefusesAPodThatDiesDuringTheWait is what
+// pins the check ORDER inside waitForPodIP, which no other test reaches:
+// the early reuse check short-circuits every seeded-pod scenario, so
+// flipping podIP back above the death check would otherwise go unnoticed.
+//
+// Here the pod does NOT pre-exist — Create succeeds, the engine takes
+// the creator path, and the wait observes a pod that is already dead.
+// The two sub-cases must stay distinguishable in the error, because they
+// mean different things to whoever reads the job log: a service that
+// never came up vs one that came up, served, and died.
+func TestEnsureServices_CreatorPathRefusesAPodThatDiesDuringTheWait(t *testing.T) {
+	tests := []struct {
+		name string
+		// status is what the wait's Get observes.
+		status    corev1.PodStatus
+		wantIn    []string
+		wantNotIn []string
+	}{
+		{
+			name: "died after serving — the podIP is stale",
+			status: corev1.PodStatus{
+				Phase: corev1.PodFailed,
+				PodIP: "10.1.2.3",
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name:  "service",
+					State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}},
+				}},
+			},
+			wantIn: []string{"no longer serving", "stale podIP", "10.1.2.3", "exit 137", "OOMKilled"},
+			// Must NOT be reported as a startup failure: it served first.
+			wantNotIn: []string{"before podIP was assigned"},
+		},
+		{
+			name: "died before serving — startup failure",
+			status: corev1.PodStatus{
+				Phase: corev1.PodFailed,
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name:  "service",
+					State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
+				}},
+			},
+			wantIn:    []string{"died before podIP was assigned", "exit 1"},
+			wantNotIn: []string{"stale podIP"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k, cli := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
+			const runID = "runcreator01"
+
+			// Nothing seeded: Create succeeds and the engine is the
+			// creator. The wait's Get is what sees the dead pod.
+			status := tt.status
+			cli.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				get, ok := action.(k8stesting.GetAction)
+				if !ok || action.GetSubresource() != "" {
+					return false, nil, nil
+				}
+				return true, &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: get.GetName(), Namespace: "gocdnext-tests"},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "service", Image: "postgres:17-alpine"}},
+					},
+					Status: status,
+				}, nil
+			})
+
+			lc := &lifecycleRecorder{}
+			_, err := k.EnsureServices(context.Background(),
+				[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:17-alpine"}},
+				runID, "job-1", 0, nil, lc.record)
+			if err == nil {
+				t.Fatal("the wait accepted a dead pod — a stale podIP was taken as proof of life")
+			}
+			for _, want := range tt.wantIn {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
+			}
+			for _, unwanted := range tt.wantNotIn {
+				if strings.Contains(err.Error(), unwanted) {
+					t.Errorf("error %q should not say %q", err, unwanted)
+				}
+			}
+
+			for _, s := range lc.statuses() {
+				if s == "ready" {
+					t.Errorf("emitted ready for a dead pod; events = %v", lc.statuses())
+				}
+			}
+			// The creator emits `starting` then `failed` from the wait's
+			// error branch, so the service lands red rather than stuck
+			// on `starting`.
+			if got := lc.withStatus("failed"); len(got) != 1 {
+				t.Errorf("want exactly 1 failed event, got %d (events = %v)", len(got), lc.statuses())
+			}
+		})
 	}
 }
