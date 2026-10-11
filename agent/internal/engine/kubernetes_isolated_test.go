@@ -582,7 +582,7 @@ func TestBuildIsolatedJobPodSpec_DisablesAutomountSAToken(t *testing.T) {
 func TestCreateIsolatedJobPod_DeletesSecretOnOwnerPatchFailure(t *testing.T) {
 	// The fake clientset does NOT populate UIDs on Create — the
 	// returned Pod has empty UID, which makes
-	// PatchAssignmentSecretOwner fail with "pod must have a UID".
+	// PatchSecretOwner fail with "pod must have a UID".
 	// That gives us a natural failure path to exercise the eager
 	// secret-deletion behaviour without injecting a reactor.
 	client := fake.NewSimpleClientset()

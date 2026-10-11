@@ -26,11 +26,21 @@ const AssignmentSecretMaxBytes = 950 * 1024
 // serialises the proto and passes the bytes — keeping the engine
 // package proto-free.
 //
+// secretEnv is the secret-bearing slice of the task container's env
+// (SplitSecretEnv's second return). Each entry becomes its own data
+// key under the "env." namespace so the task container can reference
+// it with valueFrom.secretKeyRef instead of carrying the value inline
+// in the Pod spec (#309). Riding along in THIS Secret rather than a
+// second object keeps the hot path at one create + one ownerRef
+// patch; the key prefix makes a collision with AssignmentSecretKey
+// impossible. Empty/nil => assignment payload only, the pre-#309
+// shape.
+//
 // labels carries (run_id, job_id) for orphan-cleanup label
 // selectors. Both are accepted as plain strings and not
 // sanitised here; the caller is responsible for DNS-1123
 // conformance.
-func BuildAssignmentSecret(name, namespace string, assignmentBytes []byte, runID, jobID string) (*corev1.Secret, error) {
+func BuildAssignmentSecret(name, namespace string, assignmentBytes []byte, secretEnv map[string]string, runID, jobID string) (*corev1.Secret, error) {
 	if name == "" {
 		return nil, fmt.Errorf("assignment secret: empty name")
 	}
@@ -43,6 +53,23 @@ func BuildAssignmentSecret(name, namespace string, assignmentBytes []byte, runID
 	if len(assignmentBytes) > AssignmentSecretMaxBytes {
 		return nil, fmt.Errorf("assignment secret: payload %d bytes exceeds max %d",
 			len(assignmentBytes), AssignmentSecretMaxBytes)
+	}
+	data := map[string][]byte{AssignmentSecretKey: assignmentBytes}
+	// The env values are already inside assignmentBytes, so breaking
+	// them out doubles their contribution. The cap is on the TOTAL
+	// because that is what k8s enforces against its 1 MiB Secret
+	// limit — checking only the proto would let a job with a huge
+	// secret (an embedded keystore, a bundled kubeconfig set) sail
+	// past us and be rejected by the apiserver instead, mid-dispatch.
+	total := len(assignmentBytes)
+	for k, v := range secretEnv {
+		key := SecretEnvKey(k)
+		data[key] = []byte(v)
+		total += len(key) + len(v)
+	}
+	if total > AssignmentSecretMaxBytes {
+		return nil, fmt.Errorf("assignment secret: payload+env %d bytes exceeds max %d",
+			total, AssignmentSecretMaxBytes)
 	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "gocdnext-job-assignment",
@@ -61,18 +88,20 @@ func BuildAssignmentSecret(name, namespace string, assignmentBytes []byte, runID
 			Labels:    labels,
 		},
 		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{AssignmentSecretKey: assignmentBytes},
+		Data: data,
 	}, nil
 }
 
-// PatchAssignmentSecretOwner applies an OwnerReference to the
-// secret so the kubelet's garbage collector deletes it when the
-// pod disappears (job complete, cancel, agent crash → pod GC).
+// PatchSecretOwner applies an OwnerReference to the secret so the
+// kubelet's garbage collector deletes it when the pod disappears (job
+// complete, cancel, agent crash → pod GC). Used for both per-job
+// Secrets: the isolated-mode assignment Secret and the shared-mode
+// env Secret (#309).
 //
 // Strategic merge patch keeps the existing labels intact while
 // adding the ownerReferences field. Idempotent — calling twice
 // is a successful no-op (kubectl re-applies the same set).
-func (k *Kubernetes) PatchAssignmentSecretOwner(ctx context.Context, secretName string, pod *corev1.Pod) error {
+func (k *Kubernetes) PatchSecretOwner(ctx context.Context, secretName string, pod *corev1.Pod) error {
 	if pod == nil || pod.UID == "" {
 		return fmt.Errorf("patch owner: pod must have a UID (was Create returned?)")
 	}

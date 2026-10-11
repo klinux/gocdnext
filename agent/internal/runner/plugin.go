@@ -48,7 +48,12 @@ func (r *Runner) runPlugin(
 		WorkDir: workDir,
 		Image:   plugin.GetImage(),
 		Env:     env,
-		Script:  "", // empty → engine runs image's ENTRYPOINT as-is
+		// Plugin settings resolved from `${{ SECRET }}` server-side
+		// arrive here as PLUGIN_* values that ARE the secret, so this
+		// path needs the mask list just as much as a script task —
+		// value matching is what catches those keys (#309).
+		SecretValues: a.GetLogMasks(),
+		Script:       "", // empty → engine runs image's ENTRYPOINT as-is
 		// Docker MUST propagate from the JobAssignment so plugins
 		// that declare `docker: true` on the YAML job actually get
 		// a DinD sidecar + DOCKER_HOST pointing at it. Pre-fix, this

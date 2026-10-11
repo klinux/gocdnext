@@ -178,10 +178,14 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 
 	spec := engine.IsolatedJobSpec{
-		RunID:                 a.GetRunId(),
-		JobID:                 a.GetJobId(),
-		WorkDir:               scriptWorkDir,
-		Env:                   a.GetEnv(),
+		RunID:   a.GetRunId(),
+		JobID:   a.GetJobId(),
+		WorkDir: scriptWorkDir,
+		Env:     a.GetEnv(),
+		// Keeps the job's secrets out of the Pod spec: the engine
+		// serves any env value matching a mask from the assignment
+		// Secret via secretKeyRef (#309).
+		SecretValues:          a.GetLogMasks(),
 		Docker:                a.GetDocker(),
 		Resources:             assignmentResources(a),
 		Profile:               a.GetProfile(),

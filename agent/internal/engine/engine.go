@@ -29,7 +29,19 @@ type ScriptSpec struct {
 	WorkDir string
 	Image   string
 	Env     map[string]string
-	Script  string
+	// SecretValues is JobAssignment.log_masks: every sensitive value
+	// the scheduler resolved into this job (declared secrets, profile
+	// secrets, OIDC id_tokens, PLUGIN_KUBECONFIG, clone tokens…).
+	// Engines that expose env to a third party must keep those values
+	// out of it: the Kubernetes engine serves the matching vars from a
+	// Secret via valueFrom.secretKeyRef rather than inlining them in
+	// the Pod spec (#309) — see SplitSecretEnv. The Docker engine
+	// already solves the same class structurally (values travel in the
+	// CLI process's own env, never on argv) and ignores this field;
+	// Shell has no third party to hide them from. Empty/nil =>
+	// everything inline, the pre-fix shape.
+	SecretValues []string
+	Script       string
 	// Docker asks the engine to make a Docker API reachable from
 	// inside the script — docker.sock mount for Shell/Docker
 	// engines, DinD sidecar for Kubernetes. Engines that can't

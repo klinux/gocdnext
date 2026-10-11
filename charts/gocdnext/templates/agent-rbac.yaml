@@ -33,10 +33,14 @@ rules:
   - apiGroups: [""]
     resources: [pods/exec]
     verbs: [create, get]
-  # Secrets: agent creates a per-job assignment Secret in isolated
-  # mode (carries the serialised JobAssignment for the prep init
-  # container) and patches its OwnerReference back to the Pod for
-  # automatic GC. NOTE the absence of `get`/`list`/`watch`:
+  # Secrets: agent creates a per-job Secret and patches its
+  # OwnerReference back to the Pod for automatic GC. Two uses:
+  #   - isolated mode: carries the serialised JobAssignment for the
+  #     prep init container;
+  #   - BOTH modes: holds the job's secret-bearing env so the task
+  #     container can reference it with valueFrom.secretKeyRef instead
+  #     of exposing the values to anyone with `get pods` (#309).
+  # NOTE the absence of `get`/`list`/`watch`:
   # the engine only ever Create/Patch/Delete'es the secrets it
   # owns and never needs to read another secret's content.
   # Withholding `get` keeps the agent SA from being a generic
@@ -52,8 +56,9 @@ rules:
   # release its own namespace; the chart's defaults already
   # encourage this via per-release naming.
   #
-  # Shared mode doesn't touch Secrets — the Role carries the
-  # verbs anyway so mode flips work without RBAC churn.
+  # Both modes use these verbs since v0.117.0 (shared mode creates a
+  # per-pod env Secret); the verb set is unchanged, so no RBAC
+  # re-deploy is needed and mode flips keep working.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [create, patch, delete]
