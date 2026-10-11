@@ -16,10 +16,13 @@ convention that minor bumps may carry breaking changes until 1.0).
   could read every pipeline secret via `kubectl get pod -o yaml` — a much
   cheaper RBAC grant than `get secrets`, and a read path neither the UI nor log
   masking covered. Those vars now resolve from a Secret through
-  `valueFrom.secretKeyRef`: isolated mode reuses the per-job assignment Secret
-  it already creates (`env.<NAME>` keys, no extra API object), shared mode
-  creates a per-pod `<pod>-env` Secret owner-ref'd to the pod so the kubelet
-  GCs it with the pod. Sensitivity is decided by VALUE against the job's
+  `valueFrom.secretKeyRef`: both modes get a per-pod `<pod>-env` Secret,
+  created just before the pod and owner-ref'd to it so the kubelet GCs it with
+  the pod. It is deliberately a separate object from isolated mode's
+  assignment Secret, which the agent deletes the instant `prep` terminates —
+  the kubelet resolves the task container's env *after* that point, so sharing
+  one object would strand every secret-bearing job in
+  `CreateContainerConfigError`. Sensitivity is decided by VALUE against the job's
   `log_masks`, which also covers paths a name list could not: `PLUGIN_*` inputs
   resolved from `${{ SECRET }}`, runner-profile secrets, OIDC `id_tokens`,
   `PLUGIN_KUBECONFIG`, and composed values like

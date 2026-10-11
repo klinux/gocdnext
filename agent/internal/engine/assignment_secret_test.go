@@ -13,7 +13,7 @@ import (
 
 func TestBuildAssignmentSecret_HappyPath(t *testing.T) {
 	bytesIn := []byte("\x08\x01\x10\x02") // fake proto bytes
-	s, err := BuildAssignmentSecret("gocdnext-job-abc-assignment", "ci", bytesIn, nil, "run-1", "job-1")
+	s, err := BuildAssignmentSecret("gocdnext-job-abc-assignment", "ci", bytesIn, "run-1", "job-1")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -24,7 +24,7 @@ func TestBuildAssignmentSecret_HappyPath(t *testing.T) {
 		t.Errorf("data round-trip mismatch")
 	}
 	if len(s.Data) != 1 {
-		t.Errorf("data keys = %d, want only the assignment when no secret env is passed", len(s.Data))
+		t.Errorf("data keys = %d, want ONLY the assignment payload — the task's secret env lives in its own, longer-lived Secret (#309)", len(s.Data))
 	}
 	if s.Labels["gocdnext.io/run-id"] != "run-1" {
 		t.Errorf("run-id label: got %q", s.Labels["gocdnext.io/run-id"])
@@ -36,49 +36,19 @@ func TestBuildAssignmentSecret_HappyPath(t *testing.T) {
 
 func TestBuildAssignmentSecret_RejectsOverflow(t *testing.T) {
 	big := make([]byte, AssignmentSecretMaxBytes+1)
-	if _, err := BuildAssignmentSecret("n", "ci", big, nil, "r", "j"); err == nil {
+	if _, err := BuildAssignmentSecret("n", "ci", big, "r", "j"); err == nil {
 		t.Fatal("expected overflow error")
 	}
 }
 
-// TestBuildAssignmentSecret_RejectsOverflowFromEnv: the secret-backed
-// env (#309) rides in this same object, so a proto that fits on its
-// own can still push the Secret past the cap. Catching it here beats
-// an apiserver rejection mid-dispatch.
-func TestBuildAssignmentSecret_RejectsOverflowFromEnv(t *testing.T) {
-	proto := make([]byte, AssignmentSecretMaxBytes/2)
-	env := map[string]string{"HUGE": string(make([]byte, AssignmentSecretMaxBytes/2+1))}
-	if _, err := BuildAssignmentSecret("n", "ci", proto, env, "r", "j"); err == nil {
-		t.Fatal("expected payload+env overflow error")
-	}
-}
-
-// TestBuildAssignmentSecret_CarriesSecretEnv pins the key naming the
-// task container's secretKeyRefs depend on, and that the assignment
-// payload is never displaced.
-func TestBuildAssignmentSecret_CarriesSecretEnv(t *testing.T) {
-	s, err := BuildAssignmentSecret("n", "ci", []byte("proto"), map[string]string{
-		"GHCR_TOKEN": "ghp_abc",
-	}, "r", "j")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	if got := string(s.Data[SecretEnvKey("GHCR_TOKEN")]); got != "ghp_abc" {
-		t.Errorf("data[%s] = %q, want the token", SecretEnvKey("GHCR_TOKEN"), got)
-	}
-	if got := string(s.Data[AssignmentSecretKey]); got != "proto" {
-		t.Errorf("assignment payload = %q, want it preserved", got)
-	}
-}
-
 func TestBuildAssignmentSecret_RejectsEmpty(t *testing.T) {
-	if _, err := BuildAssignmentSecret("n", "ci", nil, nil, "r", "j"); err == nil {
+	if _, err := BuildAssignmentSecret("n", "ci", nil, "r", "j"); err == nil {
 		t.Fatal("expected empty payload error")
 	}
-	if _, err := BuildAssignmentSecret("", "ci", []byte("x"), nil, "r", "j"); err == nil {
+	if _, err := BuildAssignmentSecret("", "ci", []byte("x"), "r", "j"); err == nil {
 		t.Fatal("expected empty name error")
 	}
-	if _, err := BuildAssignmentSecret("n", "", []byte("x"), nil, "r", "j"); err == nil {
+	if _, err := BuildAssignmentSecret("n", "", []byte("x"), "r", "j"); err == nil {
 		t.Fatal("expected empty namespace error")
 	}
 }
