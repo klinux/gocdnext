@@ -214,6 +214,24 @@ func (k *Kubernetes) EnsureServices(
 		if err := assertOurServicePod(existing, runID, svc.Name, generation); err != nil {
 			return noop, fmt.Errorf("kubernetes engine: refusing to reuse pod %s: %w — delete it manually and retry", name, err)
 		}
+		// Provenance is not liveness: the labels above say "we made
+		// this", not "it still works". A run-scoped service that an
+		// earlier job brought up can be dead by the time this job
+		// arrives, and nothing recreates it (per-job Cleanup is a
+		// no-op and there is no controller above the pod). Fail here,
+		// loudly, instead of letting waitForPodIP find out — this way
+		// the job log never claims a successful reuse, and the error
+		// names the service and its exit code instead of the job
+		// discovering `connection refused` minutes later.
+		//
+		// waitForPodIP re-checks the same invariant: this call is the
+		// early, well-worded one, that one is the backstop that also
+		// covers the creator path and a service dying mid-wait.
+		if death := servicePodDeath(existing); death != "" {
+			return noop, fmt.Errorf(
+				"kubernetes engine: service %q (pod %s) was started by an earlier job of this run and is no longer serving: %s — run-scoped services are not recreated automatically, so this job cannot run; re-run the pipeline",
+				svc.Name, name, death)
+		}
 		if log != nil {
 			log("stdout", fmt.Sprintf("$ reusing service %s from sibling job (run-scoped)", svc.Name))
 		}
@@ -525,10 +543,17 @@ func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string, maxGe
 	return deleted, nil
 }
 
-// waitForPodIP polls the Pod status until status.podIP is populated
-// OR the pod reaches a terminal phase (which means scheduling /
-// image-pull / startup failed before networking was wired). Returns
+// waitForPodIP polls the Pod status until status.podIP is populated on
+// a pod that is actually serving, OR the pod is observed dead. Returns
 // the IP string or an error describing what went wrong.
+//
+// The death check runs BEFORE the podIP check, and that order is the
+// whole point. `status.podIP` survives on a pod in a terminal phase
+// until the object is deleted, so checking the IP first reported
+// success for a service that had already died — see servicePodDeath.
+// The original order was safe only for the pod's CREATOR (a pod that
+// dies during startup never had an IP); it silently adopted a corpse on
+// the run-scoped REUSE path, which observes pods that did have one.
 func (k *Kubernetes) waitForPodIP(ctx context.Context, name string) (string, error) {
 	var ip string
 	err := pollWithBackoff(ctx, "pod_ip", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
@@ -536,15 +561,20 @@ func (k *Kubernetes) waitForPodIP(ctx context.Context, name string) (string, err
 		if err != nil {
 			return false, err
 		}
+		if death := servicePodDeath(pod); death != "" {
+			if pod.Status.PodIP == "" {
+				// Never served: startup failure (bad entrypoint,
+				// immediate exit, unschedulable). Same meaning the
+				// pre-fix message carried.
+				return false, fmt.Errorf("pod %s died before podIP was assigned: %s — image entrypoint immediate-exit?", name, death)
+			}
+			// Served and then died. The IP below is stale; kubelet just
+			// hasn't dropped it yet.
+			return false, fmt.Errorf("pod %s is no longer serving: %s (stale podIP %s)", name, death, pod.Status.PodIP)
+		}
 		if pod.Status.PodIP != "" {
 			ip = pod.Status.PodIP
 			return true, nil
-		}
-		switch pod.Status.Phase {
-		case corev1.PodFailed:
-			return false, fmt.Errorf("pod %s reached phase Failed before podIP was assigned", name)
-		case corev1.PodSucceeded:
-			return false, fmt.Errorf("pod %s exited before podIP was assigned — image entrypoint immediate-exit?", name)
 		}
 		return false, nil
 	})
