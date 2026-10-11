@@ -8,6 +8,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A dead run-scoped service pod is no longer adopted as `ready`.** `podIP` is
+  not a liveness signal: Kubernetes keeps `status.podIP` populated on a pod in a
+  terminal phase until the object is deleted, and the service startup wait
+  checked the IP *before* the phase. That order was safe for the pod's creator
+  (a pod that dies during startup never had an IP) but silently adopted a corpse
+  on the run-scoped **reuse** path, which by definition observes pods that did
+  have one. A service that served and then died was therefore reported `ready`,
+  its stale IP was wired into the consumer job's `hostAliases`, and the job
+  failed minutes later with `connection refused` in whatever code first touched
+  it — the service looking healthy and the job looking broken, the same
+  user-visible shape as #305. Liveness is now checked before the IP, and reuse
+  validates it alongside provenance (our labels say "we made this pod", not "it
+  still works"), so such a job fails immediately naming the service and its exit
+  code, and the service's own state goes to `failed` so the run attributes the
+  failure correctly. A pod that is merely still starting
+  (`ContainerCreating`, image still pulling) is unaffected — that is the normal
+  case of a sibling job arriving moments after the creator, and it waits for the
+  IP exactly as before.
+
 ## v0.116.0 — 2026-10-09
 
 ### Added
