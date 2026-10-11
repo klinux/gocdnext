@@ -32,11 +32,43 @@ import (
 // grants no `events`). The resource snapshot below is the actionable
 // part for that case: it records that the service ran with no memory
 // ceiling of its own at all.
+//
+// # No free text
+//
+// The snapshot carries ONLY bounded fields: kubelet's short Reason
+// strings, exit code, signal, state, counts, node name, resource
+// quantities. It deliberately carries no Message field anywhere, even
+// though the Kubernetes API offers one at the pod, condition and
+// container-state levels.
+//
+// Reason: a terminated container's Message is read from its
+// /dev/termination-log, so its contents are chosen by the workload.
+// This snapshot lands in the AGENT's operational log, which — unlike a
+// job's log stream — does not pass through the job's LogMasks. Carrying
+// that text would hand any pipeline a way to push arbitrary bytes, a
+// resolved secret included, into the operator's log pipeline, where it
+// persists under a different retention policy than the job log and is
+// never redacted.
+//
+// Kubelet-authored messages (an eviction notice, a back-off
+// explanation) would be safe in isolation, but "safe when the state is
+// waiting, attacker-controlled when it is terminated" is not a rule
+// that survives maintenance. One blanket rule does: no free text. The
+// Reason field already names every case this telemetry is for
+// (OOMKilled, Evicted, CrashLoopBackOff, Error), and an operator who
+// needs the prose has `kubectl describe` with their own credentials.
 
 // ContainerTermination is a flattened corev1.ContainerStateTerminated.
+//
+// Note the absence of Message — see the no-free-text rule in the
+// package comment above. ContainerStateTerminated.Message is read from
+// the container's /dev/termination-log, i.e. it is written by the
+// workload, and this snapshot ends up in the agent's operational log,
+// which does NOT pass through the job's LogMasks. Carrying it would
+// hand any job a way to persist arbitrary bytes — a resolved secret
+// included — into the operator's log pipeline.
 type ContainerTermination struct {
 	Reason     string
-	Message    string
 	ExitCode   int32
 	Signal     int32
 	StartedAt  time.Time
@@ -52,13 +84,14 @@ type ServiceContainerDiagnostics struct {
 	Ready        bool
 	RestartCount int32
 
-	// State is "running", "waiting", "terminated" or "unknown", with
-	// StateReason/StateMessage carrying kubelet's explanation for the
-	// waiting and terminated cases (ImagePullBackOff, CrashLoopBackOff,
-	// OOMKilled, …).
-	State        string
-	StateReason  string
-	StateMessage string
+	// State is "running", "waiting", "terminated" or "unknown", and
+	// StateReason carries kubelet's short explanation for the waiting
+	// and terminated cases (ImagePullBackOff, CrashLoopBackOff,
+	// OOMKilled, …). The matching Message is deliberately absent: for a
+	// terminated container it comes from the workload's
+	// /dev/termination-log.
+	State       string
+	StateReason string
 
 	// LastTermination is non-nil only when the container died at least
 	// once — i.e. exactly the "it went away and came back" case.
@@ -70,12 +103,12 @@ type ServiceContainerDiagnostics struct {
 	MemLimit   string
 }
 
-// PodConditionSnapshot is a flattened corev1.PodCondition.
+// PodConditionSnapshot is a flattened corev1.PodCondition. Message is
+// omitted under the same no-free-text rule.
 type PodConditionSnapshot struct {
-	Type    string
-	Status  string
-	Reason  string
-	Message string
+	Type   string
+	Status string
+	Reason string
 }
 
 // ServicePodDiagnostics is the whole snapshot, taken at teardown.
@@ -83,7 +116,6 @@ type ServicePodDiagnostics struct {
 	PodName  string
 	Phase    string
 	Reason   string // pod-level, e.g. "Evicted"
-	Message  string
 	NodeName string
 
 	Conditions []PodConditionSnapshot
@@ -101,15 +133,13 @@ func serviceDiagnosticsFromPod(pod *corev1.Pod) *ServicePodDiagnostics {
 		PodName:  pod.Name,
 		Phase:    string(pod.Status.Phase),
 		Reason:   pod.Status.Reason,
-		Message:  pod.Status.Message,
 		NodeName: pod.Spec.NodeName,
 	}
 	for _, c := range pod.Status.Conditions {
 		d.Conditions = append(d.Conditions, PodConditionSnapshot{
-			Type:    string(c.Type),
-			Status:  string(c.Status),
-			Reason:  c.Reason,
-			Message: c.Message,
+			Type:   string(c.Type),
+			Status: string(c.Status),
+			Reason: c.Reason,
 		})
 	}
 
@@ -134,16 +164,13 @@ func serviceDiagnosticsFromPod(pod *corev1.Pod) *ServicePodDiagnostics {
 		case cs.State.Waiting != nil:
 			cd.State = "waiting"
 			cd.StateReason = cs.State.Waiting.Reason
-			cd.StateMessage = cs.State.Waiting.Message
 		case cs.State.Terminated != nil:
 			cd.State = "terminated"
 			cd.StateReason = cs.State.Terminated.Reason
-			cd.StateMessage = cs.State.Terminated.Message
 		}
 		if t := cs.LastTerminationState.Terminated; t != nil {
 			cd.LastTermination = &ContainerTermination{
 				Reason:     t.Reason,
-				Message:    t.Message,
 				ExitCode:   t.ExitCode,
 				Signal:     t.Signal,
 				StartedAt:  t.StartedAt.Time,
@@ -258,9 +285,17 @@ func (d *ServicePodDiagnostics) Summary() string {
 // stays logger-free (it reports through callbacks), so the caller
 // splats this into its own logger.
 //
-// Resource keys report "(none)" rather than "" when the field was never
-// set: "no memory ceiling" is a finding, and an empty string reads as
-// "we didn't look".
+// Two conventions worth knowing:
+//
+//   - Resource keys report "(none)" rather than "" when the field was
+//     never set: "no memory ceiling" is a finding, and an empty string
+//     reads as "we didn't look".
+//   - Every key holds ONE type across every record. A structured-log
+//     backend infers a type per field, so emitting svc_last_exit_code
+//     as an int on one record and a sentinel string on another makes
+//     the field unqueryable (or outright rejected, on a strict index).
+//     svc_last_terminated is the boolean that says whether the
+//     exit-code keys are present at all.
 func (d *ServicePodDiagnostics) LogAttrs() []any {
 	if d == nil {
 		return nil
@@ -272,9 +307,6 @@ func (d *ServicePodDiagnostics) LogAttrs() []any {
 	}
 	if d.Reason != "" {
 		attrs = append(attrs, "svc_pod_reason", d.Reason)
-	}
-	if d.Message != "" {
-		attrs = append(attrs, "svc_pod_message", d.Message)
 	}
 	if cond, ok := d.condition(string(corev1.PodReady)); ok {
 		attrs = append(attrs, "svc_ready_condition", cond.Status)
@@ -305,27 +337,18 @@ func (d *ServicePodDiagnostics) LogAttrs() []any {
 		if c.StateReason != "" {
 			attrs = append(attrs, "svc_state_reason"+suffix, c.StateReason)
 		}
-		if c.StateMessage != "" {
-			attrs = append(attrs, "svc_state_message"+suffix, c.StateMessage)
-		}
-		// Always emit the last-termination keys, even absent: a reader
-		// grepping for svc_last_exit_code needs to distinguish "0, died
-		// cleanly" from "never died".
-		if t := c.LastTermination; t != nil {
+		// svc_last_terminated is always present so a reader can tell
+		// "never died" from "died with exit 0" without the exit-code
+		// key having to carry a sentinel.
+		t := c.LastTermination
+		attrs = append(attrs, "svc_last_terminated"+suffix, t != nil)
+		if t != nil {
 			attrs = append(attrs,
 				"svc_last_exit_code"+suffix, t.ExitCode,
 				"svc_last_signal"+suffix, t.Signal,
 				"svc_last_reason"+suffix, orNone(t.Reason),
 				"svc_last_started_at"+suffix, timeString(t.StartedAt),
 				"svc_last_finished_at"+suffix, timeString(t.FinishedAt),
-			)
-			if t.Message != "" {
-				attrs = append(attrs, "svc_last_message"+suffix, t.Message)
-			}
-		} else {
-			attrs = append(attrs,
-				"svc_last_exit_code"+suffix, "(never terminated)",
-				"svc_last_reason"+suffix, "(never terminated)",
 			)
 		}
 	}

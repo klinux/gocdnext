@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -139,9 +140,6 @@ func TestServiceDiagnosticsFromPod_WaitingWithReason(t *testing.T) {
 	if c.State != "waiting" || c.StateReason != "CrashLoopBackOff" {
 		t.Errorf("container = %+v", c)
 	}
-	if !strings.Contains(c.StateMessage, "back-off") {
-		t.Errorf("state message = %q", c.StateMessage)
-	}
 	if !d.Unhealthy() {
 		t.Error("CrashLoopBackOff must read as unhealthy")
 	}
@@ -205,8 +203,8 @@ func TestServiceDiagnosticsFromPod_PodLevelReasonAndConditions(t *testing.T) {
 	}
 
 	d := serviceDiagnosticsFromPod(pod)
-	if d.Reason != "Evicted" || !strings.Contains(d.Message, "low on resource") {
-		t.Errorf("pod-level reason/message = %q / %q", d.Reason, d.Message)
+	if d.Reason != "Evicted" {
+		t.Errorf("pod-level reason = %q", d.Reason)
 	}
 	if len(d.Conditions) != 2 {
 		t.Fatalf("conditions = %+v", d.Conditions)
@@ -253,7 +251,8 @@ func TestServiceDiagnostics_LogAttrsPairs(t *testing.T) {
 	m := attrMap(t, attrs)
 	for _, key := range []string{
 		"svc_pod", "svc_phase", "svc_node", "svc_restarts",
-		"svc_state", "svc_last_exit_code", "svc_last_reason", "svc_mem_limit",
+		"svc_state", "svc_last_terminated", "svc_last_exit_code",
+		"svc_last_reason", "svc_mem_limit",
 	} {
 		if _, ok := m[key]; !ok {
 			t.Errorf("missing attr %q in %v", key, m)
@@ -277,6 +276,135 @@ func TestServiceDiagnostics_NilReceiverIsSafe(t *testing.T) {
 	}
 	if got := d.LogAttrs(); got != nil {
 		t.Errorf("LogAttrs() = %v, want nil", got)
+	}
+}
+
+// TestServiceDiagnostics_NeverCarriesWorkloadText is the guard for the
+// exfiltration path a reviewer caught before this shipped.
+//
+// ContainerStateTerminated.Message is read from the container's
+// /dev/termination-log — the WORKLOAD writes it. This snapshot is
+// logged by the agent, and the agent's own log does NOT pass through
+// the job's LogMasks, so any text carried here would let a pipeline
+// push arbitrary bytes (a resolved secret included) into the
+// operator's log pipeline, unredacted and under a different retention
+// policy than the job log.
+//
+// The rule is blanket — no Message anywhere, pod/condition/container —
+// because "safe while waiting, attacker-controlled once terminated" is
+// not a distinction that survives maintenance.
+func TestServiceDiagnostics_NeverCarriesWorkloadText(t *testing.T) {
+	const secret = "SUPERSECRET_ghp_abc123_from_termination_log"
+
+	pod := servicePod(corev1.ContainerStatus{
+		Name:         "service",
+		RestartCount: 1,
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+			Reason:  "CrashLoopBackOff",
+			Message: secret,
+		}},
+		LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+			Reason:   "Error",
+			ExitCode: 1,
+			Message:  secret,
+		}},
+	}, corev1.PodFailed)
+	pod.Status.Message = secret
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type:    corev1.PodReady,
+		Status:  corev1.ConditionFalse,
+		Reason:  "ContainersNotReady",
+		Message: secret,
+	}}
+
+	d := serviceDiagnosticsFromPod(pod)
+
+	// 1. Not in the struct at all — so no future consumer (the service
+	//    record, a metric label, an API field) can reintroduce the leak.
+	if blob := fmt.Sprintf("%+v", *d); strings.Contains(blob, secret) {
+		t.Error("the snapshot struct retains workload-authored text")
+	}
+	for _, c := range d.Containers {
+		if blob := fmt.Sprintf("%+v", c); strings.Contains(blob, secret) {
+			t.Error("the container snapshot retains workload-authored text")
+		}
+		if c.LastTermination != nil {
+			if blob := fmt.Sprintf("%+v", *c.LastTermination); strings.Contains(blob, secret) {
+				t.Error("the termination snapshot retains workload-authored text")
+			}
+		}
+	}
+	for _, cond := range d.Conditions {
+		if blob := fmt.Sprintf("%+v", cond); strings.Contains(blob, secret) {
+			t.Error("the condition snapshot retains workload-authored text")
+		}
+	}
+
+	// 2. Not in the slog attrs.
+	for i, v := range d.LogAttrs() {
+		if str, ok := v.(string); ok && strings.Contains(str, secret) {
+			t.Errorf("LogAttrs[%d] leaks workload-authored text", i)
+		}
+	}
+
+	// 3. Not in the human summary, which also reaches the job log.
+	if strings.Contains(d.Summary(), secret) {
+		t.Error("Summary() leaks workload-authored text")
+	}
+
+	// Sanity: the bounded fields ARE still reported, so this test can't
+	// pass by the extraction having silently become a no-op.
+	if d.Containers[0].StateReason != "CrashLoopBackOff" {
+		t.Errorf("state reason = %q, want it kept", d.Containers[0].StateReason)
+	}
+	if d.Containers[0].LastTermination.Reason != "Error" {
+		t.Errorf("termination reason = %q, want it kept", d.Containers[0].LastTermination.Reason)
+	}
+}
+
+// TestServiceDiagnostics_LogAttrTypesAreStable: a structured-log
+// backend infers one type per field, so a key that is an int on one
+// record and a string on another becomes unqueryable (or is rejected by
+// a strict index). svc_last_terminated carries the "did it ever die"
+// bit so the exit-code keys never need a sentinel.
+func TestServiceDiagnostics_LogAttrTypesAreStable(t *testing.T) {
+	never := attrMap(t, serviceDiagnosticsFromPod(servicePod(corev1.ContainerStatus{
+		Name:  "service",
+		Ready: true,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}, corev1.PodRunning)).LogAttrs())
+
+	died := attrMap(t, serviceDiagnosticsFromPod(servicePod(corev1.ContainerStatus{
+		Name:         "service",
+		RestartCount: 1,
+		State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+		LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+			Reason: "OOMKilled", ExitCode: 137, Signal: 9,
+		}},
+	}, corev1.PodRunning)).LogAttrs())
+
+	if got := never["svc_last_terminated"]; got != false {
+		t.Errorf("svc_last_terminated = %#v, want false", got)
+	}
+	if _, present := never["svc_last_exit_code"]; present {
+		t.Error("svc_last_exit_code present for a container that never died — it would need a sentinel value")
+	}
+	if got := died["svc_last_terminated"]; got != true {
+		t.Errorf("svc_last_terminated = %#v, want true", got)
+	}
+	if got := died["svc_last_exit_code"]; got != int32(137) {
+		t.Errorf("svc_last_exit_code = %#v, want int32(137)", got)
+	}
+
+	// Every key present in both records must hold the same Go type.
+	for key, a := range never {
+		b, ok := died[key]
+		if !ok {
+			continue
+		}
+		if fmt.Sprintf("%T", a) != fmt.Sprintf("%T", b) {
+			t.Errorf("key %q changes type across records: %T vs %T", key, a, b)
+		}
 	}
 }
 

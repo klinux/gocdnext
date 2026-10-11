@@ -143,14 +143,31 @@ not continuously available, `DEBUG` otherwise:
 ```
 level=WARN msg="service pod was not healthy for the whole run:
   restarted 1 time(s), last exit 137 (OOMKilled)"
-  run_id=… service=postgres svc_restarts=1 svc_last_exit_code=137
-  svc_last_reason=OOMKilled svc_node=node-7 svc_mem_limit=(none)
+  run_id=… service=postgres svc_restarts=1 svc_last_terminated=true
+  svc_last_exit_code=137 svc_last_reason=OOMKilled svc_node=node-7
+  svc_mem_limit=(none)
 ```
 
 A restart, a prior termination, an eviction, or a container that is no
 longer running all count as "not healthy" — including a clean exit 0,
 since a run-scoped service that exits mid-run was absent for every job
 after it.
+
+Two conventions if you query these logs: `svc_last_terminated` is always
+present and tells you whether the `svc_last_*` exit-code keys exist at
+all (so no field ever changes type between records), and resource keys
+read `(none)` when the spec set nothing, because "no memory ceiling" is
+a finding and an empty value reads as "we didn't look".
+
+The snapshot carries **only bounded fields** — kubelet's short `Reason`
+strings, exit code, signal, state, counts, node, resource quantities. It
+carries no Kubernetes `Message` field, at any level, on purpose: a
+terminated container's message comes from its `/dev/termination-log`,
+which the workload writes, and the agent's log — unlike a job's log
+stream — is not passed through the job's `log_masks`. Carrying it would
+let any pipeline push arbitrary bytes into your log pipeline. Use
+`kubectl describe pod` with your own credentials when you need the
+prose.
 
 ### Known blind spot
 
