@@ -8,6 +8,32 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Service-pod health is recorded at teardown (#305, partial).** Nothing
+  watched a `services:` pod between `ready` and the run-terminal delete, so a
+  service that died and came back mid-run was indistinguishable — in the API
+  and in the UI — from one that stayed healthy, and the consumer job just
+  failed with N errors in code that had nothing to do with the change under
+  test. The Kubernetes engine now captures a snapshot per service pod at
+  cleanup (restart count, current + previous container state, exit code /
+  reason / signal, pod phase + conditions, node, and the resources the spec
+  asked for) and the agent logs it: `WARN` when the service was not
+  continuously available, `DEBUG` otherwise. It costs no extra API call — the
+  teardown already lists those pods with their status — and needs no new RBAC
+  verb. Separately, a job that *reuses* a run-scoped service brought up by a
+  sibling now warns in its own log when that pod had already restarted, so the
+  signal reaches a human during the run instead of in a post-mortem.
+  Deliberately log-only for now: the `ServiceLifecycle` proto and the run's
+  service record are unchanged, so job status semantics are untouched.
+  Known blind spot, documented in [Services → Diagnosing a service that died
+  mid-run](docs/src/content/docs/concepts/services.md): if the node's OOM
+  killer takes a child process and the container's main process survives (a
+  Postgres backend killed while the postmaster recovers — `57P01` → `57P03` →
+  recovery from inside the job), the container never restarted and the
+  snapshot reads clean. That evidence lives in the node's `SystemOOM` event,
+  which the agent's Role cannot read today.
+
 ## v0.116.0 — 2026-10-09
 
 ### Added
