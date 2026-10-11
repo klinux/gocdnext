@@ -54,13 +54,46 @@ instead.
 |---|---|
 | `starting` | Container/Pod created; waiting for ready signal |
 | `ready` | Docker: container `running` + healthy. K8s: `Pod.Status.Phase == Running` |
-| `failed` | Crashed before ready (image pull error, exit ≠ 0 in startup, OOMKilled). Job fails fast with the service's status. |
+| `failed` | Crashed before ready (image pull error, exit ≠ 0 in startup, OOMKilled), **or** found dead by a later job of the run. Job fails fast with the service's status. |
 | `stopped` | Cleanly torn down at run end. This is the happy-path terminal state. |
 
 Status transitions emit a `ServiceLifecycle` event over the agent's
 gRPC stream; the server upserts into the `service_runs` table with a
 sticky-failed guard (a once-`failed` service can't be reset back to
 `ready` if the container is restarted by the runtime).
+
+### A dead run-scoped service is never adopted as `ready`
+
+Run-scoped services are created by the first job that needs them and
+reused by every later job of the run. Reuse validates **both**
+provenance (our labels, our run, our generation) and **liveness** — the
+labels say "we made this pod", not "it still works".
+
+This matters because `status.podIP` is not a liveness signal:
+Kubernetes keeps it populated on a pod in a terminal phase until the
+object is deleted. A service that served for ten minutes and then died
+still presents a usable-looking IP. If a later job adopted it, the run
+would report the service as `ready` while that job failed with
+`connection refused` in whatever code first touched it — the service
+looking healthy and the job looking broken.
+
+So a job that finds the run's service dead fails immediately, naming the
+service and how it died:
+
+```
+kubernetes engine: service "postgres" (pod gocdnext-svc-…) was started by
+an earlier job of this run and is no longer serving: pod phase Failed,
+container terminated with exit 137 (OOMKilled) — run-scoped services are
+not recreated automatically, so this job cannot run; re-run the pipeline
+```
+
+The service's own state goes to `failed` (the agent emits the lifecycle
+event before failing the job, so the row moves even though the creator
+had already reported `ready` — `failed` wins and is sticky), so the run
+attributes the failure to the service rather than to the job. A pod that is merely
+still starting (`ContainerCreating`, or an image still pulling) is not
+"dead" — the usual case of a sibling job arriving moments after the
+creator waits for the IP exactly as the creator does.
 
 ## How the UI surfaces them
 
@@ -100,10 +133,14 @@ actually has them — no extra request for service-free pipelines.
 - **Service fails mid-job** → the job continues until it exits on
   its own (you don't lose stdout). The aggregated run status is
   still `failed` because the service is.
-- **Service is OK at start, dies mid-job** → no lifecycle change.
-  The job sees connection errors and likely fails. The dashboard
-  shows the service as `ready` until it's reaped; the job's logs
-  are where the failure surfaces.
+- **Service is OK at start, dies mid-job** → no lifecycle change for
+  the job already running. It sees connection errors and likely fails;
+  the dashboard shows the service as `ready` until it's reaped, and the
+  job's logs are where the failure surfaces.
+- **Service is OK at start, dies, and a LATER job of the run needs it**
+  → that job fails immediately with the service's cause of death, and
+  the service goes to `failed`. It is not adopted as `ready` on the
+  strength of a stale `podIP`.
 
 Services are not auto-restarted. The model is "the service must
 come up clean once; if it dies, the job dies with it." This keeps
