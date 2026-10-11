@@ -1055,6 +1055,7 @@ func (c *Client) processCleanupBounded(parent context.Context, runID string, tim
 // flow up to the server's service_runs table.
 func (c *Client) serviceLifecycleAck(runID string) func(engine.ServiceLifecycleEvent) {
 	return func(evt engine.ServiceLifecycleEvent) {
+		c.logServiceDiagnostics(runID, evt)
 		send := c.cleanupAckSend.Load()
 		if send == nil {
 			return
@@ -1073,6 +1074,34 @@ func (c *Client) serviceLifecycleAck(runID string) func(engine.ServiceLifecycleE
 			},
 		})
 	}
+}
+
+// logServiceDiagnostics records the service pod's health snapshot at
+// teardown (#305). Nothing watches a service pod between `ready` and
+// its deletion, so this is the one place the agent can say whether the
+// service was actually available for the whole run.
+//
+// WARN when it wasn't — a restart, a prior termination, an eviction, a
+// container that is no longer running — because that reclassifies
+// whatever the consumer job reported: the job's own failures may be
+// collateral, not a real regression. DEBUG otherwise, so steady state
+// stays quiet while the snapshot (including "this service ran with no
+// memory limit") is still retrievable by raising the level.
+//
+// Deliberately local-only: the ServiceLifecycle proto is unchanged, so
+// this PR adds evidence without touching the status contract or the
+// service record's schema.
+func (c *Client) logServiceDiagnostics(runID string, evt engine.ServiceLifecycleEvent) {
+	d := evt.Diagnostics
+	if d == nil {
+		return
+	}
+	attrs := append([]any{"run_id", runID, "service", evt.Name}, d.LogAttrs()...)
+	if d.Unhealthy() {
+		c.log.Warn("service pod was not healthy for the whole run: "+d.Summary(), attrs...)
+		return
+	}
+	c.log.Debug("service pod teardown snapshot", attrs...)
 }
 
 // runCleanup is the engine-level call shared between the steady-

@@ -177,6 +177,26 @@ type ServiceLifecycleEvent struct {
 	PodName string
 	Status  string
 	Error   string
+
+	// Diagnostics is the pod's health snapshot at teardown: restart
+	// count, current + previous container state, exit code / reason /
+	// signal, pod phase + conditions, and the resources the spec asked
+	// for. Populated on `stopped` events only — the run-terminal
+	// cleanup already Lists the pods with their status, so it costs no
+	// extra API call there, whereas the other transitions have nothing
+	// extra to report.
+	//
+	// It exists because nothing observes a service pod between `ready`
+	// and the delete, which made a service that died and came back
+	// mid-run indistinguishable from a healthy one (#305). Nil on every
+	// other status; consumers must tolerate that (the methods are
+	// nil-safe).
+	//
+	// NOT forwarded on the wire today: the runner logs it locally, the
+	// ServiceLifecycle proto is unchanged. Surfacing it on the run's
+	// service record is a deliberate follow-up, so this PR cannot
+	// change status semantics.
+	Diagnostics *ServicePodDiagnostics
 }
 
 // ServicesWireup is what an engine returns from EnsureServices so
