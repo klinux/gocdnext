@@ -70,6 +70,27 @@ if [ -n "${PLUGIN_BUILD_ARGS:-}" ]; then
     done <<<"${ba_raw}"
 fi
 
+# Wait for the Docker daemon before building. With `docker: true` in the
+# Kubernetes runtime the daemon is a DinD sidecar that starts in PARALLEL with
+# this task container — `docker build` fired the instant the task starts races
+# the daemon coming up and dies with "Cannot connect to the Docker daemon ...
+# Is the docker daemon running?" (login needs no daemon, so it "succeeds"
+# first, which made the failure look misleading). Poll `docker info` until the
+# daemon answers, or time out with a clear message instead of the cryptic one.
+daemon_timeout="${PLUGIN_DAEMON_TIMEOUT:-120}"
+if ! docker info >/dev/null 2>&1; then
+    echo "==> waiting up to ${daemon_timeout}s for the Docker daemon (${DOCKER_HOST:-default socket})"
+    deadline=$((SECONDS + daemon_timeout))
+    until docker info >/dev/null 2>&1; do
+        if [ "${SECONDS}" -ge "${deadline}" ]; then
+            echo "gocdnext/docker: Docker daemon not reachable at ${DOCKER_HOST:-the default socket} after ${daemon_timeout}s." >&2
+            echo "  With 'docker: true' the daemon is a DinD sidecar; if this persists the sidecar failed to start — check its logs/storage." >&2
+            exit 1
+        fi
+        sleep 1
+    done
+fi
+
 echo "==> docker build ${CONTEXT} -f ${DOCKERFILE} (${#TAGS[@]} tag(s))"
 docker build \
     --file "${DOCKERFILE}" \

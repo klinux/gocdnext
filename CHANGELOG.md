@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`plugin-docker` waits for the Docker daemon before building.** With
+  `docker: true` in the Kubernetes runtime the daemon is a DinD sidecar that
+  starts in parallel with the task; `docker build` firing the instant the task
+  started raced the daemon and died with `Cannot connect to the Docker daemon
+  … Is the docker daemon running?` (login needs no daemon, so it "succeeded"
+  first and the failure looked misleading). The plugin now polls `docker info`
+  until the daemon answers (configurable `PLUGIN_DAEMON_TIMEOUT`, default 120s)
+  and, if it never comes up, fails with a clear message pointing at the DinD
+  sidecar instead of the cryptic one-liner. Added a mock-`docker` entrypoint
+  test.
+
 ## v0.117.0 — 2026-10-15
 
 ### Fixed
