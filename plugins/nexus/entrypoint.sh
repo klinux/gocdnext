@@ -36,34 +36,42 @@ case "${PLUGIN_ACTION}" in
         ;;
 esac
 
-# resolve_latest hits Nexus's asset search endpoint, sorted
-# newest-first, and returns the downloadUrl of the first result
-# matching the Maven coordinates. Nexus's "sort=version" uses
-# its own comparator that handles semver + snapshot suffixes
-# correctly — more reliable than shelling out a semver sort.
+# resolve_latest finds the newest version from the repository's
+# maven-metadata.xml under /repository/ — the SAME endpoint a plain
+# Maven/GoCD fetch uses — and returns the direct /repository/ download URL
+# for it.
+#
+# Why not the /service/rest search API: that endpoint needs the `nx-search`
+# privilege, which a Maven-scoped CI/deploy user (repo-read only) typically
+# does NOT have — so it 401s even when the very same credentials download
+# fine from /repository/. maven-metadata.xml needs only repo-read, so LATEST
+# now works with the same role that already pulls pinned versions.
+#
+# <release> is the newest non-snapshot release; fall back to <latest> (which
+# may include a snapshot) and then to the last-listed <version> (metadata
+# lists versions oldest→newest). SNAPSHOT builds would need the per-version
+# metadata to resolve the timestamped filename — out of scope here, same as
+# the old search path in practice; pin an explicit version for those.
 resolve_latest() {
-    local query
-    query="repository=$(urlencode "${repo}")"
-    query="${query}&group=$(urlencode "${group}")"
-    query="${query}&name=$(urlencode "${artifact}")"
-    query="${query}&maven.extension=$(urlencode "${ext}")"
-    if [ -n "${classifier}" ]; then
-        query="${query}&maven.classifier=$(urlencode "${classifier}")"
-    fi
-    query="${query}&sort=version&direction=desc"
+    local group_path="${group//.//}"
+    local meta_url="${base}/repository/${repo}/${group_path}/${artifact}/maven-metadata.xml"
+    local meta
+    meta=$(curl -fSsL "${auth_args[@]}" "${meta_url}")
 
-    # /search/assets returns one row per matching asset, newest
-    # first; pick .items[0].downloadUrl.
-    local url="${base}/service/rest/v1/search/assets?${query}"
-    local body
-    body=$(curl -fSsL "${auth_args[@]}" "${url}")
-    local download_url
-    download_url=$(printf '%s' "${body}" | jq -r '.items[0].downloadUrl // empty')
-    if [ -z "${download_url}" ]; then
-        echo "gocdnext/nexus: no asset matched ${group}:${artifact}:${ext}${classifier:+:${classifier}}" >&2
+    local version
+    version=$(printf '%s' "${meta}" | grep -oE '<release>[^<]+</release>' | head -1 | sed -E 's/<[^>]+>//g')
+    if [ -z "${version}" ]; then
+        version=$(printf '%s' "${meta}" | grep -oE '<latest>[^<]+</latest>' | head -1 | sed -E 's/<[^>]+>//g')
+    fi
+    if [ -z "${version}" ]; then
+        version=$(printf '%s' "${meta}" | grep -oE '<version>[^<]+</version>' | tail -1 | sed -E 's/<[^>]+>//g')
+    fi
+    if [ -z "${version}" ]; then
+        echo "gocdnext/nexus: could not resolve LATEST for ${group}:${artifact} from ${meta_url}" >&2
         exit 2
     fi
-    printf '%s' "${download_url}"
+
+    printf '%s/repository/%s/%s' "${base}" "${repo}" "$(maven_path "${version}")"
 }
 
 # maven_path builds the repository-relative path for a specific
@@ -78,12 +86,6 @@ maven_path() {
     fi
     fname="${fname}.${ext}"
     printf '%s/%s/%s/%s' "${group_path}" "${artifact}" "${version}" "${fname}"
-}
-
-urlencode() {
-    # jq's @uri covers the standard percent-encoding set. Avoids
-    # a perl dep for a one-liner.
-    jq -rn --arg v "$1" '$v|@uri'
 }
 
 if [ "${PLUGIN_ACTION}" = "download" ]; then
