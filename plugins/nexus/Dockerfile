@@ -4,10 +4,12 @@
 # AND pull a shared library version in the same family of jobs.
 #
 # Philosophy: cover the 90% Maven2 layout path (group/artifact/
-# version/extension) with the Nexus REST API, lean on curl +
-# jq for the rest. Operators with a raw repository or a custom
-# layout drop down to `script:` + curl — not the job of this
-# plugin to re-implement the full Nexus search surface.
+# version/extension) entirely over the /repository/ endpoint with
+# curl — upload is a PUT, download is a GET, and LATEST reads the
+# repository's maven-metadata.xml. No /service/rest calls, so a
+# plain repo read/write role is enough (no nx-search privilege).
+# Operators with a raw repository or a custom layout drop down to
+# `script:` + curl.
 #
 # Contract (PLUGIN_* env, mapped from `with:`):
 #   PLUGIN_ACTION       (required)  "upload" | "download"
@@ -31,7 +33,8 @@
 #   # Download-only:
 #   PLUGIN_VERSION      (required when action=download)  exact
 #                       version OR "LATEST" to resolve newest
-#                       via the REST search endpoint.
+#                       from maven-metadata.xml under /repository/
+#                       (repo-read only; no nx-search privilege).
 #   PLUGIN_DEST         (optional)  destination dir/path inside
 #                       workspace. Default "." — the resolved
 #                       file lands alongside the script's cwd.
@@ -46,7 +49,7 @@
 #                       same knob.
 FROM alpine:3.20
 
-RUN apk add --no-cache bash ca-certificates curl jq
+RUN apk add --no-cache bash ca-certificates curl
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-nexus
 RUN chmod +x /usr/local/bin/gocdnext-nexus
