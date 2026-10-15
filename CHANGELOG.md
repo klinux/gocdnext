@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.118.0 — 2026-10-15
+
 ### Fixed
 
 - **`plugin-docker` waits for the Docker daemon before building.** With
