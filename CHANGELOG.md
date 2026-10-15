@@ -8,6 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`plugin-nexus` resolves `LATEST` via `maven-metadata.xml`, not the search
+  API.** `version: LATEST` previously hit Nexus's
+  `/service/rest/v1/search/assets` endpoint, which requires the `nx-search`
+  privilege. A Maven-scoped CI/deploy user with only repository read (the
+  common case) gets `401` there — even though the same credentials download
+  pinned versions fine from `/repository/`. `LATEST` now reads the repository's
+  `maven-metadata.xml` under `/repository/` (prefers `<release>`, falls back to
+  `<latest>` then the newest listed `<version>`) and downloads directly, so the
+  whole plugin uses only `/repository/` and a plain repo read/write role is
+  enough. Dropped the now-unused `jq` image dependency; added a mock-`curl`
+  entrypoint test.
+
 ## v0.116.0 — 2026-10-09
 
 ### Added

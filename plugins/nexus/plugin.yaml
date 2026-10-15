@@ -4,10 +4,12 @@ description: >
   Upload to + download from a Sonatype Nexus Maven2 repository.
   One plugin, `action: upload | download`, so a family of jobs
   can both publish its own artefacts AND pull a shared-library
-  version into the workspace. `version: LATEST` resolves via
-  Nexus's REST search endpoint — newest-first, no client-side
-  semver sort. Non-Maven repositories aren't covered; drop to
-  `script:` + curl for those.
+  version into the workspace. `version: LATEST` resolves the
+  newest version from the repository's maven-metadata.xml under
+  /repository/ (same endpoint a Maven fetch uses, needs only
+  repo-read — NOT the /service/rest search API, which requires
+  the nx-search privilege). Non-Maven repositories aren't
+  covered; drop to `script:` + curl for those.
 
 inputs:
   action:
@@ -41,7 +43,7 @@ inputs:
     required: false
     description: >
       action=download: exact version OR the literal "LATEST" to
-      pull the newest matching asset via REST search.
+      resolve the newest version from maven-metadata.xml.
   dest:
     required: false
     default: "."
