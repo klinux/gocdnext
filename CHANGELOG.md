@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.117.0 — 2026-10-15
+
 ### Fixed
 
 - **`plugin-nexus` resolves `LATEST` via `maven-metadata.xml`, not the search
