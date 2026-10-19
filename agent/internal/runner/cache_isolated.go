@@ -205,11 +205,46 @@ func (r *Runner) resolveAndFetchTemplatedCaches(
 			r.emitLog(a, seq, "stderr", fmt.Sprintf(
 				"cache %q: fetch failed (%v) — task runs without cache",
 				entry.GetKey(), err))
+			// A truncated stream leaves tar's PARTIAL output in workDir (tar
+			// extracts incrementally, then dies on the short read). Left in
+			// place it poisons the build — a half-unpacked Gradle dist fails
+			// with UnknownModuleException. Wipe the declared paths so this is a
+			// TRUE miss and the build repopulates from scratch.
+			if cerr := wipePodCachePaths(ctx, exec, podName, workDir, entry.GetPaths()); cerr != nil {
+				r.emitLog(a, seq, "stderr", fmt.Sprintf(
+					"cache %q: WARNING could not remove partial restore (%v); "+
+						"build may use corrupt cache content", entry.GetKey(), cerr))
+			}
 			continue
 		}
 		r.emitLog(a, seq, "stdout", fmt.Sprintf(
 			"cache %q: hit, content restored to workspace", entry.GetKey()))
 	}
+}
+
+// wipePodCachePaths removes a cache entry's declared paths under workDir inside
+// the cache-fetch container, as argv (no shell → operator-declared paths can't
+// inject). It is the cleanup after a FAILED restore: a truncated `tar -xf`
+// leaves a partial tree (e.g. an incomplete Gradle dist), and leaving it makes
+// the build use corrupt cache content instead of rebuilding clean. No-op when
+// there are no paths to remove.
+func wipePodCachePaths(ctx context.Context, exec engine.PodExecutor, podName, workDir string, paths []string) error {
+	argv := []string{"rm", "-rf", "--"}
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		argv = append(argv, path.Join(workDir, p))
+	}
+	if len(argv) == 3 { // nothing to remove
+		return nil
+	}
+	var stderr bytes.Buffer
+	if err := exec.Exec(ctx, podName, engine.CacheFetchInitContainerName,
+		argv, nil, io.Discard, &stderr); err != nil {
+		return fmt.Errorf("%w (stderr=%q)", err, stderr.String())
+	}
+	return nil
 }
 
 // streamCacheIntoPod HTTP-GETs the cache tarball on the agent host

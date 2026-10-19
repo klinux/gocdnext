@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -118,6 +119,12 @@ func (r *Runner) fetchCaches(
 		switch {
 		case err != nil:
 			r.emitLog(a, seq, "stderr", fmt.Sprintf("cache %q: fetch failed (%v) — continuing without", e.GetKey(), err))
+			// A truncated download+untar leaves tar's PARTIAL output in workDir
+			// (it extracts incrementally, then dies on the short read); left in
+			// place it poisons the build — a half-unpacked Gradle dist fails
+			// with UnknownModuleException. Wipe the declared paths so this is a
+			// TRUE miss and the build repopulates from scratch.
+			r.wipePartialCache(workDir, e, a, seq)
 		case !st.Found:
 			r.emitLog(a, seq, "stdout", fmt.Sprintf("cache %q: miss, no pre-populated dir", e.GetKey()))
 		default:
@@ -125,6 +132,24 @@ func (r *Runner) fetchCaches(
 			// cache tax (fetch+untar, on the critical path to job start) is visible.
 			r.emitLog(a, seq, "stdout", fmt.Sprintf("cache %q: restored %d path(s) (%s in %s, %s)",
 				e.GetKey(), len(e.GetPaths()), humanizeBytes(st.Bytes), st.Restore.Round(time.Millisecond), mbps(st.Bytes, st.Restore)))
+		}
+	}
+}
+
+// wipePartialCache removes a cache entry's declared paths under workDir after a
+// FAILED restore, so a truncated untar can't leave corrupt content for the
+// build to pick up (the shared-mode counterpart of wipePodCachePaths). The
+// declared paths are build-output dirs the cache owns, so removing them is
+// safe — the build recreates them. A best-effort warn on removal error.
+func (r *Runner) wipePartialCache(workDir string, e *gocdnextv1.CacheEntry, a *gocdnextv1.JobAssignment, seq *atomic.Int64) {
+	for _, p := range e.GetPaths() {
+		if p == "" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(workDir, p)); err != nil {
+			r.emitLog(a, seq, "stderr", fmt.Sprintf(
+				"cache %q: WARNING could not remove partial %q after failed restore (%v); "+
+					"build may use corrupt cache content", e.GetKey(), p, err))
 		}
 	}
 }

@@ -8,6 +8,18 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A truncated cache restore no longer breaks the job.** When a cache blob's
+  stream is cut mid-transfer (`zstd: premature end` / `tar: short read`), `tar`
+  has already extracted a PARTIAL tree into the workspace. The runner logged
+  "task runs without cache" and carried on — but the partial content (e.g. a
+  half-unpacked Gradle distribution) poisoned the build, which then failed with
+  errors like `UnknownModuleException: Cannot find module 'gradle-daemon-protocol'`.
+  Now a failed restore wipes the entry's declared paths so it is a TRUE miss and
+  the build repopulates from scratch — in both shared mode (`os.RemoveAll`) and
+  isolated mode (a shell-free `rm -rf --` in the cache-fetch container).
+
 ## v0.118.0 — 2026-10-15
 
 ### Fixed
