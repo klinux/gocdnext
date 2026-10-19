@@ -39,7 +39,11 @@
 # env — pipe them via the job's `secrets:` list + env map, same
 # as gocdnext/aws-cli. IRSA / Workload Identity Federation both
 # work automatically when the SDK finds their env markers.
-FROM public.ecr.aws/aws-cli/aws-cli:2.22.8
+# Mirrored from public.ecr.aws/aws-cli/aws-cli:2.22.8 into GHCR: the ECR Public
+# anonymous pull hits a per-IP "toomanyrequests: Data limit exceeded" in CI.
+# GHCR (same registry the plugins push to, already authenticated in CI) has no
+# such anonymous cap. Re-mirror on a base bump: see docs/plugin-base-mirrors.md.
+FROM ghcr.io/klinux/gocdnext-base-aws-cli:2.22.8
 
 # The upstream image ENTRYPOINT points at /usr/local/bin/aws.
 # We replace it with our wrapper so a single container handles

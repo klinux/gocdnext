@@ -23,7 +23,12 @@
 #
 # AWS_* secrets go via the standard env vars — the runner already
 # masks them in logs from the secrets: declaration.
-FROM public.ecr.aws/aws-cli/aws-cli:2.22.8
+# Mirrored from public.ecr.aws/aws-cli/aws-cli:2.22.8 into GHCR: the ECR Public
+# anonymous pull hits a per-IP "toomanyrequests: Data limit exceeded" in CI (the
+# Plugins matrix pulls it concurrently), which flaked this image's release build.
+# GHCR (same registry the plugins push to, already authenticated in CI) has no
+# such anonymous cap. Re-mirror on a base bump: see docs/plugin-base-mirrors.md.
+FROM ghcr.io/klinux/gocdnext-base-aws-cli:2.22.8
 
 # upstream awscli image ENTRYPOINT = /usr/local/bin/aws. Override
 # so our wrapper owns the lifecycle (working-dir + region export).

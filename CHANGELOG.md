@@ -8,6 +8,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`aws-cli` / `s3` plugin image builds no longer flake on the ECR Public pull
+  limit.** Both based on `public.ecr.aws/aws-cli/aws-cli:2.22.8`, whose
+  **anonymous** pull hits a per-IP `toomanyrequests: Data limit exceeded` when
+  the Plugins CI matrix pulls it concurrently — the `aws-cli` release build
+  failed on it repeatedly. The base is now mirrored into GHCR
+  (`ghcr.io/klinux/gocdnext-base-aws-cli:2.22.8`, same registry the plugins
+  push to and already authenticated in CI, no anonymous cap); re-mirror steps
+  are in `docs/plugin-base-mirrors.md`.
+
 ## v0.119.0 — 2026-10-20
 
 ### Fixed
