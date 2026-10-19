@@ -2,7 +2,12 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -88,5 +93,44 @@ func TestWipePartialCache(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("unrelated src/ must survive the wipe, got %v", err)
+	}
+}
+
+// On a failed restore, the sha already computed inline over the streamed body
+// discriminates a truncated TRANSFER (received sha != stored → transient,
+// retriable) from a corrupt STORED blob (full bytes, sha matches, but the
+// decoder still fails → not retriable). The fake exec fails the "untar" so the
+// discrimination path runs; the drain re-reads the body through the hasher.
+func TestStreamCacheIntoPod_DiscriminatesTransferVsStored(t *testing.T) {
+	// Leading gzip magic so podUntarCmd picks a codec and reaches the exec;
+	// the body content is irrelevant because the fake exec always fails.
+	body := append([]byte{0x1f, 0x8b}, []byte("not-a-real-archive")...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	sum := sha256.Sum256(body)
+	fullSha := hex.EncodeToString(sum[:])
+
+	ex := &capturingExec{err: errors.New("untar boom")}
+
+	// Full body arrives and its sha matches the stored sha → STORED-corrupt.
+	err := streamCacheIntoPod(context.Background(), ex, "pod", "/ws", srv.URL, fullSha)
+	var cre *cacheRestoreError
+	if !errors.As(err, &cre) {
+		t.Fatalf("want *cacheRestoreError, got %T: %v", err, err)
+	}
+	if cre.transientTransfer {
+		t.Errorf("full body + matching sha must classify as STORED-corrupt (transient=false)")
+	}
+
+	// Stored sha differs from what was received → TRANSFER truncated.
+	err = streamCacheIntoPod(context.Background(), ex, "pod", "/ws", srv.URL,
+		"00000000000000000000000000000000000000000000000000000000deadbeef")
+	if !errors.As(err, &cre) {
+		t.Fatalf("want *cacheRestoreError, got %T: %v", err, err)
+	}
+	if !cre.transientTransfer {
+		t.Errorf("sha mismatch must classify as TRANSFER-truncated (transient=true)")
 	}
 }

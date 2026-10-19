@@ -19,6 +19,12 @@ convention that minor bumps may carry breaking changes until 1.0).
   Now a failed restore wipes the entry's declared paths so it is a TRUE miss and
   the build repopulates from scratch — in both shared mode (`os.RemoveAll`) and
   isolated mode (a shell-free `rm -rf --` in the cache-fetch container).
+  The isolated path also discriminates the failure using the sha already
+  computed inline over the stream (zero happy-path cost): a received sha that
+  differs from the stored one means the TRANSFER truncated (transient) and is
+  retried once — a re-fetch usually beats a cold rebuild; a matching sha means
+  the STORED blob itself is corrupt, which is not retried (the post-job store
+  overwrites it). Each case is logged distinctly so a recurrence is diagnosable.
 
 ## v0.118.0 — 2026-10-15
 

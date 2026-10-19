@@ -25,6 +25,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -201,25 +202,75 @@ func (r *Runner) resolveAndFetchTemplatedCaches(
 		// empty, hence cache HIT + full re-download. Same shape
 		// for any node_modules / pnpm-store / cargo cache once
 		// target_dir is in play.
-		if err := streamCacheIntoPod(ctx, exec, podName, workDir, url, sha); err != nil {
-			r.emitLog(a, seq, "stderr", fmt.Sprintf(
-				"cache %q: fetch failed (%v) — task runs without cache",
-				entry.GetKey(), err))
-			// A truncated stream leaves tar's PARTIAL output in workDir (tar
-			// extracts incrementally, then dies on the short read). Left in
-			// place it poisons the build — a half-unpacked Gradle dist fails
-			// with UnknownModuleException. Wipe the declared paths so this is a
-			// TRUE miss and the build repopulates from scratch.
-			if cerr := wipePodCachePaths(ctx, exec, podName, workDir, entry.GetPaths()); cerr != nil {
-				r.emitLog(a, seq, "stderr", fmt.Sprintf(
-					"cache %q: WARNING could not remove partial restore (%v); "+
-						"build may use corrupt cache content", entry.GetKey(), cerr))
-			}
+		// Restore with a single retry on a truncated transfer; a failed attempt
+		// wipes the partial tree so the retry/rebuild starts clean (a truncated
+		// untar leaves a half-unpacked tree — e.g. an incomplete Gradle dist —
+		// that would otherwise poison the build). The helper logs the reason.
+		if err := r.restoreCacheIntoPod(ctx, exec, podName, workDir, url, sha, entry, a, seq); err != nil {
 			continue
 		}
 		r.emitLog(a, seq, "stdout", fmt.Sprintf(
 			"cache %q: hit, content restored to workspace", entry.GetKey()))
 	}
+}
+
+// cacheRestoreError wraps a failed in-pod cache restore, flagging whether the
+// failure was a truncated TRANSFER (transientTransfer=true → a re-fetch may
+// succeed) versus a corrupt STORED blob (false → the full bytes arrived with a
+// matching sha but won't decompress; a re-fetch would return the same poison).
+type cacheRestoreError struct {
+	err               error
+	transientTransfer bool
+}
+
+func (e *cacheRestoreError) Error() string { return e.err.Error() }
+func (e *cacheRestoreError) Unwrap() error { return e.err }
+
+// restoreCacheIntoPod fetches + untars one entry with a single retry on a
+// truncated transfer. Each failed attempt wipes the partial tree first so the
+// retry (or the subsequent cold rebuild) starts clean. A corrupt STORED blob is
+// not retried — the job rebuilds and the post-job store overwrites the bad blob
+// (so it self-heals without an invalidate RPC). The sha used to classify is
+// already computed inline during the stream (TeeReader), so the happy path pays
+// nothing; the drain+compare runs only on the rare failure. Returns nil on a
+// successful restore; the caller treats a non-nil return as a miss.
+func (r *Runner) restoreCacheIntoPod(
+	ctx context.Context, exec engine.PodExecutor, podName, workDir, url, sha string,
+	entry *gocdnextv1.CacheEntry, a *gocdnextv1.JobAssignment, seq *atomic.Int64,
+) error {
+	const maxAttempts = 2
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err = streamCacheIntoPod(ctx, exec, podName, workDir, url, sha); err == nil {
+			return nil
+		}
+		// Partial tree from the failed untar would poison a retry/rebuild.
+		if werr := wipePodCachePaths(ctx, exec, podName, workDir, entry.GetPaths()); werr != nil {
+			r.emitLog(a, seq, "stderr", fmt.Sprintf(
+				"cache %q: WARNING could not remove partial restore (%v); "+
+					"build may use corrupt cache content", entry.GetKey(), werr))
+		}
+		var cre *cacheRestoreError
+		transient := errors.As(err, &cre) && cre.transientTransfer
+		if transient && attempt < maxAttempts {
+			r.emitLog(a, seq, "stderr", fmt.Sprintf(
+				"cache %q: transfer truncated (%v) — retrying fetch (%d/%d)",
+				entry.GetKey(), err, attempt+1, maxAttempts))
+			continue
+		}
+		// Terminal: log WHICH kind so a recurrence is diagnosable.
+		if transient {
+			r.emitLog(a, seq, "stderr", fmt.Sprintf(
+				"cache %q: transfer still truncated after %d attempts (%v) — task runs without cache",
+				entry.GetKey(), maxAttempts, err))
+		} else {
+			r.emitLog(a, seq, "stderr", fmt.Sprintf(
+				"cache %q: STORED blob corrupt (full bytes, sha matched, decompress failed: %v) — "+
+					"task runs without cache; post-job store will overwrite it", entry.GetKey(), err))
+		}
+		return err
+	}
+	return err
 }
 
 // wipePodCachePaths removes a cache entry's declared paths under workDir inside
@@ -292,10 +343,26 @@ func streamCacheIntoPod(
 	// Exec into cache-fetch container, pipe the peeked body in as
 	// stdin to the codec-appropriate untar command.
 	var stderr bytes.Buffer
-	if err := exec.Exec(ctx, podName, engine.CacheFetchInitContainerName,
+	if execErr := exec.Exec(ctx, podName, engine.CacheFetchInitContainerName,
 		cmd, br, io.Discard, &stderr,
-	); err != nil {
-		return fmt.Errorf("exec untar in cache-fetch: %w (stderr=%q)", err, stderr.String())
+	); execErr != nil {
+		// Finish reading the body THROUGH the hasher: the exec stops consuming
+		// `br` the instant the in-pod decoder dies, so without this the hash
+		// covers only the prefix it piped. Draining is cheap (no decompression,
+		// just the remaining network read) and only on this rare failure path.
+		// The completed hash discriminates the failure:
+		//   - sha != stored → the TRANSFER truncated (signed-URL GET or exec
+		//     stdin cut mid-stream) — transient, a re-fetch may succeed;
+		//   - sha == stored → the full blob arrived intact but is itself a
+		//     corrupt zstd (bad STORED blob) — a re-fetch is pointless.
+		_, _ = io.Copy(io.Discard, br)
+		transientTransfer := expectedSha != "" &&
+			hex.EncodeToString(hasher.Sum(nil)) != expectedSha
+		return &cacheRestoreError{
+			transientTransfer: transientTransfer,
+			err: fmt.Errorf("exec untar in cache-fetch: %w (stderr=%q)",
+				execErr, stderr.String()),
+		}
 	}
 
 	if expectedSha != "" {
