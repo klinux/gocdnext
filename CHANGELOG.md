@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.119.0 — 2026-10-20
+
 ### Fixed
 
 - **A truncated cache restore no longer breaks the job.** When a cache blob's
