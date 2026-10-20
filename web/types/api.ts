@@ -408,6 +408,9 @@ export type SecretBackendProbeResult = {
 
 export type CacheSummary = {
   id: string;
+  // Ref lane: "@" is the shared default-branch cache, "<cause>/<ref>" an
+  // isolated branch / PR / merge_group / tag lane (PR-safe scoping).
+  scope: string;
   key: string;
   size_bytes: number;
   status: "pending" | "ready" | string;

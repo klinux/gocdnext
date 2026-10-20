@@ -74,11 +74,38 @@ store, Go mod cache, Maven .m2) because the contents are
 content-addressable and multi-version-safe; cohabitation is the
 whole design.
 
-When you genuinely need per-branch isolation, use a different
-constant per pipeline (`ci-server-cache`, `ci-web-cache`) or use
-`{{ hash }}` against a file that changes per branch (rare). For
-the common "invalidate on lockfile change" case, hash-keyed is
-the right tool.
+You rarely need per-branch *keys*, because writes are already
+isolated per ref — see below.
+
+## Branch isolation (PR-safe scoping)
+
+Even when every branch resolves to the **same key**, their cache
+writes never clobber each other. The server scopes each write to a
+**ref lane**, GitHub-Actions style — automatically, with nothing to
+configure in the pipeline:
+
+- A push / integration to the project **default branch** writes the
+  shared lane (`@`).
+- Every other ref — feature-branch push, pull request, merge queue,
+  tag — writes its **own** isolated lane and **reads** its own lane
+  first, then falls back to the shared lane as a base.
+
+So a pull request restores the default branch's cache (warm start),
+then saves its own additions to a private lane. A second PR running
+concurrently can't overwrite the first's cache or the default
+branch's — the clobbering that produced "cache hit but still a
+dependency miss" under a single shared blob is gone.
+
+Why this matters for **additive** caches (Gradle's build cache, in
+particular): the blob is replaced whole on each write, but task
+outputs accumulate. Before scoping, two PRs restoring the same key,
+each adding their own entries, raced — the last writer's blob
+overwrote the others, so the next run missed entries that *were*
+computed. Per-lane writes remove the race: each ref owns its blob.
+
+This is a server policy; pipelines don't opt in and there's no YAML
+field. Operators see the lane per row under *Project → Caches*
+("default" = the shared lane).
 
 ## What to cache (by toolchain)
 
@@ -190,11 +217,21 @@ for the runner-profile pattern.
 Caches age out. The retention sweeper runs every tick and:
 
 1. Drops entries whose `last_accessed_at` is past the configured
-   TTL (default 30 days, `caches.ttlDays` in Helm).
+   TTL. The **shared** (default-branch) lane uses the long horizon
+   (default 30 days, `caches.ttlDays` in Helm); the **isolated**
+   per-ref lanes use a shorter one (default 7 days,
+   `caches.scopedTtlDays`) so a merged or abandoned branch's cache
+   surrenders disk fast instead of multiplying with branch churn. A
+   PR reading the shared lane bumps *its* freshness, so the default
+   branch's cache never ages out from under active PRs.
 2. Drops oldest entries when a project exceeds its quota
    (`caches.projectQuotaBytes`).
 3. Drops oldest entries globally when the total exceeds the
    global quota (`caches.globalQuotaBytes`).
+4. Reclaims rows stuck in `pending` past a grace window (an agent
+   that requested an upload slot and died before finalising it).
+   Per-ref lanes make these accumulate with branch churn, so the
+   sweep bounds the leak.
 
 What "oldest" means: LRU on `last_accessed_at`. Caches that get
 hit on every push survive forever; abandoned project caches age
@@ -242,11 +279,17 @@ quota pass.
   big multi-module projects. Set `caches.projectQuotaBytes` in
   Helm to bound; LRU eviction trims when needed.
 - **Cache corruption**: a flaky agent can write a partial tar.
-  The cache restore pass treats CRC failures as "miss" and
-  proceeds to a cold install. The corrupt entry stays around
-  until quota / TTL evicts it. Symptom: random "missing
-  dependency" errors that disappear on the next run — clear
-  the cache via the dashboard if you suspect this.
+  The cache restore pass treats a failed restore as a miss, wipes
+  the partially-extracted paths, and proceeds to a cold install.
+  The corrupt entry stays around until quota / TTL evicts it.
+  Symptom: random "missing dependency" errors that disappear on the
+  next run — clear the cache via the dashboard if you suspect this.
+- **"Cache hit but still a dependency miss" across concurrent PRs**:
+  was caused by branches clobbering one shared blob. Fixed by
+  [PR-safe scoping](#branch-isolation-pr-safe-scoping) — each ref
+  writes its own lane now. If you still see it, confirm the task's
+  inputs aren't PR-specific (e.g. a per-build `-Drevision` baked into
+  a compile task's hash poisons the build-cache key itself).
 - **Shell-style vars in `key:`**: `${CI_BRANCH}` (and friends)
   stay LITERAL in cache keys — they don't expand. Use `{{ hash }}`
   for content-keyed caches; use constant strings otherwise.

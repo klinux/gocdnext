@@ -11,6 +11,24 @@ global:
 server:
   enabled: true
   replicas: 1
+  # Deployment update strategy. Defaults to Recreate (no two-version
+  # overlap) because migration 00093 (PR-safe cache scoping) swaps a UNIQUE
+  # constraint and is NOT online-safe against the previous binary: during a
+  # RollingUpdate overlap the old pod runs against the new schema and its
+  # cache GET (which ignores `scope`) can hand a ref-scoped blob to a job
+  # that asked for the shared cache — cross-ref cache poisoning. The cache
+  # RPC is fail-open, but a wrong-yet-valid blob is not an error, so it can
+  # fail tasks or change build outputs; fail-open does not catch it.
+  #
+  # Recreate trades a brief restart gap for correctness. Do NOT switch back
+  # to RollingUpdate just because you've upgraded past 00093: an operator
+  # whose smallest supported upgrade still crosses 00093 would hit the same
+  # window. It's only safe to revert once your minimum supported version is
+  # already past 00093 (or via a future expand/contract). An operator who
+  # has crossed the migration and accepts that can set, explicitly:
+  #   strategy: { type: RollingUpdate }
+  strategy:
+    type: Recreate
   image:
     repository: gocdnext-server
     tag: ""           # defaults to Chart.appVersion
@@ -476,8 +494,13 @@ artifacts:
 # quota, then global quota. 0 disables a layer.
 caches:
   # Days of inactivity before a `ready` cache row is evicted. 0 =
-  # disabled (TTL pass off; quotas alone govern eviction).
+  # disabled (TTL pass off; quotas alone govern eviction). Governs the
+  # shared ("@") lane — the project default branch's cache.
   ttlDays: 30
+  # Days of inactivity before an isolated per-ref lane (feature branch,
+  # PR, merge queue, tag) is evicted. Shorter than ttlDays so abandoned
+  # branch caches surrender disk fast; 0 falls back to ttlDays.
+  scopedTtlDays: 7
   # Per-project soft cap, bytes. 0 disables — TTL-only eviction.
   projectQuotaBytes: "0"
   # Global hard cap, bytes. 0 disables. Applied LRU across every

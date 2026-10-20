@@ -8,6 +8,10 @@ metadata:
     app.kubernetes.io/component: server
 spec:
   replicas: {{ .Values.server.replicas }}
+  {{- with .Values.server.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels: {{- include "gocdnext.server.selectorLabels" . | nindent 6 }}
   template:
@@ -93,6 +97,8 @@ spec:
               value: {{ .Values.artifacts.writeOnce | quote }}
             - name: GOCDNEXT_CACHE_TTL_DAYS
               value: {{ .Values.caches.ttlDays | quote }}
+            - name: GOCDNEXT_CACHE_SCOPED_TTL_DAYS
+              value: {{ .Values.caches.scopedTtlDays | quote }}
             - name: GOCDNEXT_CACHE_PROJECT_QUOTA_BYTES
               value: {{ .Values.caches.projectQuotaBytes | quote }}
             - name: GOCDNEXT_CACHE_GLOBAL_QUOTA_BYTES
