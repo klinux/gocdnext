@@ -60,6 +60,27 @@ func (s *Store) GetProjectCacheEnabledBySlug(ctx context.Context, slug string) (
 	return enabled, nil
 }
 
+// ProjectCacheAuthBySlug resolves a slug to its project id and whether the
+// embedded build cache is currently enabled (a token hash is set). The build
+// cache endpoint uses it to authorize minted (per-run) tokens: the slug must
+// map to the token's project AND the cache must still be enabled, so clearing
+// the token (disable) immediately revokes outstanding minted tokens even though
+// they're stateless. ok=false for an unknown slug.
+func (s *Store) ProjectCacheAuthBySlug(ctx context.Context, slug string) (uuid.UUID, bool, error) {
+	var id uuid.UUID
+	var enabled bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, cache_token_hash IS NOT NULL FROM projects WHERE slug = $1`, slug).
+		Scan(&id, &enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("store: project cache auth by slug: %w", err)
+	}
+	return id, enabled, nil
+}
+
 // VerifyProjectCacheToken resolves (slug, tokenHash) to the owning project id.
 // ok=false covers every indistinguishable auth-failure case: unknown project,
 // disabled cache (NULL hash never matches a hex digest), or wrong token. The

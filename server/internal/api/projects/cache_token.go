@@ -86,7 +86,7 @@ func (h *Handler) RotateCacheToken(w http.ResponseWriter, r *http.Request) {
 		Enabled:       true,
 		Token:         token,
 		CacheURL:      cacheURL,
-		GradleSnippet: gradleSnippet(cacheURL, token),
+		GradleSnippet: gradleSnippet(cacheURL),
 	})
 }
 
@@ -124,17 +124,20 @@ func (h *Handler) cacheURL(slug string) string {
 	return h.publicBase + path
 }
 
-// gradleSnippet is a copy-pasteable settings.gradle.kts buildCache block. The
-// token goes in credentials.password; teams usually read it from an env/secret
-// (e.g. System.getenv("GOCDNEXT_CACHE_TOKEN")) rather than committing it.
-func gradleSnippet(cacheURL, token string) string {
+// gradleSnippet is a copy-pasteable settings.gradle.kts buildCache block for
+// MANUAL (non-plugin) builds. It reads the token from an env var rather than
+// embedding it — the plaintext token is returned once in the `token` field for
+// the operator to store as a CI secret (GOCDNEXT_CACHE_TOKEN), never committed.
+// Uses the Kotlin DSL property name `isPush` (Groovy's is `push`).
+func gradleSnippet(cacheURL string) string {
 	return "buildCache {\n" +
 		"    remote<HttpBuildCache> {\n" +
 		"        url = uri(\"" + cacheURL + "\")\n" +
-		"        push = true\n" +
+		"        isPush = true\n" +
 		"        credentials {\n" +
 		"            username = \"gocdnext\"\n" +
-		"            password = \"" + token + "\"\n" +
+		"            // Set GOCDNEXT_CACHE_TOKEN to the token shown above (store it as a CI secret).\n" +
+		"            password = System.getenv(\"GOCDNEXT_CACHE_TOKEN\") ?: \"\"\n" +
 		"        }\n" +
 		"    }\n" +
 		"}"

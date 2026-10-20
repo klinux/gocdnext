@@ -268,7 +268,7 @@ this snippet pre-filled):
 buildCache {
     remote<HttpBuildCache> {
         url = uri("https://<your-gocdnext>/api/v1/buildcache/<project-slug>/")
-        push = true
+        isPush = true  // Kotlin DSL uses `isPush`; Groovy uses `push`
         credentials {
             username = "gocdnext"
             password = System.getenv("GOCDNEXT_CACHE_TOKEN") // the generated token
@@ -283,7 +283,18 @@ cache handles the task-output build cache.
 
 The token authenticates the build (HTTP Basic) and scopes it to one
 project — a token for project A can't read or write project B's
-entries. Rotating or disabling the token is immediate.
+entries. Rotating or disabling the token is immediate (a disable
+revokes outstanding auto-wired tokens too).
+
+**Only default-branch builds write; PRs and feature branches are
+read-only.** Auto-wired PR/branch runs get a read-only token (`push`
+off), so an untrusted run can read the default branch's entries but
+can't poison the shared cache or exhaust its storage — the same
+trust model as [PR-safe scoping](#branch-isolation-pr-safe-scoping).
+A single entry PUT is capped (`GOCDNEXT_BUILD_CACHE_MAX_ENTRY_MB`,
+default 512). Entry bytes are proxied through the server (Gradle's
+cache client doesn't follow redirects); the handler is stateless, so
+scale reads with server replicas.
 
 ### Eviction
 

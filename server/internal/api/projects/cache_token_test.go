@@ -63,9 +63,13 @@ func TestProjectCacheTokenRotateReturnedOnceAndStoredHashed(t *testing.T) {
 		t.Errorf("cache_url = %q", resp.CacheURL)
 	}
 	if !strings.Contains(resp.GradleSnippet, resp.CacheURL) ||
-		!strings.Contains(resp.GradleSnippet, resp.Token) ||
-		!strings.Contains(resp.GradleSnippet, "HttpBuildCache") {
-		t.Errorf("snippet missing url/token/block: %q", resp.GradleSnippet)
+		!strings.Contains(resp.GradleSnippet, "HttpBuildCache") ||
+		!strings.Contains(resp.GradleSnippet, "isPush") {
+		t.Errorf("snippet missing url/block/isPush: %q", resp.GradleSnippet)
+	}
+	// The snippet must NOT embed the plaintext token (it reads from env).
+	if strings.Contains(resp.GradleSnippet, resp.Token) {
+		t.Errorf("snippet embeds the plaintext token: %q", resp.GradleSnippet)
 	}
 
 	// Only the HASH is stored: the returned plaintext verifies, a wrong one does not.

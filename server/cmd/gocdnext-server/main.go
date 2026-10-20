@@ -731,7 +731,7 @@ func main() {
 	// entries; reads redirect to a signed object-store URL, writes proxy
 	// through. Per-project token auth (projects.cache_token_hash).
 	if artifactStore != nil {
-		buildcacheapi.New(st, artifactStore, logger, 30*time.Minute, cfg.ArtifactsMaxBodyMB*1024*1024, buildCacheSignKey).Mount(r)
+		buildcacheapi.New(st, artifactStore, logger, cfg.BuildCacheMaxEntryMB*1024*1024, buildCacheSignKey).Mount(r)
 	}
 
 	// Anonymous status badges. Access is public-by-design for README/wiki/CDN

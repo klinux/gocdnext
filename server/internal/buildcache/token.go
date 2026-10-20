@@ -24,20 +24,27 @@ import (
 // to tell a minted token from a static project token (43-char base64url).
 const (
 	mintedPrefix  = "bc1."
-	payloadLen    = 16 + 8 // projectID + expUnix
-	mintSigLen    = 32     // full HMAC-SHA256
+	payloadLen    = 16 + 8 + 1 // projectID + expUnix + flags
+	mintSigLen    = 32         // full HMAC-SHA256
 	mintedTTLSkew = 30 * time.Second
+	flagWrite     = 0x01 // may PUT (push) entries, not only GET
 )
 
-// MintToken produces a per-run token for projectID valid for ttl. key is the
-// server build-cache signing secret; an empty key disables minting (returns "").
-func MintToken(projectID uuid.UUID, ttl time.Duration, key []byte) string {
+// MintToken produces a per-run token for projectID valid for ttl. write grants
+// PUT (push) access — mint it true only for trusted runs (e.g. the default
+// branch); PR/branch runs get a read-only token so they cannot poison or bloat
+// the shared cache. key is the server build-cache signing secret; an empty key
+// disables minting (returns "").
+func MintToken(projectID uuid.UUID, write bool, ttl time.Duration, key []byte) string {
 	if len(key) == 0 || ttl <= 0 {
 		return ""
 	}
 	var payload [payloadLen]byte
 	copy(payload[:16], projectID[:])
-	binary.BigEndian.PutUint64(payload[16:], uint64(time.Now().Add(ttl).Unix()))
+	binary.BigEndian.PutUint64(payload[16:24], uint64(time.Now().Add(ttl).Unix()))
+	if write {
+		payload[24] = flagWrite
+	}
 	sig := mintSign(key, payload[:])
 	return mintedPrefix +
 		base64.RawURLEncoding.EncodeToString(payload[:]) + "." +
@@ -45,34 +52,34 @@ func MintToken(projectID uuid.UUID, ttl time.Duration, key []byte) string {
 }
 
 // VerifyMintedToken checks a token's signature + expiry and returns the project
-// id it was minted for. ok=false for any malformed/forged/expired token.
-func VerifyMintedToken(token string, key []byte, now time.Time) (uuid.UUID, bool) {
+// id it was minted for plus whether it carries write (push) access. ok=false
+// for any malformed/forged/expired token.
+func VerifyMintedToken(token string, key []byte, now time.Time) (id uuid.UUID, write bool, ok bool) {
 	if len(key) == 0 || !strings.HasPrefix(token, mintedPrefix) {
-		return uuid.Nil, false
+		return uuid.Nil, false, false
 	}
 	parts := strings.Split(token[len(mintedPrefix):], ".")
 	if len(parts) != 2 {
-		return uuid.Nil, false
+		return uuid.Nil, false, false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil || len(payload) != payloadLen {
-		return uuid.Nil, false
+		return uuid.Nil, false, false
 	}
 	gotSig, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil || len(gotSig) != mintSigLen {
-		return uuid.Nil, false
+		return uuid.Nil, false, false
 	}
 	wantSig := mintSign(key, payload)
 	if !hmac.Equal(gotSig, wantSig) {
-		return uuid.Nil, false
+		return uuid.Nil, false, false
 	}
-	exp := int64(binary.BigEndian.Uint64(payload[16:]))
+	exp := int64(binary.BigEndian.Uint64(payload[16:24]))
 	if now.Add(-mintedTTLSkew).Unix() > exp {
-		return uuid.Nil, false
+		return uuid.Nil, false, false
 	}
-	var id uuid.UUID
 	copy(id[:], payload[:16])
-	return id, true
+	return id, payload[24]&flagWrite != 0, true
 }
 
 // LooksLikeMinted reports whether a credential is a minted token (vs a static

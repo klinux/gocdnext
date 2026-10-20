@@ -72,11 +72,14 @@ import org.gradle.caching.http.HttpBuildCache
 // settingsEvaluated. Credentials are read at runtime (never baked in).
 def gocdnextCacheUrl = System.getenv('GOCDNEXT_BUILD_CACHE_URL')
 if (gocdnextCacheUrl) {
+    // Push only when the server granted a write token (default-branch run).
+    // PR/branch runs get push=false so they pull but can't write the shared cache.
+    def gocdnextCachePush = 'true'.equalsIgnoreCase(System.getenv('GOCDNEXT_BUILD_CACHE_PUSH') ?: '')
     gradle.settingsEvaluated { settings ->
         settings.buildCache {
             remote(HttpBuildCache) {
                 url = gocdnextCacheUrl
-                push = true
+                push = gocdnextCachePush
                 credentials {
                     username = System.getenv('GOCDNEXT_BUILD_CACHE_USER') ?: 'gocdnext'
                     password = System.getenv('GOCDNEXT_BUILD_CACHE_PASSWORD')

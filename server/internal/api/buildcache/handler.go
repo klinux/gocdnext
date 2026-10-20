@@ -20,6 +20,7 @@ package buildcache
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -37,7 +38,10 @@ import (
 // auth path, and a slug → id lookup for the minted (auto-wired) auth path.
 type cacheStore interface {
 	VerifyProjectCacheToken(ctx context.Context, slug, tokenHash string) (uuid.UUID, bool, error)
-	ProjectIDBySlug(ctx context.Context, slug string) (uuid.UUID, error)
+	// ProjectCacheAuthBySlug resolves a slug to its project id and whether the
+	// build cache is currently enabled — used to authorize minted tokens AND to
+	// make a disable revoke outstanding minted tokens immediately.
+	ProjectCacheAuthBySlug(ctx context.Context, slug string) (uuid.UUID, bool, error)
 }
 
 // Handler serves the build cache protocol for a project.
@@ -45,22 +49,21 @@ type Handler struct {
 	store        cacheStore
 	blobs        artifacts.Store
 	log          *slog.Logger
-	getURLTTL    time.Duration
 	maxEntrySize int64
 	// signKey verifies minted (per-run, auto-wired) tokens. Empty disables the
 	// minted path; the static project token still works.
 	signKey []byte
 }
 
-// New builds the handler. getURLTTL bounds the signed read URLs; maxEntrySize
-// caps a single PUT body (0 = no cap); signKey verifies minted tokens (nil =
-// manual-token-only). A nil blob store makes Mount a no-op at the call site
-// (main only mounts when an artifact backend is configured).
-func New(s cacheStore, blobs artifacts.Store, log *slog.Logger, getURLTTL time.Duration, maxEntrySize int64, signKey []byte) *Handler {
+// New builds the handler. maxEntrySize caps a single PUT body (0 = no cap);
+// signKey verifies minted tokens (nil = manual-token-only). A nil blob store
+// makes Mount a no-op at the call site (main only mounts when an artifact
+// backend is configured).
+func New(s cacheStore, blobs artifacts.Store, log *slog.Logger, maxEntrySize int64, signKey []byte) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{store: s, blobs: blobs, log: log, getURLTTL: getURLTTL, maxEntrySize: maxEntrySize, signKey: signKey}
+	return &Handler{store: s, blobs: blobs, log: log, maxEntrySize: maxEntrySize, signKey: signKey}
 }
 
 // Mount registers the two protocol routes. The trailing-segment {key} is the
@@ -71,44 +74,52 @@ func (h *Handler) Mount(r chi.Router) {
 	r.Put("/api/v1/buildcache/{slug}/{key}", h.Put)
 }
 
-// Get resolves the entry and redirects to a signed object-store URL on a hit,
-// or returns 404 on a miss — Gradle treats a 404 as "not cached" and proceeds.
+// Get streams the entry bytes back on a hit, or 404 on a miss — Gradle treats a
+// 404 as "not cached" and proceeds. Note: the entry is PROXIED through the
+// server (not a redirect) because Gradle's HttpBuildCache client rejects HTTP
+// redirects ("Redirects are unsupported by the build cache"). The handler is
+// stateless, so scale reads horizontally with replicas.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	projectID, key, ok := h.authAndKey(w, r)
+	auth, ok := h.authAndKey(w, r)
 	if !ok {
 		return
 	}
-	storageKey := storageKeyFor(projectID, key)
+	storageKey := storageKeyFor(auth.projectID, auth.key)
 
-	if _, err := h.blobs.Head(r.Context(), storageKey); err != nil {
+	rc, err := h.blobs.Get(r.Context(), storageKey)
+	if err != nil {
 		if errors.Is(err, artifacts.ErrNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		h.log.Error("buildcache get: head", "err", err, "storage_key", storageKey)
+		h.log.Error("buildcache get", "err", err, "storage_key", storageKey)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	signed, err := h.blobs.SignedGetURL(r.Context(), storageKey, h.getURLTTL)
-	if err != nil {
-		h.log.Error("buildcache get: sign", "err", err, "storage_key", storageKey)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	defer func() { _ = rc.Close() }()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, rc); err != nil {
+		// Headers are already sent; just log. Gradle sees a truncated body and
+		// treats the entry as a miss.
+		h.log.Warn("buildcache get: stream", "err", err, "storage_key", storageKey)
 	}
-	// 307 keeps the method (GET) on the redirect; the signed URL carries its own
-	// auth, so the entry bytes go client<->object-store, never through here.
-	http.Redirect(w, r, signed.URL, http.StatusTemporaryRedirect)
 }
 
-// Put stores a cache entry. The body is bounded by maxEntrySize; an oversized
-// upload is rejected rather than streamed to the backend.
+// Put stores a cache entry. Requires a WRITE credential — a read-only (minted
+// for a PR/branch) token is rejected with 403, so untrusted runs can neither
+// poison the shared cache nor exhaust its storage. The body is bounded by
+// maxEntrySize and streamed to the backend (never fully buffered).
 func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
-	projectID, key, ok := h.authAndKey(w, r)
+	auth, ok := h.authAndKey(w, r)
 	if !ok {
 		return
 	}
-	storageKey := storageKeyFor(projectID, key)
+	if !auth.canWrite {
+		http.Error(w, "read-only cache credential", http.StatusForbidden)
+		return
+	}
+	storageKey := storageKeyFor(auth.projectID, auth.key)
 
 	body := r.Body
 	if h.maxEntrySize > 0 {
@@ -127,61 +138,70 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// authResult is the outcome of authenticating + validating a request.
+type authResult struct {
+	projectID uuid.UUID
+	key       string
+	canWrite  bool
+}
+
 // authAndKey verifies the Basic-auth token against the project and validates the
 // cache key. On any failure it writes the response and returns ok=false. A 401
 // carries WWW-Authenticate so a build configured with credentials retries.
-func (h *Handler) authAndKey(w http.ResponseWriter, r *http.Request) (uuid.UUID, string, bool) {
+func (h *Handler) authAndKey(w http.ResponseWriter, r *http.Request) (authResult, bool) {
 	slug := chi.URLParam(r, "slug")
 	key := chi.URLParam(r, "key")
 	if !validKey(key) {
 		http.Error(w, "invalid cache key", http.StatusBadRequest)
-		return uuid.Nil, "", false
+		return authResult{}, false
 	}
 	_, token, hasAuth := r.BasicAuth()
 	if !hasAuth {
 		h.unauthorized(w)
-		return uuid.Nil, "", false
+		return authResult{}, false
 	}
 
-	projectID, ok, err := h.resolveToken(r, slug, token)
+	projectID, canWrite, ok, err := h.resolveToken(r, slug, token)
 	if err != nil {
 		h.log.Error("buildcache auth: verify", "err", err, "slug", slug)
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return uuid.Nil, "", false
+		return authResult{}, false
 	}
 	if !ok {
 		h.unauthorized(w)
-		return uuid.Nil, "", false
+		return authResult{}, false
 	}
-	return projectID, key, true
+	return authResult{projectID: projectID, key: key, canWrite: canWrite}, true
 }
 
-// resolveToken authenticates a credential to a project. Two shapes:
-//   - a MINTED token (bc1. prefix): stateless HMAC verify → project id, then
-//     confirm it matches the project the slug resolves to (so a token minted
-//     for project A can't be replayed on project B's path).
+// resolveToken authenticates a credential to a project and reports whether it
+// may WRITE (push). Two shapes:
+//   - a MINTED token (bc1. prefix): stateless HMAC verify → (project id, write).
+//     The slug must resolve to that same project AND still have the cache
+//     enabled — so a token minted for project A can't be replayed on B, and
+//     disabling the cache immediately revokes outstanding minted tokens.
 //   - a STATIC project token (43-char base64url): hashed and matched against
-//     projects.cache_token_hash for the slug.
-func (h *Handler) resolveToken(r *http.Request, slug, token string) (uuid.UUID, bool, error) {
+//     projects.cache_token_hash for the slug; it's the operator's trusted
+//     credential, so it carries write access.
+func (h *Handler) resolveToken(r *http.Request, slug, token string) (uuid.UUID, bool, bool, error) {
 	if bctoken.LooksLikeMinted(token) {
-		mintedID, ok := bctoken.VerifyMintedToken(token, h.signKey, time.Now())
+		mintedID, write, ok := bctoken.VerifyMintedToken(token, h.signKey, time.Now())
 		if !ok {
-			return uuid.Nil, false, nil
+			return uuid.Nil, false, false, nil
 		}
-		slugID, err := h.store.ProjectIDBySlug(r.Context(), slug)
-		if err != nil {
-			// Unknown slug → indistinguishable auth failure (not a 500).
-			return uuid.Nil, false, nil
+		slugID, enabled, err := h.store.ProjectCacheAuthBySlug(r.Context(), slug)
+		if err != nil || !enabled || slugID != mintedID {
+			// Unknown slug, disabled cache, or project mismatch → the same
+			// indistinguishable auth failure (never a 500 for a bad token).
+			return uuid.Nil, false, false, nil
 		}
-		if slugID != mintedID {
-			return uuid.Nil, false, nil
-		}
-		return mintedID, true, nil
+		return mintedID, write, true, nil
 	}
 	if !badgetoken.LooksLikeToken(token) {
-		return uuid.Nil, false, nil
+		return uuid.Nil, false, false, nil
 	}
-	return h.store.VerifyProjectCacheToken(r.Context(), slug, badgetoken.HashToken(token))
+	id, ok, err := h.store.VerifyProjectCacheToken(r.Context(), slug, badgetoken.HashToken(token))
+	return id, true, ok, err
 }
 
 func (h *Handler) unauthorized(w http.ResponseWriter) {

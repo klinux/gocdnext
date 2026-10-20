@@ -31,9 +31,17 @@ convention that minor bumps may carry breaking changes until 1.0).
     cache URL + a short-lived, per-run token (masked in logs) into the job
     env, and the plugin drops a Gradle init script that points
     `HttpBuildCache` at gocdnext. The per-run token is a stateless HMAC
-    (verified without a DB lookup) — enable it by setting
-    `GOCDNEXT_BUILD_CACHE_SIGN_KEY`; without it the static per-project token
-    still works for manual setups.
+    (verified without a DB lookup, and revoked immediately when the cache is
+    disabled) — enable it by setting `GOCDNEXT_BUILD_CACHE_SIGN_KEY`; without
+    it the static per-project token still works for manual setups.
+  - **Only default-branch builds write; PRs/branches are read-only.** The
+    auto-wired token carries write access only for default-branch runs (the
+    same rule as PR-safe scoping); PR/branch runs get a read-only token, so an
+    untrusted run can't poison the shared cache or exhaust its storage. A
+    single entry PUT is capped (`GOCDNEXT_BUILD_CACHE_MAX_ENTRY_MB`, default
+    512) and streamed to the backend. Entry reads are proxied through the
+    server (Gradle's cache client rejects HTTP redirects); the handler is
+    stateless, scale with replicas.
   - **UI.** *Project → Settings → Gradle build cache* enables/rotates/disables
     the cache and shows the one-time token + a copy-paste Gradle snippet.
 

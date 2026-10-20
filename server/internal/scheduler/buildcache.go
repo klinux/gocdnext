@@ -29,7 +29,20 @@ func (s *Scheduler) injectBuildCache(ctx context.Context, run store.RunForDispat
 	if !enabled {
 		return
 	}
-	token := bctoken.MintToken(run.ProjectID, s.buildCacheTokenTTL, s.buildCacheSignKey)
+	// Write (push) access only for runs that own the shared lane — i.e. a
+	// default-branch build (the same rule PR-safe scoping uses, #318). PR /
+	// feature-branch / tag runs get a READ-ONLY token so an untrusted run can
+	// neither poison the shared cache nor exhaust its storage; they still read
+	// the default branch's entries. A scope-resolve error falls back to
+	// read-only (the safe direction).
+	write := false
+	if scope, err := s.store.ResolveCacheScope(ctx, run.ID, run.ProjectID); err == nil {
+		write = scope == store.CacheScopeShared
+	} else {
+		s.log.Warn("scheduler: build cache scope resolve", "run_id", run.ID, "err", err)
+	}
+
+	token := bctoken.MintToken(run.ProjectID, write, s.buildCacheTokenTTL, s.buildCacheSignKey)
 	if token == "" {
 		return
 	}
@@ -41,6 +54,12 @@ func (s *Scheduler) injectBuildCache(ctx context.Context, run store.RunForDispat
 	a.Env["GOCDNEXT_BUILD_CACHE_URL"] = url
 	a.Env["GOCDNEXT_BUILD_CACHE_USER"] = "gocdnext"
 	a.Env["GOCDNEXT_BUILD_CACHE_PASSWORD"] = token
+	// Push only when this run holds a write token; read-only runs still pull.
+	if write {
+		a.Env["GOCDNEXT_BUILD_CACHE_PUSH"] = "true"
+	} else {
+		a.Env["GOCDNEXT_BUILD_CACHE_PUSH"] = "false"
+	}
 	// The token is a bearer credential — mask it so it never survives into a
 	// log line (same discipline as OIDC id_tokens and clone tokens).
 	a.LogMasks = append(a.LogMasks, token)

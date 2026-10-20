@@ -55,9 +55,10 @@ func (f *fakeBlobs) Get(_ context.Context, key string) (io.ReadCloser, error) {
 func (f *fakeBlobs) Delete(_ context.Context, key string) error { delete(f.m, key); return nil }
 
 type fakeStore struct {
-	slug string
-	hash string
-	id   uuid.UUID
+	slug    string
+	hash    string
+	id      uuid.UUID
+	enabled bool
 }
 
 func (s *fakeStore) VerifyProjectCacheToken(_ context.Context, slug, tokenHash string) (uuid.UUID, bool, error) {
@@ -67,18 +68,12 @@ func (s *fakeStore) VerifyProjectCacheToken(_ context.Context, slug, tokenHash s
 	return uuid.Nil, false, nil
 }
 
-func (s *fakeStore) ProjectIDBySlug(_ context.Context, slug string) (uuid.UUID, error) {
+func (s *fakeStore) ProjectCacheAuthBySlug(_ context.Context, slug string) (uuid.UUID, bool, error) {
 	if slug == s.slug {
-		return s.id, nil
+		return s.id, s.enabled, nil
 	}
-	return uuid.Nil, errNoProject
+	return uuid.Nil, false, nil
 }
-
-var errNoProject = errorString("project not found")
-
-type errorString string
-
-func (e errorString) Error() string { return string(e) }
 
 // --- harness ---------------------------------------------------------------
 
@@ -92,8 +87,8 @@ func newTestHandler(t *testing.T, maxEntry int64) (*chi.Mux, *fakeBlobs, string,
 	}
 	projID := uuid.New()
 	blobs := newFakeBlobs()
-	st := &fakeStore{slug: "proj", hash: badgetoken.HashToken(token), id: projID}
-	h := New(st, blobs, nil, time.Minute, maxEntry, testSignKey)
+	st := &fakeStore{slug: "proj", hash: badgetoken.HashToken(token), id: projID, enabled: true}
+	h := New(st, blobs, nil, maxEntry, testSignKey)
 	r := chi.NewRouter()
 	h.Mount(r)
 	return r, blobs, token, projID
@@ -119,16 +114,16 @@ func TestBuildCache_PutThenGetRedirect(t *testing.T) {
 		t.Fatalf("stored under %q = %q", wantKey, blobs.m[wantKey])
 	}
 
-	// GET on a hit redirects (307) to the signed URL — bytes never pass here.
+	// GET on a hit streams the bytes back with 200 (Gradle rejects redirects).
 	get := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
 	get.SetBasicAuth("", token)
 	gw := httptest.NewRecorder()
 	r.ServeHTTP(gw, get)
-	if gw.Code != http.StatusTemporaryRedirect {
-		t.Fatalf("GET code = %d, want 307", gw.Code)
+	if gw.Code != http.StatusOK {
+		t.Fatalf("GET code = %d, want 200", gw.Code)
 	}
-	if loc := gw.Header().Get("Location"); !strings.Contains(loc, wantKey) {
-		t.Errorf("Location = %q, want signed URL for %q", loc, wantKey)
+	if gw.Body.String() != "entrybytes" {
+		t.Errorf("GET body = %q, want the stored entry bytes", gw.Body.String())
 	}
 }
 
@@ -195,21 +190,38 @@ func TestBuildCache_InvalidKey(t *testing.T) {
 func TestBuildCache_MintedTokenAuth(t *testing.T) {
 	r, blobs, _, projID := newTestHandler(t, 0)
 
-	// A minted token for the project authenticates the PUT.
-	minted := bctoken.MintToken(projID, time.Minute, testSignKey)
+	// A WRITE minted token for the project authenticates the PUT.
+	minted := bctoken.MintToken(projID, true, time.Minute, testSignKey)
 	put := httptest.NewRequest(http.MethodPut, "/api/v1/buildcache/proj/"+validGradleKey, strings.NewReader("x"))
 	put.SetBasicAuth("gocdnext", minted)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, put)
 	if w.Code != http.StatusOK {
-		t.Fatalf("minted PUT = %d, want 200", w.Code)
+		t.Fatalf("minted write PUT = %d, want 200", w.Code)
 	}
 	if _, ok := blobs.m["gradle-cache/"+projID.String()+"/"+validGradleKey]; !ok {
 		t.Error("minted PUT did not store")
 	}
 
+	// A READ-ONLY minted token can GET but NOT PUT (403) — PRs can't poison.
+	ro := bctoken.MintToken(projID, false, time.Minute, testSignKey)
+	roGet := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
+	roGet.SetBasicAuth("gocdnext", ro)
+	wg := httptest.NewRecorder()
+	r.ServeHTTP(wg, roGet)
+	if wg.Code != http.StatusOK {
+		t.Fatalf("read-only GET = %d, want 200", wg.Code)
+	}
+	roPut := httptest.NewRequest(http.MethodPut, "/api/v1/buildcache/proj/"+validGradleKey, strings.NewReader("y"))
+	roPut.SetBasicAuth("gocdnext", ro)
+	wp := httptest.NewRecorder()
+	r.ServeHTTP(wp, roPut)
+	if wp.Code != http.StatusForbidden {
+		t.Fatalf("read-only PUT = %d, want 403", wp.Code)
+	}
+
 	// A minted token for a DIFFERENT project id is rejected on this slug.
-	other := bctoken.MintToken(uuid.New(), time.Minute, testSignKey)
+	other := bctoken.MintToken(uuid.New(), true, time.Minute, testSignKey)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
 	req.SetBasicAuth("gocdnext", other)
 	w2 := httptest.NewRecorder()
@@ -217,13 +229,32 @@ func TestBuildCache_MintedTokenAuth(t *testing.T) {
 	if w2.Code != http.StatusUnauthorized {
 		t.Fatalf("cross-project minted = %d, want 401", w2.Code)
 	}
+}
 
-	// An expired minted token is rejected.
-	expired := bctoken.MintToken(projID, -time.Hour, testSignKey) // ttl<=0 → empty, so forge-expired below
-	_ = expired
-	exp := bctoken.MintToken(projID, time.Second, testSignKey)
-	// VerifyMintedToken honors a 30s skew; use the unit boundary directly.
-	if _, ok := bctoken.VerifyMintedToken(exp, testSignKey, time.Now().Add(time.Hour)); ok {
+func TestBuildCache_DisableRevokesMintedToken(t *testing.T) {
+	// A valid minted token must stop working the moment the project disables
+	// the cache (enabled=false), even though the token hasn't expired.
+	token, _ := badgetoken.NewToken()
+	projID := uuid.New()
+	st := &fakeStore{slug: "proj", hash: badgetoken.HashToken(token), id: projID, enabled: false}
+	h := New(st, newFakeBlobs(), nil, 0, testSignKey)
+	r := chi.NewRouter()
+	h.Mount(r)
+
+	minted := bctoken.MintToken(projID, true, time.Minute, testSignKey)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
+	req.SetBasicAuth("gocdnext", minted)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("minted token on disabled cache = %d, want 401", w.Code)
+	}
+}
+
+func TestMintedTokenExpiry(t *testing.T) {
+	projID := uuid.New()
+	exp := bctoken.MintToken(projID, true, time.Second, testSignKey)
+	if _, _, ok := bctoken.VerifyMintedToken(exp, testSignKey, time.Now().Add(time.Hour)); ok {
 		t.Error("token verified an hour past a 1s ttl")
 	}
 }
