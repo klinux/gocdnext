@@ -256,6 +256,62 @@ func TestListExpiredPendingCaches(t *testing.T) {
 	}
 }
 
+// TestClaimStalePendingCache proves the race-safe reclaim: a stale
+// pending row is claimed exactly once, but a row renewed by a concurrent
+// PUT (updated_at bumped) or already flipped to ready is NOT claimed — so
+// the sweeper never deletes the blob of a live upload session.
+func TestClaimStalePendingCache(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, s, "pending-claim")
+	grace := 24 * time.Hour
+
+	backdate := func(id uuid.UUID) {
+		if _, err := pool.Exec(ctx,
+			`UPDATE caches SET updated_at = NOW() - interval '48 hours' WHERE id = $1`, id); err != nil {
+			t.Fatalf("backdate: %v", err)
+		}
+	}
+
+	t.Run("stale pending is claimed once", func(t *testing.T) {
+		c, _ := s.UpsertPendingCacheScoped(ctx, projectID, "a", "webhook/x")
+		backdate(c.ID)
+		got, ok, err := s.ClaimStalePendingCache(ctx, c.ID, grace)
+		if err != nil || !ok {
+			t.Fatalf("claim: ok=%v err=%v", ok, err)
+		}
+		if got.StorageKey != c.StorageKey {
+			t.Errorf("storage key = %q, want %q", got.StorageKey, c.StorageKey)
+		}
+		// Second claim finds nothing (row gone).
+		if _, ok, _ := s.ClaimStalePendingCache(ctx, c.ID, grace); ok {
+			t.Error("row claimed twice")
+		}
+	})
+
+	t.Run("renewed pending is NOT claimed", func(t *testing.T) {
+		c, _ := s.UpsertPendingCacheScoped(ctx, projectID, "b", "webhook/y")
+		backdate(c.ID)
+		// A concurrent PUT renews the row between list and claim.
+		if _, err := s.UpsertPendingCacheScoped(ctx, projectID, "b", "webhook/y"); err != nil {
+			t.Fatalf("renew: %v", err)
+		}
+		if _, ok, err := s.ClaimStalePendingCache(ctx, c.ID, grace); err != nil || ok {
+			t.Errorf("renewed row claimed: ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("ready row is NOT claimed", func(t *testing.T) {
+		c, _ := s.UpsertPendingCacheScoped(ctx, projectID, "c", "webhook/z")
+		backdate(c.ID)
+		_ = s.MarkCacheReady(ctx, c.ID, 1, "x")
+		if _, ok, _ := s.ClaimStalePendingCache(ctx, c.ID, grace); ok {
+			t.Error("ready row claimed by pending reclaim")
+		}
+	})
+}
+
 // TestMarkCacheReady_BumpsLastAccessed proves a long-idle row re-uploaded
 // to ready restarts its TTL clock, so the sweeper can't evict a
 // just-completed cache.

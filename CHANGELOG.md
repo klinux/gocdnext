@@ -33,7 +33,13 @@ convention that minor bumps may carry breaking changes until 1.0).
   accumulate per-ref), and `MarkCacheReady` restarts a row's TTL clock so
   a just-completed cache is never immediately evicted. The *Project →
   Caches* page shows each row's lane ("default" = the shared lane).
-  Migration `00093`.
+  Migration `00093`. **Upgrade note:** `00093` swaps a UNIQUE constraint
+  and is not online-safe against the previous binary — roll this upgrade
+  out without overlap (`server.strategy: { type: Recreate }` for the
+  upgrade, or scale the server to 0 → migrate → scale up), then revert to
+  RollingUpdate if desired. The cache path is fail-open, so the worst case
+  of a plain rolling upgrade is wrong/cold cache for the ~minute overlap,
+  never a failed job.
 
 ### Fixed
 

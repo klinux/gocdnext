@@ -11,6 +11,21 @@ global:
 server:
   enabled: true
   replicas: 1
+  # Deployment update strategy. Empty = Kubernetes default (RollingUpdate).
+  #
+  # UPGRADE NOTE: a migration that swaps a UNIQUE constraint is not
+  # online-safe against the previous binary — during a RollingUpdate the
+  # old pod briefly runs against the new schema. For the PR-safe cache
+  # scoping migration (00093) the old pod's cache GET could return a
+  # ref-scoped blob to a job that asked for the shared one (the cache path
+  # is fail-open, so the fallout is wrong/cold cache for the overlap, never
+  # a failed job or data loss — but it breaks the isolation invariant for
+  # that window). To upgrade TO that version without overlap, set:
+  #   strategy: { type: Recreate }
+  # for the upgrade (or scale the server to 0, let the new pod migrate +
+  # start, then scale up). Revert to RollingUpdate afterwards if you don't
+  # want per-deploy downtime on future upgrades.
+  strategy: {}
   image:
     repository: gocdnext-server
     tag: ""           # defaults to Chart.appVersion

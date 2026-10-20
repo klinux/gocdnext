@@ -29,27 +29,55 @@ ALTER TABLE caches ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT '@';
 -- 2-col unique would still reject a second lane for the same key.
 --
 -- ROLLOUT NOTE (expand/contract): this swap is NOT online-safe against a
--- still-running pre-scope binary, which upserts with ON CONFLICT
--- (project_id, key). During a RollingUpdate the old pod briefly sees the
--- new schema and its cache PUT/GET degrade — but the cache path is
--- fail-open on the agent (a PUT/GET error is logged and the build runs
--- cold, never fails), so the blast radius is "some cold builds for the
--- ~minute of overlap", self-healing on the next run. The LRU index is
--- intentionally left as-is on (last_accessed_at): a (scope, ...) index
--- doesn't serve the global-LRU/quota scans or the CASE-by-scope expiry,
--- and would force a Seq Scan+Sort as the row count grows.
+-- still-running pre-scope binary. Its cache PUT upserts with ON CONFLICT
+-- (project_id, key) (now gone) and its cache GET filters only
+-- (project_id, key, status) — so against the new schema the old GET can
+-- match MULTIPLE lanes, return one with a valid SHA, and hand a
+-- ref-scoped blob to a job that asked for the shared cache. The cache
+-- path is fail-open (errors → cold build), but a wrong-but-valid blob
+-- restore is NOT an error, so it bypasses fail-open and breaks the
+-- isolation invariant for the overlap window. Deploy this WITHOUT overlap:
+-- set the server Deployment strategy to Recreate for the upgrade, or scale
+-- to 0 → migrate → scale up (chart: server.strategy, see values.yaml).
+-- In practice the window is small (before this migration every row is the
+-- '@' lane, and a scoped 'ready' row only appears after a full non-default
+-- job finishes + uploads, which outlasts a normal drain) — but the safe
+-- rollout is cheap, so do it.
+--
+-- The LRU index is intentionally left as-is on (last_accessed_at): a
+-- (scope, ...) index doesn't serve the global-LRU/quota scans or the
+-- CASE-by-scope expiry, and would force a Seq Scan+Sort as rows grow.
 ALTER TABLE caches DROP CONSTRAINT IF EXISTS caches_project_id_key_key;
 ALTER TABLE caches ADD CONSTRAINT caches_project_key_scope_key
     UNIQUE (project_id, key, scope);
+
+-- The retention sweeper reclaims rows stuck in `pending` past a grace
+-- window (abandoned uploads), scanning by (status='pending', updated_at).
+-- The existing LRU index is partial on status='ready', so without this
+-- the pending sweep is a full-table Seq Scan + Sort every tick. Per-ref
+-- lanes make pending rows accumulate, so index them.
+CREATE INDEX caches_pending_updated_idx
+    ON caches (updated_at)
+    WHERE status = 'pending';
 
 -- +goose StatementEnd
 
 -- +goose Down
 -- +goose StatementBegin
--- Rollback collapses back to one row per (project_id, key). Isolated
--- lanes have no home in the 2-col unique world, so drop them first and
--- keep only the shared ('@') lane — otherwise re-adding the 2-col unique
--- fails on the duplicate (project_id, key) pairs the feature created.
+-- DEV-ONLY. This project is forward-only in production (see CLAUDE.md:
+-- "goose, forward-only. Rollback = a corrective new migration"), so this
+-- Down exists for local/test use, where cache storage is ephemeral.
+--
+-- It collapses back to one row per (project_id, key): isolated lanes have
+-- no home in the 2-col unique world, so drop them first and keep only the
+-- shared ('@') lane — otherwise re-adding the 2-col unique fails on the
+-- duplicate pairs the feature created. The DELETE drops the only DB
+-- pointers to those lanes' external blobs WITHOUT removing the objects,
+-- so in a real deployment this would orphan them. A production rollback
+-- must therefore be a corrective FORWARD migration that also purges the
+-- scoped blobs at the application layer (the sweeper can't, once the rows
+-- are gone) — do NOT run this Down against prod storage.
+DROP INDEX IF EXISTS caches_pending_updated_idx;
 DELETE FROM caches WHERE scope <> '@';
 ALTER TABLE caches DROP CONSTRAINT IF EXISTS caches_project_key_scope_key;
 ALTER TABLE caches ADD CONSTRAINT caches_project_id_key_key

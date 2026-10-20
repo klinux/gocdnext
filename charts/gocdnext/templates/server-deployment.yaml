@@ -8,6 +8,10 @@ metadata:
     app.kubernetes.io/component: server
 spec:
   replicas: {{ .Values.server.replicas }}
+  {{- with .Values.server.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels: {{- include "gocdnext.server.selectorLabels" . | nindent 6 }}
   template:

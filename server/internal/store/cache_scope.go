@@ -43,12 +43,14 @@ var sharedLaneCauses = map[string]bool{
 // manual-no-branch) and the project default branch.
 //
 // Only a cause on the allowlist, landing on the default branch, owns the
-// shared "@" lane. Everything else — feature-branch push, PR,
-// merge_group (whose ref IS the default branch, so cause gates it, not
-// the ref), tag, and any unknown cause — gets an isolated "<cause>/<ref>"
-// lane so its writes can never clobber the shared blob or another ref's.
-// The cause prefix keeps lanes from colliding across trigger types (a
-// branch literally named "pr:5" pushed can't land in PR #5's lane).
+// shared "@" lane. Everything else — feature-branch push, PR, merge_group,
+// tag, and any unknown cause — gets an isolated "<cause>/<ref>" lane so
+// its writes can never clobber the shared blob or another ref's. The
+// allowlist (not a denylist) is what actually guards "@": a trigger must
+// be explicitly listed to write it, so a future cause defaults to
+// isolation. The cause prefix also keeps lanes from colliding across
+// trigger types (a branch literally named "pr:5" pushed can't land in
+// PR #5's lane).
 func CacheScopeFor(cause, ref, defaultBranch string) string {
 	if sharedLaneCauses[cause] && ref != "" && ref == defaultBranch {
 		return CacheScopeShared
@@ -62,10 +64,10 @@ func CacheScopeFor(cause, ref, defaultBranch string) string {
 // NOTE on ref fidelity: ref is runs.ref, capped at 255 bytes at write
 // time (store.insertRunSkeleton). Two refs sharing a 255-byte prefix
 // would therefore collapse into one lane and overwrite each other —
-// harmless in practice (git ref components are far shorter than 255
-// bytes, and the fallout is at worst two pathological branches sharing a
-// cache, never corruption or a cross-project leak), but see the PR
-// discussion for the full-ref follow-up if this ever bites.
+// which IS the clobbering class this feature exists to prevent, just
+// pushed to a pathological corner (real git refs are far shorter than
+// 255 bytes, and it can't cross project boundaries). Follow-up: key the
+// lane off the full ref or a hash of it. Tracked in the PR discussion.
 func scopeLane(cause, ref string) string {
 	if cause == "" {
 		cause = "run"
@@ -278,4 +280,35 @@ func (s *Store) ListExpiredPendingCaches(ctx context.Context, grace time.Duratio
 		out = append(out, ec)
 	}
 	return out, rows.Err()
+}
+
+// ClaimStalePendingCache atomically deletes one pending row ONLY if it is
+// still pending AND still past the grace, returning its storage key so
+// the caller can then delete the blob. claimed=false means a concurrent
+// RequestCachePut renewed it (bumped updated_at) or MarkCacheReady
+// flipped it to ready in the window between the sweeper listing the row
+// and acting on it — in which case we must NOT touch its blob, because a
+// live upload session now owns it. This is the race fix for the
+// list-then-delete gap: the row delete is the claim, and the blob delete
+// only follows a successful claim (never the reverse), so a renewed
+// upload keeps both its row and its object.
+func (s *Store) ClaimStalePendingCache(ctx context.Context, id uuid.UUID, grace time.Duration) (ExpiredCache, bool, error) {
+	if grace <= 0 {
+		return ExpiredCache{}, false, fmt.Errorf("store: cache pending grace must be positive")
+	}
+	var ec ExpiredCache
+	err := s.pool.QueryRow(ctx, `
+		DELETE FROM caches
+		WHERE id = $1
+		  AND status = 'pending'
+		  AND updated_at < NOW() - make_interval(secs => $2)
+		RETURNING id, storage_key, size_bytes
+	`, id, grace.Seconds()).Scan(&ec.ID, &ec.StorageKey, &ec.SizeBytes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ExpiredCache{}, false, nil
+	}
+	if err != nil {
+		return ExpiredCache{}, false, fmt.Errorf("store: claim stale pending cache: %w", err)
+	}
+	return ec, true, nil
 }

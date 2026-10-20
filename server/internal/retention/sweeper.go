@@ -543,11 +543,7 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 	// `ready` rows, so without this pass they'd leak forever — and
 	// per-ref lanes make them accumulate with branch churn.
 	if s.cachePendingGrace > 0 {
-		stuck, err := s.store.ListExpiredPendingCaches(ctx, s.cachePendingGrace, s.batchSize)
-		if err != nil {
-			s.log.Warn("retention: list expired pending caches", "err", err)
-		}
-		s.deleteCaches(ctx, stuck, &stats, cacheEvictPending)
+		s.reclaimStalePending(ctx, &stats)
 	}
 
 	// Per-project quota runs AFTER TTL: a TTL pass may have
@@ -663,7 +659,6 @@ const (
 	cacheEvictTTL cacheEvictionKind = iota
 	cacheEvictProjectQuota
 	cacheEvictGlobalQuota
-	cacheEvictPending
 )
 
 func (k cacheEvictionKind) String() string {
@@ -672,10 +667,47 @@ func (k cacheEvictionKind) String() string {
 		return "project_quota"
 	case cacheEvictGlobalQuota:
 		return "global_quota"
-	case cacheEvictPending:
-		return "pending"
 	default:
 		return "ttl"
+	}
+}
+
+// reclaimStalePending reclaims abandoned `pending` cache rows race-safely.
+// Unlike the ready-row passes (blob delete, then row delete), the order is
+// REVERSED: claim the row first (a conditional DELETE that only fires if
+// it's still stale-pending), and delete the blob ONLY on a successful
+// claim. That closes the list-then-act race — if a concurrent
+// RequestCachePut renewed the row (new upload session) between the list
+// and the claim, the claim no-ops and we never touch the live blob.
+func (s *Sweeper) reclaimStalePending(ctx context.Context, stats *SweepStats) {
+	candidates, err := s.store.ListExpiredPendingCaches(ctx, s.cachePendingGrace, s.batchSize)
+	if err != nil {
+		s.log.Warn("retention: list expired pending caches", "err", err)
+	}
+	for _, c := range candidates {
+		claimed, ok, err := s.store.ClaimStalePendingCache(ctx, c.ID, s.cachePendingGrace)
+		if err != nil {
+			s.log.Warn("retention: claim stale pending cache", "cache_id", c.ID, "err", err)
+			stats.CacheDBFailures++
+			continue
+		}
+		if !ok {
+			// Renewed by a concurrent PUT (or finalised) in the window —
+			// leave its blob alone.
+			continue
+		}
+		if err := s.storage.Delete(ctx, claimed.StorageKey); err != nil && !errors.Is(err, artifacts.ErrNotFound) {
+			// Row already gone; a rare blob-delete failure orphans the
+			// object (no row to retry from). Acceptable: pending blobs are
+			// rare and small, and the alternative (blob-first) reopens the
+			// race. Log loudly.
+			s.log.Warn("retention: pending blob delete failed (orphaned)",
+				"storage_key", claimed.StorageKey, "err", err)
+			stats.CacheStorageFailures++
+			continue
+		}
+		stats.CachesPendingDeleted++
+		stats.CacheBytesFreed += claimed.SizeBytes
 	}
 }
 
@@ -704,8 +736,6 @@ func (s *Sweeper) deleteCaches(ctx context.Context, rows []store.ExpiredCache, s
 			stats.CachesDeletedByQuota++
 		case cacheEvictGlobalQuota:
 			stats.CachesDeletedByGlobalQuota++
-		case cacheEvictPending:
-			stats.CachesPendingDeleted++
 		default:
 			stats.CachesDeleted++
 		}
