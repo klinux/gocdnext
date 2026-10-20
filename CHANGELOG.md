@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.120.0 — 2026-10-20
+
 ### Added
 
 - **PR-safe cache scoping — concurrent branches no longer clobber each
