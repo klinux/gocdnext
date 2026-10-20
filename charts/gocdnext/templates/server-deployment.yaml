@@ -93,6 +93,8 @@ spec:
               value: {{ .Values.artifacts.writeOnce | quote }}
             - name: GOCDNEXT_CACHE_TTL_DAYS
               value: {{ .Values.caches.ttlDays | quote }}
+            - name: GOCDNEXT_CACHE_SCOPED_TTL_DAYS
+              value: {{ .Values.caches.scopedTtlDays | quote }}
             - name: GOCDNEXT_CACHE_PROJECT_QUOTA_BYTES
               value: {{ .Values.caches.projectQuotaBytes | quote }}
             - name: GOCDNEXT_CACHE_GLOBAL_QUOTA_BYTES

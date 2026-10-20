@@ -8,6 +8,26 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **PR-safe cache scoping — concurrent branches no longer clobber each
+  other's cache.** Cache writes are now isolated per **ref lane**,
+  GitHub-Actions style, automatically and with no pipeline-level config:
+  a push/integration to the project **default branch** writes the shared
+  lane (`@`); every other ref — feature-branch push, pull request, merge
+  queue, tag — writes its **own** lane and reads its own lane first, then
+  falls back to the shared lane as a base. This removes the
+  last-writer-wins race on the single project-wide blob that produced
+  "cache hit but still a dependency miss" when PRs ran concurrently
+  against an **additive** cache (notably Gradle's build cache). The
+  shared lane keeps the long TTL (`GOCDNEXT_CACHE_TTL_DAYS` /
+  `caches.ttlDays`, default 30 days); isolated lanes age out on a shorter
+  horizon (`GOCDNEXT_CACHE_SCOPED_TTL_DAYS` / `caches.scopedTtlDays`,
+  default 7 days) so abandoned branch caches free disk fast. A PR reading
+  the shared lane bumps its freshness, so the default-branch cache never
+  ages out from under active PRs. The *Project → Caches* page now shows
+  each row's lane ("default" = the shared lane). Migration `00093`.
+
 ### Fixed
 
 - **`aws-cli` / `s3` plugin image builds no longer flake on the ECR Public pull

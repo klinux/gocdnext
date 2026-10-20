@@ -33,7 +33,8 @@ func (a *AgentService) RequestCacheGet(
 		return nil, status.Error(codes.Unimplemented, "artifact backend not configured")
 	}
 
-	c, err := a.store.GetReadyCacheByKey(ctx, projectID, req.GetKey())
+	scope := a.resolveCacheScope(ctx, req.GetRunId(), projectID)
+	c, err := a.store.GetReadyCacheByKeyScoped(ctx, projectID, req.GetKey(), scope)
 	if errors.Is(err, store.ErrCacheNotFound) {
 		// Expected on cold starts and while another agent is
 		// uploading. Signal miss, agent proceeds without a pre-
@@ -79,7 +80,8 @@ func (a *AgentService) RequestCachePut(
 		return nil, status.Error(codes.Unimplemented, "artifact backend not configured")
 	}
 
-	c, err := a.store.UpsertPendingCache(ctx, projectID, req.GetKey())
+	scope := a.resolveCacheScope(ctx, req.GetRunId(), projectID)
+	c, err := a.store.UpsertPendingCacheScoped(ctx, projectID, req.GetKey(), scope)
 	if err != nil {
 		a.log.Error("cache put: upsert failed", "err", err, "session", sess.ID, "key", req.GetKey())
 		return nil, status.Error(codes.Internal, "persist cache")
@@ -92,7 +94,7 @@ func (a *AgentService) RequestCachePut(
 	}
 	a.log.Info("cache put ticket issued",
 		"session", sess.ID, "project", projectID, "key", req.GetKey(),
-		"cache_id", c.ID, "storage_key", c.StorageKey)
+		"scope", scope, "cache_id", c.ID, "storage_key", c.StorageKey)
 	return &gocdnextv1.RequestCachePutResponse{
 		CacheId:    c.ID.String(),
 		PutUrl:     signed.URL,
@@ -129,6 +131,26 @@ func (a *AgentService) MarkCacheReady(
 		return nil, status.Error(codes.Internal, "mark ready")
 	}
 	return &gocdnextv1.MarkCacheReadyResponse{}, nil
+}
+
+// resolveCacheScope maps the run to its cache lane (see
+// store.CacheScopeFor): the shared "@" lane for a default-branch push,
+// an isolated "<cause>/<ref>" lane otherwise. On a DB error it logs and
+// returns an isolated lane keyed by run id — the SAFE direction: a
+// failed resolve must never silently write the shared lane and clobber
+// the default-branch cache. runID was already validated by
+// authCacheSession, so a parse error here falls into the same isolation.
+func (a *AgentService) resolveCacheScope(ctx context.Context, runIDStr string, projectID uuid.UUID) string {
+	runID, err := uuid.Parse(runIDStr)
+	if err != nil {
+		return "run/" + runIDStr
+	}
+	scope, err := a.store.ResolveCacheScope(ctx, runID, projectID)
+	if err != nil {
+		a.log.Error("cache scope: resolve failed; isolating lane", "err", err, "run_id", runID)
+		return "run/" + runID.String()
+	}
+	return scope
 }
 
 // authCacheSession is the shared prelude the three cache RPCs use:

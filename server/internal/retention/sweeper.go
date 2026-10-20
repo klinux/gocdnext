@@ -43,8 +43,17 @@ const (
 	DefaultGlobalQuotaBytes  = 0                        // 0 = disabled
 	// DefaultCacheTTL: 30 days is long enough for weekly builds to
 	// keep their cache warm, short enough that abandoned projects
-	// surrender disk within a month.
+	// surrender disk within a month. Governs the shared ("@") lane —
+	// the project default branch's cache.
 	DefaultCacheTTL = 30 * 24 * time.Hour
+	// DefaultCacheScopedTTL: the per-ref (non-"@") lanes — feature
+	// branches, PRs, merge_group, tags — age out in a week. A merged
+	// or closed PR stops being read, so its isolated cache should
+	// surrender disk fast instead of lingering the full 30 days and
+	// multiplying with branch churn. Shorter than DefaultCacheTTL on
+	// purpose; the shared lane a PR falls back to stays warm regardless
+	// (every PR read bumps it).
+	DefaultCacheScopedTTL = 7 * 24 * time.Hour
 	// DefaultCacheProjectQuotaBytes: 0 = disabled. Quotas are
 	// opt-in because a sensible default needs real-world data
 	// (how big does a pnpm-store tree really get? a Go module
@@ -91,6 +100,7 @@ type Sweeper struct {
 	projectQuotaBytes      int64
 	globalQuotaBytes       int64
 	cacheTTL               time.Duration
+	cacheScopedTTL         time.Duration
 	cacheProjectQuotaBytes int64
 	cacheGlobalQuotaBytes  int64
 
@@ -145,6 +155,7 @@ func New(s *store.Store, storage artifacts.Store, log *slog.Logger) *Sweeper {
 		projectQuotaBytes:      DefaultProjectQuotaBytes,
 		globalQuotaBytes:       DefaultGlobalQuotaBytes,
 		cacheTTL:               DefaultCacheTTL,
+		cacheScopedTTL:         DefaultCacheScopedTTL,
 		cacheProjectQuotaBytes: DefaultCacheProjectQuotaBytes,
 		cacheGlobalQuotaBytes:  DefaultCacheGlobalQuotaBytes,
 		logRetention:           DefaultLogRetention,
@@ -178,13 +189,26 @@ func (s *Sweeper) WithCacheProjectQuotaBytes(b int64) *Sweeper {
 	return s
 }
 
-// WithCacheTTL overrides the cache eviction window. 0 disables the
-// cache sweep entirely — for deployments that want to keep caches
-// forever (tiny project, generous disk). Any positive duration is
-// accepted; operator discretion.
+// WithCacheTTL overrides the cache eviction window for the shared
+// ("@") lane — the project default branch's cache. 0 disables the cache
+// sweep entirely — for deployments that want to keep caches forever
+// (tiny project, generous disk). Any positive duration is accepted;
+// operator discretion.
 func (s *Sweeper) WithCacheTTL(d time.Duration) *Sweeper {
 	if d >= 0 {
 		s.cacheTTL = d
+	}
+	return s
+}
+
+// WithCacheScopedTTL overrides the eviction window for the isolated
+// per-ref lanes (branches / PRs / merge_group / tags). Defaults shorter
+// than the shared lane so abandoned branch caches surrender disk fast.
+// 0 falls back to the shared TTL (ListExpiredCachesScoped treats a
+// non-positive scoped TTL as "same horizon for every lane").
+func (s *Sweeper) WithCacheScopedTTL(d time.Duration) *Sweeper {
+	if d >= 0 {
+		s.cacheScopedTTL = d
 	}
 	return s
 }
@@ -484,7 +508,7 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 	// subsequent fetch returns 404 (which the agent already treats
 	// as a miss). Self-healing either way.
 	if s.cacheTTL > 0 {
-		expired, err := s.store.ListExpiredCaches(ctx, s.cacheTTL, s.batchSize)
+		expired, err := s.store.ListExpiredCachesScoped(ctx, s.cacheTTL, s.cacheScopedTTL, s.batchSize)
 		if err != nil {
 			s.log.Warn("retention: list expired caches", "err", err)
 		}
@@ -660,6 +684,7 @@ type Snapshot struct {
 	ProjectQuotaBytes      int64         `json:"project_quota_bytes"`
 	GlobalQuotaBytes       int64         `json:"global_quota_bytes"`
 	CacheTTL               time.Duration `json:"cache_ttl"`
+	CacheScopedTTL         time.Duration `json:"cache_scoped_ttl"`
 	CacheProjectQuotaBytes int64         `json:"cache_project_quota_bytes"`
 	CacheGlobalQuotaBytes  int64         `json:"cache_global_quota_bytes"`
 	LastSweepAt            time.Time     `json:"last_sweep_at,omitempty"`
@@ -680,6 +705,7 @@ func (s *Sweeper) Snapshot() Snapshot {
 		ProjectQuotaBytes:      s.projectQuotaBytes,
 		GlobalQuotaBytes:       s.globalQuotaBytes,
 		CacheTTL:               s.cacheTTL,
+		CacheScopedTTL:         s.cacheScopedTTL,
 		CacheProjectQuotaBytes: s.cacheProjectQuotaBytes,
 		CacheGlobalQuotaBytes:  s.cacheGlobalQuotaBytes,
 		LastSweepAt:            s.lastSweepAt,

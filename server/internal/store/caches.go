@@ -23,9 +23,13 @@ var ErrCacheNotFound = errors.New("store: cache entry not found")
 // (project, key) pair so re-uploads overwrite the same blob
 // without the DB needing to orphan-collect old storage objects.
 type Cache struct {
-	ID             uuid.UUID
-	ProjectID      uuid.UUID
-	Key            string
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Key       string
+	// Scope is the ref lane this blob belongs to: CacheScopeShared
+	// ("@") for the project default branch, or "<cause>/<ref>" for an
+	// isolated branch / PR / merge_group / tag lane. See cache_scope.go.
+	Scope          string
 	StorageKey     string
 	SizeBytes      int64
 	ContentSHA256  string
@@ -45,36 +49,13 @@ func CacheStorageKey(projectID uuid.UUID, key string) string {
 	return fmt.Sprintf("cache/%s/%s", projectID, hex.EncodeToString(sum[:]))
 }
 
-// UpsertPendingCache marks a fresh upload in flight for
-// (project_id, key). First call on a new key inserts a row;
-// subsequent calls on an existing key flip it back to `pending`
-// so GETs treat the cache as "not ready" until MarkCacheReady
-// fires. The StorageKey stays the same across uploads (the
-// blob backend just overwrites), so we don't leak old objects
-// and we don't need a delete path for replacement.
+// UpsertPendingCache marks a fresh upload in flight on the shared
+// ("@") lane for (project_id, key). Thin wrapper over
+// UpsertPendingCacheScoped — the scope-aware cache RPCs call the scoped
+// method with the run's lane; this one preserves the pre-scoping
+// signature for callers and tests that only ever meant the shared lane.
 func (s *Store) UpsertPendingCache(ctx context.Context, projectID uuid.UUID, key string) (Cache, error) {
-	if key == "" {
-		return Cache{}, fmt.Errorf("store: cache key required")
-	}
-	storageKey := CacheStorageKey(projectID, key)
-	var c Cache
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO caches (project_id, key, storage_key, status)
-		VALUES ($1, $2, $3, 'pending')
-		ON CONFLICT (project_id, key) DO UPDATE
-		SET status     = 'pending',
-		    updated_at = NOW()
-		RETURNING id, project_id, key, storage_key, size_bytes,
-		          COALESCE(content_sha256, ''), status,
-		          created_at, updated_at, last_accessed_at
-	`, projectID, key, storageKey).Scan(
-		&c.ID, &c.ProjectID, &c.Key, &c.StorageKey, &c.SizeBytes,
-		&c.ContentSHA256, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.LastAccessedAt,
-	)
-	if err != nil {
-		return Cache{}, fmt.Errorf("store: upsert pending cache: %w", err)
-	}
-	return c, nil
+	return s.UpsertPendingCacheScoped(ctx, projectID, key, CacheScopeShared)
 }
 
 // MarkCacheReady finalises an upload. Called by the agent after
@@ -108,41 +89,14 @@ type ExpiredCache struct {
 	SizeBytes  int64
 }
 
-// ListExpiredCaches returns ready rows whose last_accessed_at fell
-// past the TTL window. Bounded by `limit` so a sweep tick doesn't
-// try to reclaim 100k rows in one pass. Caller must delete the
-// blob first, then DeleteCacheRow — order matters for the failure
-// modes (blob lingers > row lingers, both are self-healing via
-// next tick).
+// ListExpiredCaches returns ready rows whose last_accessed_at fell past
+// a single TTL window applied to every lane. Thin wrapper over
+// ListExpiredCachesScoped (shared and scoped TTL equal) — the sweeper
+// calls the scoped method so non-"@" lanes can age out faster. Bounded
+// by `limit`; caller deletes the blob first, then DeleteCacheRow (both
+// self-healing via the next tick).
 func (s *Store) ListExpiredCaches(ctx context.Context, ttl time.Duration, limit int) ([]ExpiredCache, error) {
-	if ttl <= 0 {
-		return nil, fmt.Errorf("store: cache ttl must be positive")
-	}
-	if limit <= 0 {
-		limit = 500
-	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, storage_key, size_bytes
-		FROM caches
-		WHERE status = 'ready'
-		  AND last_accessed_at < NOW() - make_interval(secs => $1)
-		ORDER BY last_accessed_at ASC
-		LIMIT $2
-	`, ttl.Seconds(), limit)
-	if err != nil {
-		return nil, fmt.Errorf("store: list expired caches: %w", err)
-	}
-	defer rows.Close()
-
-	var out []ExpiredCache
-	for rows.Next() {
-		var ec ExpiredCache
-		if err := rows.Scan(&ec.ID, &ec.StorageKey, &ec.SizeBytes); err != nil {
-			return nil, fmt.Errorf("store: scan expired cache: %w", err)
-		}
-		out = append(out, ec)
-	}
-	return out, rows.Err()
+	return s.ListExpiredCachesScoped(ctx, ttl, ttl, limit)
 }
 
 // ProjectCacheUsage pairs a project id with its current total
@@ -274,7 +228,7 @@ func (s *Store) ListOldestCachesGlobally(ctx context.Context, limit int) ([]Expi
 // ghost.
 func (s *Store) ListCachesByProject(ctx context.Context, projectID uuid.UUID) ([]Cache, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, project_id, key, storage_key, size_bytes,
+		SELECT id, project_id, key, scope, storage_key, size_bytes,
 		       COALESCE(content_sha256, ''), status,
 		       created_at, updated_at, last_accessed_at
 		FROM caches
@@ -289,7 +243,7 @@ func (s *Store) ListCachesByProject(ctx context.Context, projectID uuid.UUID) ([
 	for rows.Next() {
 		var c Cache
 		if err := rows.Scan(
-			&c.ID, &c.ProjectID, &c.Key, &c.StorageKey, &c.SizeBytes,
+			&c.ID, &c.ProjectID, &c.Key, &c.Scope, &c.StorageKey, &c.SizeBytes,
 			&c.ContentSHA256, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.LastAccessedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan cache: %w", err)
@@ -308,13 +262,13 @@ func (s *Store) ListCachesByProject(ctx context.Context, projectID uuid.UUID) ([
 func (s *Store) GetCacheForProject(ctx context.Context, projectID, cacheID uuid.UUID) (Cache, error) {
 	var c Cache
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, project_id, key, storage_key, size_bytes,
+		SELECT id, project_id, key, scope, storage_key, size_bytes,
 		       COALESCE(content_sha256, ''), status,
 		       created_at, updated_at, last_accessed_at
 		FROM caches
 		WHERE id = $1 AND project_id = $2
 	`, cacheID, projectID).Scan(
-		&c.ID, &c.ProjectID, &c.Key, &c.StorageKey, &c.SizeBytes,
+		&c.ID, &c.ProjectID, &c.Key, &c.Scope, &c.StorageKey, &c.SizeBytes,
 		&c.ContentSHA256, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.LastAccessedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -336,29 +290,11 @@ func (s *Store) DeleteCacheRow(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// GetReadyCacheByKey returns the ready blob for (project_id, key)
-// or ErrCacheNotFound when there's no row, or one exists but is
-// still pending. Bumps last_accessed_at so the eviction sweeper
-// sees cache freshness — "used in the last 30 days" is the
-// default LRU horizon (see roadmap_cache_eviction).
+// GetReadyCacheByKey reads the shared ("@") lane for (project_id, key).
+// Thin wrapper over GetReadyCacheByKeyScoped — kept for callers and
+// tests that predate PR-safe scoping; the scope-aware cache RPCs call
+// the scoped method directly. Bumps last_accessed_at (LRU freshness for
+// the eviction sweeper, see roadmap_cache_eviction).
 func (s *Store) GetReadyCacheByKey(ctx context.Context, projectID uuid.UUID, key string) (Cache, error) {
-	var c Cache
-	err := s.pool.QueryRow(ctx, `
-		UPDATE caches
-		SET last_accessed_at = NOW()
-		WHERE project_id = $1 AND key = $2 AND status = 'ready'
-		RETURNING id, project_id, key, storage_key, size_bytes,
-		          COALESCE(content_sha256, ''), status,
-		          created_at, updated_at, last_accessed_at
-	`, projectID, key).Scan(
-		&c.ID, &c.ProjectID, &c.Key, &c.StorageKey, &c.SizeBytes,
-		&c.ContentSHA256, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.LastAccessedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Cache{}, ErrCacheNotFound
-	}
-	if err != nil {
-		return Cache{}, fmt.Errorf("store: get cache: %w", err)
-	}
-	return c, nil
+	return s.GetReadyCacheByKeyScoped(ctx, projectID, key, CacheScopeShared)
 }

@@ -20,7 +20,11 @@ import (
 // an explicit opt-in. Timestamps serialise as RFC3339 strings
 // because that's what the RSC + RelativeTime helpers consume.
 type cacheDTO struct {
-	ID             string    `json:"id"`
+	ID string `json:"id"`
+	// Scope is the ref lane: "@" is the shared default-branch cache,
+	// "<cause>/<ref>" an isolated branch / PR / merge_group / tag lane.
+	// Surfaced so an operator can tell a shared cache from a per-ref one.
+	Scope          string    `json:"scope"`
 	Key            string    `json:"key"`
 	SizeBytes      int64     `json:"size_bytes"`
 	Status         string    `json:"status"`
@@ -68,6 +72,7 @@ func (h *Handler) ListCaches(w http.ResponseWriter, r *http.Request) {
 	for _, c := range rows {
 		resp.Caches = append(resp.Caches, cacheDTO{
 			ID:             c.ID.String(),
+			Scope:          c.Scope,
 			Key:            c.Key,
 			SizeBytes:      c.SizeBytes,
 			Status:         c.Status,

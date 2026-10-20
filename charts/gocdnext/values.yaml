@@ -476,8 +476,13 @@ artifacts:
 # quota, then global quota. 0 disables a layer.
 caches:
   # Days of inactivity before a `ready` cache row is evicted. 0 =
-  # disabled (TTL pass off; quotas alone govern eviction).
+  # disabled (TTL pass off; quotas alone govern eviction). Governs the
+  # shared ("@") lane — the project default branch's cache.
   ttlDays: 30
+  # Days of inactivity before an isolated per-ref lane (feature branch,
+  # PR, merge queue, tag) is evicted. Shorter than ttlDays so abandoned
+  # branch caches surrender disk fast; 0 falls back to ttlDays.
+  scopedTtlDays: 7
   # Per-project soft cap, bytes. 0 disables — TTL-only eviction.
   projectQuotaBytes: "0"
   # Global hard cap, bytes. 0 disables. Applied LRU across every
