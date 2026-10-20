@@ -64,7 +64,12 @@ type Config struct {
 	ArtifactsGlobalQuotaBytes  int64 // global hard cap; 0 disables
 
 	// Cache eviction. Default is 30 days of inactivity; 0 disables.
+	// Governs the shared ("@") lane — the default-branch cache.
 	CacheTTLDays int
+	// Cache eviction for the isolated per-ref lanes (branches / PRs /
+	// merge_group / tags). Default 7 days of inactivity so abandoned
+	// branch caches surrender disk fast; 0 falls back to CacheTTLDays.
+	CacheScopedTTLDays int
 	// Cache per-project size cap. 0 disables — TTL-only eviction.
 	CacheProjectQuotaBytes int64
 	// Cache global size cap. 0 disables.
@@ -307,6 +312,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_CACHE_TTL_DAYS: %w", err)
 	}
 	c.CacheTTLDays = cacheTTLDays
+
+	cacheScopedTTLDays, err := strconv.Atoi(env("GOCDNEXT_CACHE_SCOPED_TTL_DAYS", "7"))
+	if err != nil {
+		return nil, fmt.Errorf("GOCDNEXT_CACHE_SCOPED_TTL_DAYS: %w", err)
+	}
+	c.CacheScopedTTLDays = cacheScopedTTLDays
 
 	cacheProjectQuota, err := strconv.ParseInt(env("GOCDNEXT_CACHE_PROJECT_QUOTA_BYTES", "0"), 10, 64)
 	if err != nil {

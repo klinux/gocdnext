@@ -77,6 +77,7 @@ export default async function CachesPage({
             <TableHeader>
               <TableRow>
                 <TableHead>Key</TableHead>
+                <TableHead>Lane</TableHead>
                 <TableHead>Size</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Last used</TableHead>
@@ -88,6 +89,9 @@ export default async function CachesPage({
               {caches.map((c) => (
                 <TableRow key={c.id}>
                   <TableCell className="font-mono">{c.key}</TableCell>
+                  <TableCell className="font-mono text-muted-foreground">
+                    {c.scope === "@" ? "default" : c.scope}
+                  </TableCell>
                   <TableCell className="font-mono text-muted-foreground">
                     {c.status === "ready" ? formatBytes(c.size_bytes) : "—"}
                   </TableCell>

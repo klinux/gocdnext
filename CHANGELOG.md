@@ -8,6 +8,42 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **PR-safe cache scoping — concurrent branches no longer clobber each
+  other's cache.** Cache writes are now isolated per **ref lane**,
+  GitHub-Actions style, automatically and with no pipeline-level config:
+  a push/integration to the project **default branch** writes the shared
+  lane (`@`); every other ref — feature-branch push, pull request, merge
+  queue, tag — writes its **own** lane and reads its own lane first, then
+  falls back to the shared lane as a base. This removes the
+  last-writer-wins race on the single project-wide blob that produced
+  "cache hit but still a dependency miss" when PRs ran concurrently
+  against an **additive** cache (notably Gradle's build cache). The
+  shared lane keeps the long TTL (`GOCDNEXT_CACHE_TTL_DAYS` /
+  `caches.ttlDays`, default 30 days); isolated lanes age out on a shorter
+  horizon (`GOCDNEXT_CACHE_SCOPED_TTL_DAYS` / `caches.scopedTtlDays`,
+  default 7 days) so abandoned branch caches free disk fast. A PR reading
+  the shared lane bumps its freshness, so the default-branch cache never
+  ages out from under active PRs. Which triggers may write the shared lane
+  is an explicit allowlist (push/manual/schedule/poll/upstream) — any
+  other or unknown trigger is isolated, so a future trigger type can never
+  silently clobber the shared cache. The retention sweeper also reclaims
+  `pending` rows abandoned by an agent that died mid-upload (these now
+  accumulate per-ref), and `MarkCacheReady` restarts a row's TTL clock so
+  a just-completed cache is never immediately evicted. The *Project →
+  Caches* page shows each row's lane ("default" = the shared lane).
+  Migration `00093`. **Upgrade note:** `00093` swaps a UNIQUE constraint
+  and is not online-safe against the previous binary, so the chart now
+  defaults the server Deployment to `strategy: Recreate` (no two-version
+  overlap). During a RollingUpdate overlap the old pod's cache GET (which
+  ignores the new `scope`) can hand a ref-scoped blob to a default-branch
+  build — cross-ref cache poisoning that can fail tasks or alter build
+  outputs (the cache RPC is fail-open, but a wrong-yet-valid blob isn't an
+  error, so fail-open doesn't catch it). Keep `Recreate` until your minimum
+  supported version is past `00093`; only then is reverting to
+  `RollingUpdate` safe.
+
 ### Fixed
 
 - **`aws-cli` / `s3` plugin image builds no longer flake on the ECR Public pull

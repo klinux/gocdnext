@@ -62,6 +62,91 @@ func TestSweeper_ExpiredCache_DeletesBlobAndRow(t *testing.T) {
 	}
 }
 
+func TestSweeper_ScopedLane_EvictedOnShortTTL_SharedKept(t *testing.T) {
+	// PR-safe scoping: an isolated per-ref lane ages out on the short
+	// scoped TTL while the shared ("@") default-branch lane keeps the
+	// long one. Both idle 10 days; a 30-day shared / 7-day scoped sweep
+	// must reap only the scoped lane.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+	ctx := context.Background()
+	projectID := seedCacheProject(t, pool, "cache-scoped-ttl")
+
+	shared, _ := s.UpsertPendingCacheScoped(ctx, projectID, "gradle", store.CacheScopeShared)
+	_ = s.MarkCacheReady(ctx, shared.ID, 10, "a")
+	scoped, _ := s.UpsertPendingCacheScoped(ctx, projectID, "gradle", "pull_request/pr:3")
+	_ = s.MarkCacheReady(ctx, scoped.ID, 20, "b")
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '10 days'`); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	sw := retention.New(s, fs, silent()).
+		WithCacheTTL(30 * 24 * time.Hour).
+		WithCacheScopedTTL(7 * 24 * time.Hour)
+	stats := sw.SweepOnce(ctx)
+
+	if stats.CachesDeleted != 1 {
+		t.Errorf("CachesDeleted = %d, want 1 (only the scoped lane)", stats.CachesDeleted)
+	}
+	// Check the exact lanes directly — GetReadyCacheByKeyScoped falls back
+	// to "@", which would mask a deleted scoped row.
+	rows, err := s.ListCachesByProject(ctx, projectID)
+	if err != nil {
+		t.Fatalf("list caches: %v", err)
+	}
+	lanes := map[string]bool{}
+	for _, r := range rows {
+		lanes[r.Scope] = true
+	}
+	if !lanes[store.CacheScopeShared] {
+		t.Error("shared lane reaped at 10 days under a 30-day TTL")
+	}
+	if lanes["pull_request/pr:3"] {
+		t.Error("scoped lane survived past its 7-day TTL")
+	}
+}
+
+func TestSweeper_AbandonedPendingLane_Reclaimed(t *testing.T) {
+	// An agent that got a PUT ticket and died before MarkCacheReady
+	// leaves a `pending` row the TTL/quota passes (ready-only) never
+	// touch. With per-ref lanes these would leak unboundedly; the
+	// pending sweep reclaims them past the grace. A fresh pending row
+	// (upload plausibly still in flight) must survive.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+	ctx := context.Background()
+	projectID := seedCacheProject(t, pool, "cache-pending-leak")
+
+	abandoned, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", "pull_request/pr:1")
+	fresh, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", "pull_request/pr:2")
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET updated_at = NOW() - interval '48 hours' WHERE id = $1`, abandoned.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	sw := retention.New(s, fs, silent()).WithCachePendingGrace(24 * time.Hour)
+	stats := sw.SweepOnce(ctx)
+
+	if stats.CachesPendingDeleted != 1 {
+		t.Errorf("CachesPendingDeleted = %d, want 1", stats.CachesPendingDeleted)
+	}
+	rows, _ := s.ListCachesByProject(ctx, projectID)
+	live := map[string]bool{}
+	for _, r := range rows {
+		live[r.ID.String()] = true
+	}
+	if live[abandoned.ID.String()] {
+		t.Error("abandoned pending lane survived the sweep")
+	}
+	if !live[fresh.ID.String()] {
+		t.Error("fresh pending lane reaped — upload may still be in flight")
+	}
+}
+
 func TestSweeper_FreshCache_IsKept(t *testing.T) {
 	// Freshly-accessed cache must survive the sweep. Core invariant:
 	// the sweeper only touches rows past the TTL; an active pipeline

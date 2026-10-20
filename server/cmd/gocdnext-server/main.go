@@ -489,6 +489,7 @@ func main() {
 		WithProjectQuotaBytes(cfg.ArtifactsProjectQuotaBytes).
 		WithGlobalQuotaBytes(cfg.ArtifactsGlobalQuotaBytes).
 		WithCacheTTL(time.Duration(cfg.CacheTTLDays) * 24 * time.Hour).
+		WithCacheScopedTTL(time.Duration(cfg.CacheScopedTTLDays) * 24 * time.Hour).
 		WithCacheProjectQuotaBytes(cfg.CacheProjectQuotaBytes).
 		WithCacheGlobalQuotaBytes(cfg.CacheGlobalQuotaBytes).
 		WithLogRetention(cfg.LogRetention).
