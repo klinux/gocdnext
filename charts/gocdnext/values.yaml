@@ -577,6 +577,14 @@ artifactsSignKey:
   existingSecret: ""
   value: ""
 
+# Hex HMAC key for minting per-run Gradle build-cache tokens (embedded build
+# cache auto-wiring). Empty leaves auto-wiring off — the per-project static
+# token still works for manual Gradle config. Same shape as artifactsSignKey:
+# set `value` to have the chart manage it, or point `existingSecret` at your own.
+buildCacheSignKey:
+  existingSecret: ""
+  value: ""
+
 # ----- auth ------------------------------------------------------------
 # Off by default — flipping `enabled` true gates /auth + protected
 # routes; before that everything stays open (matches binary default).

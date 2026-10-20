@@ -243,10 +243,26 @@ Why this is better than tarring the build-cache dir:
 
 ### Enable it
 
-1. In **Project → Settings** (or `POST /api/v1/projects/{slug}/build-cache/token`),
-   generate a build-cache token. It's shown **once**; only its hash
-   is stored. The response includes a ready-to-paste snippet.
-2. Point Gradle at it in `settings.gradle.kts`:
+In **Project → Settings → Gradle build cache** (or
+`POST /api/v1/projects/{slug}/build-cache/token`), click **Enable**.
+That generates a project token (shown **once**; only its hash is
+stored).
+
+**Jobs that use the [`gradle` plugin](/gocdnext/docs/) are then wired
+automatically** — the server injects the cache URL + a short-lived,
+per-run token into the job's env (the token is masked in logs), and the
+plugin drops a Gradle init script that points `HttpBuildCache` at
+gocdnext. Nothing to add to your repo; just run the build.
+
+Auto-wiring needs the operator to set a signing key on the server
+(`GOCDNEXT_BUILD_CACHE_SIGN_KEY`, hex) — without it, the manual path
+below still works.
+
+### Manual setup (non-plugin builds)
+
+For a build that doesn't use the `gradle` plugin, point Gradle at the
+cache yourself in `settings.gradle.kts` (the rotate response gives you
+this snippet pre-filled):
 
 ```kotlin
 buildCache {

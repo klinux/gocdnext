@@ -24,9 +24,18 @@ convention that minor bumps may carry breaking changes until 1.0).
   Settings* or `POST/DELETE /api/v1/projects/{slug}/build-cache/token`
   (maintainer+); only its SHA-256 hash is stored (migration `00094`). Point
   Gradle's `HttpBuildCache` at the URL and keep the `cache:` block for
-  `GRADLE_USER_HOME` deps. Eviction for this slice is via an object-store
-  lifecycle rule on the `gradle-cache/` prefix (server-tracked eviction is
-  planned).
+  `GRADLE_USER_HOME` deps. Eviction is via an object-store lifecycle rule on
+  the `gradle-cache/` prefix.
+  - **Auto-wiring.** Jobs using the `gradle` plugin need no manual config:
+    when a project has the build cache enabled, the scheduler injects the
+    cache URL + a short-lived, per-run token (masked in logs) into the job
+    env, and the plugin drops a Gradle init script that points
+    `HttpBuildCache` at gocdnext. The per-run token is a stateless HMAC
+    (verified without a DB lookup) — enable it by setting
+    `GOCDNEXT_BUILD_CACHE_SIGN_KEY`; without it the static per-project token
+    still works for manual setups.
+  - **UI.** *Project → Settings → Gradle build cache* enables/rotates/disables
+    the cache and shows the one-time token + a copy-paste Gradle snippet.
 
 ## v0.120.0 — 2026-10-20
 

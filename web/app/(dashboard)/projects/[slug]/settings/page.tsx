@@ -9,9 +9,11 @@ import { ProjectComplianceCard } from "@/components/projects/project-compliance.
 import { ProjectCompliancePreview } from "@/components/projects/project-compliance-preview.client";
 import { ProjectRequiredChecks } from "@/components/projects/project-required-checks.client";
 import { ProjectStatusBadgeSettings } from "@/components/projects/project-status-badge-settings.client";
+import { ProjectBuildCacheSettings } from "@/components/projects/project-build-cache-settings.client";
 import {
   GocdnextAPIError,
   getProjectBadge,
+  getProjectBuildCache,
   getProjectDetail,
   getProjectLogArchive,
   getProjectCheckReporting,
@@ -80,6 +82,13 @@ export default async function ProjectSettingsPage({
     badge = await getProjectBadge(slug);
   } catch {
     badge = null;
+  }
+
+  let buildCache: Awaited<ReturnType<typeof getProjectBuildCache>> | null = null;
+  try {
+    buildCache = await getProjectBuildCache(slug);
+  } catch {
+    buildCache = null;
   }
 
   // Compliance framework assignment is admin-only (the API routes are
@@ -170,6 +179,13 @@ export default async function ProjectSettingsPage({
         <ProjectStatusBadgeSettings
           slug={slug}
           initialEnabled={badge.enabled}
+        />
+      ) : null}
+
+      {buildCache ? (
+        <ProjectBuildCacheSettings
+          slug={slug}
+          initialEnabled={buildCache.enabled}
         />
       ) : null}
 

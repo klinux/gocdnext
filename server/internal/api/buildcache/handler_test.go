@@ -15,6 +15,7 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	badgetoken "github.com/gocdnext/gocdnext/server/internal/badges"
+	bctoken "github.com/gocdnext/gocdnext/server/internal/buildcache"
 )
 
 // --- fakes -----------------------------------------------------------------
@@ -66,7 +67,22 @@ func (s *fakeStore) VerifyProjectCacheToken(_ context.Context, slug, tokenHash s
 	return uuid.Nil, false, nil
 }
 
+func (s *fakeStore) ProjectIDBySlug(_ context.Context, slug string) (uuid.UUID, error) {
+	if slug == s.slug {
+		return s.id, nil
+	}
+	return uuid.Nil, errNoProject
+}
+
+var errNoProject = errorString("project not found")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
+
 // --- harness ---------------------------------------------------------------
+
+var testSignKey = []byte("buildcache-test-signing-key-32byte!!")
 
 func newTestHandler(t *testing.T, maxEntry int64) (*chi.Mux, *fakeBlobs, string, uuid.UUID) {
 	t.Helper()
@@ -77,7 +93,7 @@ func newTestHandler(t *testing.T, maxEntry int64) (*chi.Mux, *fakeBlobs, string,
 	projID := uuid.New()
 	blobs := newFakeBlobs()
 	st := &fakeStore{slug: "proj", hash: badgetoken.HashToken(token), id: projID}
-	h := New(st, blobs, nil, time.Minute, maxEntry)
+	h := New(st, blobs, nil, time.Minute, maxEntry, testSignKey)
 	r := chi.NewRouter()
 	h.Mount(r)
 	return r, blobs, token, projID
@@ -173,6 +189,42 @@ func TestBuildCache_InvalidKey(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("key %q code = %d, want 400", k, w.Code)
 		}
+	}
+}
+
+func TestBuildCache_MintedTokenAuth(t *testing.T) {
+	r, blobs, _, projID := newTestHandler(t, 0)
+
+	// A minted token for the project authenticates the PUT.
+	minted := bctoken.MintToken(projID, time.Minute, testSignKey)
+	put := httptest.NewRequest(http.MethodPut, "/api/v1/buildcache/proj/"+validGradleKey, strings.NewReader("x"))
+	put.SetBasicAuth("gocdnext", minted)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, put)
+	if w.Code != http.StatusOK {
+		t.Fatalf("minted PUT = %d, want 200", w.Code)
+	}
+	if _, ok := blobs.m["gradle-cache/"+projID.String()+"/"+validGradleKey]; !ok {
+		t.Error("minted PUT did not store")
+	}
+
+	// A minted token for a DIFFERENT project id is rejected on this slug.
+	other := bctoken.MintToken(uuid.New(), time.Minute, testSignKey)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
+	req.SetBasicAuth("gocdnext", other)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req)
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("cross-project minted = %d, want 401", w2.Code)
+	}
+
+	// An expired minted token is rejected.
+	expired := bctoken.MintToken(projID, -time.Hour, testSignKey) // ttl<=0 → empty, so forge-expired below
+	_ = expired
+	exp := bctoken.MintToken(projID, time.Second, testSignKey)
+	// VerifyMintedToken honors a 30s skew; use the unit boundary directly.
+	if _, ok := bctoken.VerifyMintedToken(exp, testSignKey, time.Now().Add(time.Hour)); ok {
+		t.Error("token verified an hour past a 1s ttl")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
@@ -132,6 +133,22 @@ func (s *Scheduler) WithArtifactStore(store artifacts.Store, ttl time.Duration) 
 	}
 	s.artifactStore = store
 	s.artifactGetURLTTL = ttl
+	return s
+}
+
+// WithBuildCache enables embedded-build-cache auto-wiring: for a job whose
+// project has the build cache enabled, the scheduler injects the cache URL +
+// a freshly minted per-run token into the job's env (masked), so a Gradle
+// build uses the cache with no manual config. publicBase is the externally
+// reachable server URL; signKey mints the per-run token; ttl bounds it. Any of
+// (empty signKey, empty publicBase) leaves auto-wiring off.
+func (s *Scheduler) WithBuildCache(publicBase string, signKey []byte, ttl time.Duration) *Scheduler {
+	if ttl <= 0 {
+		ttl = 2 * time.Hour
+	}
+	s.buildCachePublicBase = strings.TrimRight(publicBase, "/")
+	s.buildCacheSignKey = signKey
+	s.buildCacheTokenTTL = ttl
 	return s
 }
 

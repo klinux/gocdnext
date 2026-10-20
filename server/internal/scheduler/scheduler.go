@@ -66,6 +66,14 @@ type Scheduler struct {
 	// secrets/artifacts above).
 	idTokens IDTokenMinter
 
+	// Embedded build-cache auto-wiring (set via WithBuildCache). When signKey
+	// and publicBase are set, a job whose project has the build cache enabled
+	// gets GOCDNEXT_BUILD_CACHE_URL + a minted, masked per-run token injected
+	// into its env. Empty signKey/publicBase leaves auto-wiring off.
+	buildCachePublicBase string
+	buildCacheSignKey    []byte
+	buildCacheTokenTTL   time.Duration
+
 	// checks closes a superseded run's GitHub check (the JobResult path that
 	// normally reports run completion is skipped on supersede). nil = GitHub
 	// checks disabled; the effects listener guards on it. Interface (not the
@@ -445,6 +453,9 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		}
 
 		assign, deployTarget, err := BuildAssignment(run, job, materials, secretValues, downloads, profile, cloneTokens, needsOutputs, matrixNeedsOutputs, idTokens, clusterKubeconfig, clusterMasks)
+		if err == nil {
+			s.injectBuildCache(ctx, run, assign)
+		}
 		if err != nil {
 			// Unresolved needs refs (issue #10) are CONFIGURATION
 			// errors — the next tick will see the exact same

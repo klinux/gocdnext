@@ -479,6 +479,19 @@ func main() {
 	if artifactStore != nil {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}
+	// Embedded build-cache auto-wiring: the scheduler mints a per-run token and
+	// injects the cache URL + token into each job's env, so a Gradle build uses
+	// the cache with no manual config. Needs a signing key + an artifact backend
+	// + a reachable public base; absent any, auto-wiring is off (the per-project
+	// static token still works for manual Gradle config).
+	buildCacheSignKey, err := hex.DecodeString(cfg.BuildCacheSignKeyHex)
+	if err != nil {
+		logger.Error("GOCDNEXT_BUILD_CACHE_SIGN_KEY: not hex", "err", err)
+		os.Exit(1)
+	}
+	if artifactStore != nil && len(buildCacheSignKey) > 0 && cfg.PublicBase != "" {
+		sched = sched.WithBuildCache(cfg.PublicBase, buildCacheSignKey, 2*time.Hour)
+	}
 	if checksReporter != nil {
 		// Same reporter the AgentService uses, so a supersede-cancel closes the
 		// same check run the JobResult path would have (#97).
@@ -718,7 +731,7 @@ func main() {
 	// entries; reads redirect to a signed object-store URL, writes proxy
 	// through. Per-project token auth (projects.cache_token_hash).
 	if artifactStore != nil {
-		buildcacheapi.New(st, artifactStore, logger, 30*time.Minute, cfg.ArtifactsMaxBodyMB*1024*1024).Mount(r)
+		buildcacheapi.New(st, artifactStore, logger, 30*time.Minute, cfg.ArtifactsMaxBodyMB*1024*1024, buildCacheSignKey).Mount(r)
 	}
 
 	// Anonymous status badges. Access is public-by-design for README/wiki/CDN

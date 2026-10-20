@@ -29,12 +29,15 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	badgetoken "github.com/gocdnext/gocdnext/server/internal/badges"
+	bctoken "github.com/gocdnext/gocdnext/server/internal/buildcache"
 )
 
 // cacheStore is the slice of *store.Store this handler needs: resolve a
-// (project slug, token hash) to the owning project id, or reject.
+// (project slug, static token hash) to the owning project id for the manual
+// auth path, and a slug → id lookup for the minted (auto-wired) auth path.
 type cacheStore interface {
 	VerifyProjectCacheToken(ctx context.Context, slug, tokenHash string) (uuid.UUID, bool, error)
+	ProjectIDBySlug(ctx context.Context, slug string) (uuid.UUID, error)
 }
 
 // Handler serves the build cache protocol for a project.
@@ -44,16 +47,20 @@ type Handler struct {
 	log          *slog.Logger
 	getURLTTL    time.Duration
 	maxEntrySize int64
+	// signKey verifies minted (per-run, auto-wired) tokens. Empty disables the
+	// minted path; the static project token still works.
+	signKey []byte
 }
 
 // New builds the handler. getURLTTL bounds the signed read URLs; maxEntrySize
-// caps a single PUT body (0 = no cap). A nil blob store makes Mount a no-op at
-// the call site (main only mounts when an artifact backend is configured).
-func New(s cacheStore, blobs artifacts.Store, log *slog.Logger, getURLTTL time.Duration, maxEntrySize int64) *Handler {
+// caps a single PUT body (0 = no cap); signKey verifies minted tokens (nil =
+// manual-token-only). A nil blob store makes Mount a no-op at the call site
+// (main only mounts when an artifact backend is configured).
+func New(s cacheStore, blobs artifacts.Store, log *slog.Logger, getURLTTL time.Duration, maxEntrySize int64, signKey []byte) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{store: s, blobs: blobs, log: log, getURLTTL: getURLTTL, maxEntrySize: maxEntrySize}
+	return &Handler{store: s, blobs: blobs, log: log, getURLTTL: getURLTTL, maxEntrySize: maxEntrySize, signKey: signKey}
 }
 
 // Mount registers the two protocol routes. The trailing-segment {key} is the
@@ -131,11 +138,12 @@ func (h *Handler) authAndKey(w http.ResponseWriter, r *http.Request) (uuid.UUID,
 		return uuid.Nil, "", false
 	}
 	_, token, hasAuth := r.BasicAuth()
-	if !hasAuth || !badgetoken.LooksLikeToken(token) {
+	if !hasAuth {
 		h.unauthorized(w)
 		return uuid.Nil, "", false
 	}
-	projectID, ok, err := h.store.VerifyProjectCacheToken(r.Context(), slug, badgetoken.HashToken(token))
+
+	projectID, ok, err := h.resolveToken(r, slug, token)
 	if err != nil {
 		h.log.Error("buildcache auth: verify", "err", err, "slug", slug)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -146,6 +154,34 @@ func (h *Handler) authAndKey(w http.ResponseWriter, r *http.Request) (uuid.UUID,
 		return uuid.Nil, "", false
 	}
 	return projectID, key, true
+}
+
+// resolveToken authenticates a credential to a project. Two shapes:
+//   - a MINTED token (bc1. prefix): stateless HMAC verify → project id, then
+//     confirm it matches the project the slug resolves to (so a token minted
+//     for project A can't be replayed on project B's path).
+//   - a STATIC project token (43-char base64url): hashed and matched against
+//     projects.cache_token_hash for the slug.
+func (h *Handler) resolveToken(r *http.Request, slug, token string) (uuid.UUID, bool, error) {
+	if bctoken.LooksLikeMinted(token) {
+		mintedID, ok := bctoken.VerifyMintedToken(token, h.signKey, time.Now())
+		if !ok {
+			return uuid.Nil, false, nil
+		}
+		slugID, err := h.store.ProjectIDBySlug(r.Context(), slug)
+		if err != nil {
+			// Unknown slug → indistinguishable auth failure (not a 500).
+			return uuid.Nil, false, nil
+		}
+		if slugID != mintedID {
+			return uuid.Nil, false, nil
+		}
+		return mintedID, true, nil
+	}
+	if !badgetoken.LooksLikeToken(token) {
+		return uuid.Nil, false, nil
+	}
+	return h.store.VerifyProjectCacheToken(r.Context(), slug, badgetoken.HashToken(token))
 }
 
 func (h *Handler) unauthorized(w http.ResponseWriter) {

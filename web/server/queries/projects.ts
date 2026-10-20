@@ -152,6 +152,17 @@ export async function getProjectBadge(
 	);
 }
 
+export type ProjectBuildCacheSettings = {
+	enabled: boolean;
+};
+export async function getProjectBuildCache(
+	slug: string,
+): Promise<ProjectBuildCacheSettings> {
+	return readJSON<ProjectBuildCacheSettings>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/build-cache`,
+	);
+}
+
 export async function getRunDetail(
 	id: string,
 	logsPerJob = 200,
