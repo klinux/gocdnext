@@ -70,6 +70,8 @@ const (
 	AuditActionProjectRequiredChecksSet = "project_required_checks.set"
 	AuditActionProjectBadgeRotate       = "project_badge.rotate"
 	AuditActionProjectBadgeDisable      = "project_badge.disable"
+	AuditActionProjectCacheTokenRotate  = "project_cache_token.rotate"
+	AuditActionProjectCacheTokenDisable = "project_cache_token.disable"
 	AuditActionAPITokenCreate           = "api_token.create"
 	AuditActionAPITokenRevoke           = "api_token.revoke"
 	AuditActionServiceAccountCreate     = "service_account.create"

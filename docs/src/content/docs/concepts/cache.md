@@ -157,6 +157,12 @@ Two paths because Gradle has TWO independent caches:
 `GRADLE_USER_HOME` (deps) and the build cache (`--build-cache`,
 task-output memo). Cache both for full warmth.
 
+For the **build cache** specifically there's a better option than
+tarring the whole directory — see
+[Embedded Gradle build cache](#embedded-gradle-build-cache) below.
+Keep the `cache:` block for `GRADLE_USER_HOME` (deps); point
+`--build-cache` at the embedded remote cache.
+
 ### Python (uv)
 
 ```yaml
@@ -211,6 +217,65 @@ The platform's `cache:` block is for filesystem dirs; buildx's
 layer cache is content-addressable in the registry, which the
 platform doesn't mediate. See the [layer-cache recipe](/gocdnext/docs/pipelines/recipes/layer-cache/)
 for the runner-profile pattern.
+
+## Embedded Gradle build cache
+
+The `cache:` block tars a whole directory and stores it under one
+key. That's the right model for a dependency store (pnpm, `.m2`,
+`GRADLE_USER_HOME`), but it's a mismatch for **Gradle's build
+cache**, which is *entry-addressable*: each task output is keyed by
+a hash of its inputs. gocdnext can serve Gradle's build cache
+natively — it implements the
+[Gradle HTTP build cache protocol](https://docs.gradle.org/current/userguide/build_cache.html#sec:build_cache_configure_remote),
+so each task output is one object keyed by its hash.
+
+Why this is better than tarring the build-cache dir:
+
+- **Entry-level sharing.** Two branches/PRs that compute the same
+  task output share the same entry (same input hash → same key).
+- **No clobbering, ever.** Entries are immutable and idempotent —
+  concurrent writers of the same key write identical bytes.
+- **No whole-dir transfer.** A build fetches only the entries it
+  needs and pushes only new ones.
+- **No extra service.** It's an endpoint on the gocdnext server,
+  backed by the same object store. Reads redirect to a signed
+  object-store URL, so entry bytes don't stream through the server.
+
+### Enable it
+
+1. In **Project → Settings** (or `POST /api/v1/projects/{slug}/build-cache/token`),
+   generate a build-cache token. It's shown **once**; only its hash
+   is stored. The response includes a ready-to-paste snippet.
+2. Point Gradle at it in `settings.gradle.kts`:
+
+```kotlin
+buildCache {
+    remote<HttpBuildCache> {
+        url = uri("https://<your-gocdnext>/api/v1/buildcache/<project-slug>/")
+        push = true
+        credentials {
+            username = "gocdnext"
+            password = System.getenv("GOCDNEXT_CACHE_TOKEN") // the generated token
+        }
+    }
+}
+```
+
+Run with `--build-cache` (or `org.gradle.caching=true`). Keep the
+`cache:` block for `GRADLE_USER_HOME` (dependencies); the embedded
+cache handles the task-output build cache.
+
+The token authenticates the build (HTTP Basic) and scopes it to one
+project — a token for project A can't read or write project B's
+entries. Rotating or disabling the token is immediate.
+
+### Eviction
+
+Entries are immutable objects in the bucket. For now, bound growth
+with an **object-store lifecycle rule** on the `gradle-cache/`
+prefix (e.g. "delete objects older than N days") — a content-
+addressed cache tolerates this: a deleted entry is just recomputed.
+Server-tracked, last-access-based eviction is planned.
 
 ## Eviction
 

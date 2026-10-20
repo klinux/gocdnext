@@ -8,6 +8,26 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Embedded Gradle build cache (remote, entry-addressable).** gocdnext now
+  speaks the Gradle HTTP build cache protocol directly — `GET/PUT
+  /api/v1/buildcache/{slug}/{key}` — backed by the same object store, so a
+  project gets a proper remote build cache without running a separate cache
+  server. Unlike the `cache:` block (one tar per key, whole-blob overwrite),
+  each task output is one object keyed by its input hash: concurrent
+  branches/PRs **share entries by key**, writes are idempotent (no
+  clobbering), and only new entries transfer. Reads redirect to a signed
+  object-store URL so entry bytes never stream through the server; writes
+  (cache misses) proxy through, bounded by the artifact body cap. Auth is a
+  per-project token (HTTP Basic) — generate/rotate/disable via *Project →
+  Settings* or `POST/DELETE /api/v1/projects/{slug}/build-cache/token`
+  (maintainer+); only its SHA-256 hash is stored (migration `00094`). Point
+  Gradle's `HttpBuildCache` at the URL and keep the `cache:` block for
+  `GRADLE_USER_HOME` deps. Eviction for this slice is via an object-store
+  lifecycle rule on the `gradle-cache/` prefix (server-tracked eviction is
+  planned).
+
 ## v0.120.0 — 2026-10-20
 
 ### Added
