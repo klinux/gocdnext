@@ -27,26 +27,30 @@ ALTER TABLE caches ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT '@';
 -- so the same key can hold one blob per lane. The old constraint carries
 -- Postgres's conventional inline name; dropping it is required or the
 -- 2-col unique would still reject a second lane for the same key.
+--
+-- ROLLOUT NOTE (expand/contract): this swap is NOT online-safe against a
+-- still-running pre-scope binary, which upserts with ON CONFLICT
+-- (project_id, key). During a RollingUpdate the old pod briefly sees the
+-- new schema and its cache PUT/GET degrade — but the cache path is
+-- fail-open on the agent (a PUT/GET error is logged and the build runs
+-- cold, never fails), so the blast radius is "some cold builds for the
+-- ~minute of overlap", self-healing on the next run. The LRU index is
+-- intentionally left as-is on (last_accessed_at): a (scope, ...) index
+-- doesn't serve the global-LRU/quota scans or the CASE-by-scope expiry,
+-- and would force a Seq Scan+Sort as the row count grows.
 ALTER TABLE caches DROP CONSTRAINT IF EXISTS caches_project_id_key_key;
 ALTER TABLE caches ADD CONSTRAINT caches_project_key_scope_key
     UNIQUE (project_id, key, scope);
-
--- The TTL sweep applies a shorter horizon to non-'@' lanes (a dead PR
--- branch's cache should surrender disk fast). Index scope alongside the
--- LRU column so the scoped expiry scan stays cheap.
-DROP INDEX IF EXISTS caches_ready_lru_idx;
-CREATE INDEX caches_ready_lru_idx
-    ON caches (scope, last_accessed_at)
-    WHERE status = 'ready';
 
 -- +goose StatementEnd
 
 -- +goose Down
 -- +goose StatementBegin
-DROP INDEX IF EXISTS caches_ready_lru_idx;
-CREATE INDEX caches_ready_lru_idx
-    ON caches (last_accessed_at)
-    WHERE status = 'ready';
+-- Rollback collapses back to one row per (project_id, key). Isolated
+-- lanes have no home in the 2-col unique world, so drop them first and
+-- keep only the shared ('@') lane — otherwise re-adding the 2-col unique
+-- fails on the duplicate (project_id, key) pairs the feature created.
+DELETE FROM caches WHERE scope <> '@';
 ALTER TABLE caches DROP CONSTRAINT IF EXISTS caches_project_key_scope_key;
 ALTER TABLE caches ADD CONSTRAINT caches_project_id_key_key
     UNIQUE (project_id, key);

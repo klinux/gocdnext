@@ -228,6 +228,10 @@ Caches age out. The retention sweeper runs every tick and:
    (`caches.projectQuotaBytes`).
 3. Drops oldest entries globally when the total exceeds the
    global quota (`caches.globalQuotaBytes`).
+4. Reclaims rows stuck in `pending` past a grace window (an agent
+   that requested an upload slot and died before finalising it).
+   Per-ref lanes make these accumulate with branch churn, so the
+   sweep bounds the leak.
 
 What "oldest" means: LRU on `last_accessed_at`. Caches that get
 hit on every push survive forever; abandoned project caches age

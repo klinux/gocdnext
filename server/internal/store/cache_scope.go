@@ -21,39 +21,51 @@ import (
 // refs can't contain, so it never collides with a derived lane name.
 const CacheScopeShared = "@"
 
+// sharedLaneCauses is the ALLOWLIST of triggers permitted to write the
+// shared "@" lane (when they land on the default branch). Anything not
+// here — pull_request, merge_group, tag, AND any future/unknown cause —
+// is isolated, so a new trigger type can never silently clobber the
+// shared cache. This is the fail-safe direction: adding a cause that
+// SHOULD share the lane is a deliberate one-line edit; forgetting one
+// just costs that trigger a cold first build, never corruption.
+var sharedLaneCauses = map[string]bool{
+	string(domain.CauseWebhook):  true, // branch push (default label)
+	string(domain.CauseManual):   true, // manual run / deploy of the branch
+	string(domain.CauseSchedule): true, // cron on the branch
+	string(domain.CausePoll):     true, // SCM poll of the branch
+	string(domain.CauseUpstream): true, // fanout carrying the parent's lane
+}
+
 // CacheScopeFor decides which cache lane a run writes to, from the
 // trigger (cause), the run's denormalised lane ref (runs.ref — the
-// branch, or "pr:<N>" for a pull_request, or the base branch for a
-// merge_group, or "" for tag / manual-no-branch) and the project
-// default branch.
+// branch, or "pr:<N>" for a pull_request, or the ephemeral
+// "gh-readonly-queue/..." head ref for a merge_group, or "" for tag /
+// manual-no-branch) and the project default branch.
 //
-// Only a genuine push/integration landing on the default branch owns
-// the shared "@" lane. Everything else — feature-branch push, PR,
-// merge_group (whose ref IS the default branch, so cause must gate it,
-// not the ref), tag — gets an isolated "<cause>/<ref>" lane so its
-// writes can never clobber the shared blob or another ref's. The cause
-// prefix keeps lanes from colliding across trigger types (a branch
-// literally named "pr:5" pushed can't land in PR #5's lane).
+// Only a cause on the allowlist, landing on the default branch, owns the
+// shared "@" lane. Everything else — feature-branch push, PR,
+// merge_group (whose ref IS the default branch, so cause gates it, not
+// the ref), tag, and any unknown cause — gets an isolated "<cause>/<ref>"
+// lane so its writes can never clobber the shared blob or another ref's.
+// The cause prefix keeps lanes from colliding across trigger types (a
+// branch literally named "pr:5" pushed can't land in PR #5's lane).
 func CacheScopeFor(cause, ref, defaultBranch string) string {
-	switch cause {
-	case string(domain.CausePullRequest),
-		string(domain.CauseMergeGroup),
-		string(domain.CauseTag):
-		// Never the shared lane, regardless of ref. merge_group's ref is
-		// the base (often the default branch) — that's exactly the lane
-		// we must NOT let it write to.
-		return scopeLane(cause, ref)
-	default:
-		// push / webhook / manual / poll / upstream / schedule.
-		if ref != "" && ref == defaultBranch {
-			return CacheScopeShared
-		}
-		return scopeLane(cause, ref)
+	if sharedLaneCauses[cause] && ref != "" && ref == defaultBranch {
+		return CacheScopeShared
 	}
+	return scopeLane(cause, ref)
 }
 
 // scopeLane builds a non-shared lane name. cause defaults to "run" so a
 // legacy row with an empty cause still produces a stable, non-"@" lane.
+//
+// NOTE on ref fidelity: ref is runs.ref, capped at 255 bytes at write
+// time (store.insertRunSkeleton). Two refs sharing a 255-byte prefix
+// would therefore collapse into one lane and overwrite each other —
+// harmless in practice (git ref components are far shorter than 255
+// bytes, and the fallout is at worst two pathological branches sharing a
+// cache, never corruption or a cross-project leak), but see the PR
+// discussion for the full-ref follow-up if this ever bites.
 func scopeLane(cause, ref string) string {
 	if cause == "" {
 		cause = "run"
@@ -221,6 +233,47 @@ func (s *Store) ListExpiredCachesScoped(ctx context.Context, sharedTTL, scopedTT
 		var ec ExpiredCache
 		if err := rows.Scan(&ec.ID, &ec.StorageKey, &ec.SizeBytes); err != nil {
 			return nil, fmt.Errorf("store: scan expired cache: %w", err)
+		}
+		out = append(out, ec)
+	}
+	return out, rows.Err()
+}
+
+// ListExpiredPendingCaches returns rows stuck in `pending` past a grace
+// window measured from updated_at — an agent that requested a PUT ticket
+// and then died (before or after the blob upload, but before
+// MarkCacheReady) leaves one of these. Pre-scoping the leak was bounded
+// to one row per (project, key) because the upsert reused it; with
+// per-ref lanes it grows with branch/PR/tag churn, so the sweeper must
+// reclaim them. The grace must comfortably exceed the signed-PUT-URL TTL
+// (the longest a legitimate upload can still be in flight) so a slow-but-
+// live upload is never reaped mid-flight. Blob delete is idempotent, so
+// it's safe whether or not the agent got as far as uploading.
+func (s *Store) ListExpiredPendingCaches(ctx context.Context, grace time.Duration, limit int) ([]ExpiredCache, error) {
+	if grace <= 0 {
+		return nil, fmt.Errorf("store: cache pending grace must be positive")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, storage_key, size_bytes
+		FROM caches
+		WHERE status = 'pending'
+		  AND updated_at < NOW() - make_interval(secs => $1)
+		ORDER BY updated_at ASC
+		LIMIT $2
+	`, grace.Seconds(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list expired pending caches: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ExpiredCache
+	for rows.Next() {
+		var ec ExpiredCache
+		if err := rows.Scan(&ec.ID, &ec.StorageKey, &ec.SizeBytes); err != nil {
+			return nil, fmt.Errorf("store: scan expired pending cache: %w", err)
 		}
 		out = append(out, ec)
 	}

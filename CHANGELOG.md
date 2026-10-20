@@ -25,8 +25,15 @@ convention that minor bumps may carry breaking changes until 1.0).
   horizon (`GOCDNEXT_CACHE_SCOPED_TTL_DAYS` / `caches.scopedTtlDays`,
   default 7 days) so abandoned branch caches free disk fast. A PR reading
   the shared lane bumps its freshness, so the default-branch cache never
-  ages out from under active PRs. The *Project → Caches* page now shows
-  each row's lane ("default" = the shared lane). Migration `00093`.
+  ages out from under active PRs. Which triggers may write the shared lane
+  is an explicit allowlist (push/manual/schedule/poll/upstream) — any
+  other or unknown trigger is isolated, so a future trigger type can never
+  silently clobber the shared cache. The retention sweeper also reclaims
+  `pending` rows abandoned by an agent that died mid-upload (these now
+  accumulate per-ref), and `MarkCacheReady` restarts a row's TTL clock so
+  a just-completed cache is never immediately evicted. The *Project →
+  Caches* page shows each row's lane ("default" = the shared lane).
+  Migration `00093`.
 
 ### Fixed
 

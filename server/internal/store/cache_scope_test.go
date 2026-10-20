@@ -31,14 +31,20 @@ func TestCacheScopeFor(t *testing.T) {
 		{"push to default branch is shared", "webhook", "main", def, store.CacheScopeShared},
 		{"manual run on default branch is shared", "manual", "main", def, store.CacheScopeShared},
 		{"upstream fanout on default lane is shared", "upstream", "main", def, store.CacheScopeShared},
+		{"schedule on default branch is shared", "schedule", "main", def, store.CacheScopeShared},
+		{"poll on default branch is shared", "poll", "main", def, store.CacheScopeShared},
 		{"push to feature branch is isolated", "webhook", "feature-x", def, "webhook/feature-x"},
 		{"pull_request is isolated by pr lane", "pull_request", "pr:42", def, "pull_request/pr:42"},
 		{"pull_request on default-named ref still isolated", "pull_request", "main", def, "pull_request/main"},
+		{"merge_group ephemeral queue ref is isolated per group", "merge_group", "gh-readonly-queue/main/pr-7-abc123", def, "merge_group/gh-readonly-queue/main/pr-7-abc123"},
 		{"merge_group on default base is isolated, never shared", "merge_group", "main", def, "merge_group/main"},
 		{"tag with empty ref is isolated", "tag", "", def, "tag/"},
 		{"empty cause defaults to run lane", "", "feature", def, "run/feature"},
 		{"no default branch known never shares", "webhook", "main", "", "webhook/main"},
 		{"empty ref push never shares (no default match)", "webhook", "", def, "webhook/"},
+		// Fail-safe allowlist: a future/unknown cause must NEVER write the
+		// shared lane, even when it lands on the default branch.
+		{"unknown cause on default branch is isolated", "merge_queue_v2", "main", def, "merge_queue_v2/main"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -210,6 +216,78 @@ func TestListExpiredCachesScoped_DualTTL(t *testing.T) {
 	}
 }
 
+// TestListExpiredPendingCaches proves abandoned `pending` lanes are
+// reclaimable by updated_at past a grace, while a fresh pending (upload
+// still plausibly in flight) and a ready row are left alone. Without
+// this the per-ref lanes leak unboundedly when agents die mid-upload.
+func TestListExpiredPendingCaches(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, s, "pending-leak")
+
+	stale, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", "pull_request/pr:1")
+	fresh, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", "pull_request/pr:2")
+	ready, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", store.CacheScopeShared)
+	_ = s.MarkCacheReady(ctx, ready.ID, 1, "x")
+
+	// Backdate only the stale pending row's updated_at past the grace.
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET updated_at = NOW() - interval '48 hours' WHERE id = $1`, stale.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	got, err := s.ListExpiredPendingCaches(ctx, 24*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("list expired pending: %v", err)
+	}
+	ids := map[uuid.UUID]bool{}
+	for _, e := range got {
+		ids[e.ID] = true
+	}
+	if !ids[stale.ID] {
+		t.Error("stale pending lane not returned")
+	}
+	if ids[fresh.ID] {
+		t.Error("fresh pending lane returned (upload may still be in flight)")
+	}
+	if ids[ready.ID] {
+		t.Error("ready row returned by the pending sweep")
+	}
+}
+
+// TestMarkCacheReady_BumpsLastAccessed proves a long-idle row re-uploaded
+// to ready restarts its TTL clock, so the sweeper can't evict a
+// just-completed cache.
+func TestMarkCacheReady_BumpsLastAccessed(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, s, "ready-bump")
+
+	c, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", store.CacheScopeShared)
+	// Simulate a row that has been around (and idle) for ages.
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '90 days' WHERE id = $1`, c.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	if err := s.MarkCacheReady(ctx, c.ID, 1, "x"); err != nil {
+		t.Fatalf("mark ready: %v", err)
+	}
+
+	// A 30-day TTL sweep must NOT see it — last_accessed_at was bumped.
+	expired, err := s.ListExpiredCachesScoped(ctx, 30*24*time.Hour, 7*24*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("list expired: %v", err)
+	}
+	for _, e := range expired {
+		if e.ID == c.ID {
+			t.Error("freshly-ready row evicted — last_accessed_at not bumped on MarkCacheReady")
+		}
+	}
+}
+
 // TestResolveCacheScope exercises the DB glue: a run on the default
 // branch resolves to the shared lane, a PR / merge_group / missing-SCM
 // run to isolated lanes, and a missing run degrades safely.
@@ -273,14 +351,16 @@ func TestResolveCacheScope(t *testing.T) {
 		}
 	})
 
-	t.Run("merge_group on default base → isolated, not shared", func(t *testing.T) {
-		runID := insertRun(t, "merge_group", "main")
+	t.Run("merge_group ephemeral ref → isolated per group, not shared", func(t *testing.T) {
+		// Production passes the ephemeral queue head ref, not the base
+		// branch (webhook/merge_group.go → merge_group_create.go).
+		runID := insertRun(t, "merge_group", "gh-readonly-queue/main/pr-7-abc123")
 		got, _ := s.ResolveCacheScope(ctx, runID, projectID)
 		if got == store.CacheScopeShared {
 			t.Fatalf("merge_group leaked into the shared lane")
 		}
-		if got != "merge_group/main" {
-			t.Errorf("scope = %q, want merge_group/main", got)
+		if got != "merge_group/gh-readonly-queue/main/pr-7-abc123" {
+			t.Errorf("scope = %q, want per-group lane", got)
 		}
 	})
 

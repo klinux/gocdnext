@@ -61,14 +61,19 @@ func (s *Store) UpsertPendingCache(ctx context.Context, projectID uuid.UUID, key
 // MarkCacheReady finalises an upload. Called by the agent after
 // it confirms the blob backend accepted the PUT. The row flips
 // to `ready`, picks up the size + sha256 the agent calculated,
-// and becomes visible to GetReadyCacheByKey.
+// and becomes visible to GetReadyCacheByKey. last_accessed_at is
+// bumped too: a row that sat `pending` for a while (first upload,
+// or a re-upload over a long-idle row) is freshly usable now, so it
+// must start its TTL clock from here — otherwise a stale timestamp
+// could make the sweeper evict a just-completed cache.
 func (s *Store) MarkCacheReady(ctx context.Context, cacheID uuid.UUID, size int64, sha string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE caches
-		SET status         = 'ready',
-		    size_bytes     = $2,
-		    content_sha256 = $3,
-		    updated_at     = NOW()
+		SET status           = 'ready',
+		    size_bytes       = $2,
+		    content_sha256   = $3,
+		    updated_at       = NOW(),
+		    last_accessed_at = NOW()
 		WHERE id = $1
 	`, cacheID, size, sha)
 	if err != nil {

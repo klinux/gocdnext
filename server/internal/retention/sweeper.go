@@ -54,6 +54,14 @@ const (
 	// purpose; the shared lane a PR falls back to stays warm regardless
 	// (every PR read bumps it).
 	DefaultCacheScopedTTL = 7 * 24 * time.Hour
+	// DefaultCachePendingGrace: a row stuck in `pending` this long past
+	// its updated_at is an abandoned upload (agent died before
+	// MarkCacheReady) and gets reclaimed. Comfortably beyond any signed-
+	// PUT-URL lifetime so a slow-but-live upload is never reaped
+	// mid-flight. Per-ref lanes make these accumulate with branch churn
+	// (pre-scoping the upsert reused one row per key), so the sweep
+	// matters now.
+	DefaultCachePendingGrace = 24 * time.Hour
 	// DefaultCacheProjectQuotaBytes: 0 = disabled. Quotas are
 	// opt-in because a sensible default needs real-world data
 	// (how big does a pnpm-store tree really get? a Go module
@@ -101,6 +109,7 @@ type Sweeper struct {
 	globalQuotaBytes       int64
 	cacheTTL               time.Duration
 	cacheScopedTTL         time.Duration
+	cachePendingGrace      time.Duration
 	cacheProjectQuotaBytes int64
 	cacheGlobalQuotaBytes  int64
 
@@ -156,6 +165,7 @@ func New(s *store.Store, storage artifacts.Store, log *slog.Logger) *Sweeper {
 		globalQuotaBytes:       DefaultGlobalQuotaBytes,
 		cacheTTL:               DefaultCacheTTL,
 		cacheScopedTTL:         DefaultCacheScopedTTL,
+		cachePendingGrace:      DefaultCachePendingGrace,
 		cacheProjectQuotaBytes: DefaultCacheProjectQuotaBytes,
 		cacheGlobalQuotaBytes:  DefaultCacheGlobalQuotaBytes,
 		logRetention:           DefaultLogRetention,
@@ -197,6 +207,16 @@ func (s *Sweeper) WithCacheProjectQuotaBytes(b int64) *Sweeper {
 func (s *Sweeper) WithCacheTTL(d time.Duration) *Sweeper {
 	if d >= 0 {
 		s.cacheTTL = d
+	}
+	return s
+}
+
+// WithCachePendingGrace overrides how long a row may sit `pending`
+// before the sweep reclaims it as an abandoned upload. Must exceed the
+// signed-PUT-URL TTL. 0 disables the pending sweep.
+func (s *Sweeper) WithCachePendingGrace(d time.Duration) *Sweeper {
+	if d >= 0 {
+		s.cachePendingGrace = d
 	}
 	return s
 }
@@ -380,9 +400,12 @@ type SweepStats struct {
 	CachesDeleted              int
 	CachesDeletedByQuota       int
 	CachesDeletedByGlobalQuota int
-	CacheStorageFailures       int
-	CacheDBFailures            int
-	CacheBytesFreed            int64
+	// CachesPendingDeleted: abandoned `pending` rows (upload requested,
+	// never finalised) reclaimed past the grace window.
+	CachesPendingDeleted int
+	CacheStorageFailures int
+	CacheDBFailures      int
+	CacheBytesFreed      int64
 }
 
 // SweepOnce runs a single batch and returns what happened. Exported so
@@ -515,6 +538,18 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		s.deleteCaches(ctx, expired, &stats, cacheEvictTTL)
 	}
 
+	// Abandoned `pending` rows: an agent that got a PUT ticket and died
+	// before MarkCacheReady leaves one per lane. TTL/quota only look at
+	// `ready` rows, so without this pass they'd leak forever — and
+	// per-ref lanes make them accumulate with branch churn.
+	if s.cachePendingGrace > 0 {
+		stuck, err := s.store.ListExpiredPendingCaches(ctx, s.cachePendingGrace, s.batchSize)
+		if err != nil {
+			s.log.Warn("retention: list expired pending caches", "err", err)
+		}
+		s.deleteCaches(ctx, stuck, &stats, cacheEvictPending)
+	}
+
 	// Per-project quota runs AFTER TTL: a TTL pass may have
 	// already brought the project back under quota, so
 	// re-computing usage here avoids over-eviction. LRU across
@@ -606,6 +641,7 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		"caches_deleted", stats.CachesDeleted,
 		"caches_deleted_by_quota", stats.CachesDeletedByQuota,
 		"caches_deleted_by_global_quota", stats.CachesDeletedByGlobalQuota,
+		"caches_pending_deleted", stats.CachesPendingDeleted,
 		"cache_bytes_freed", stats.CacheBytesFreed,
 		"cache_storage_failures", stats.CacheStorageFailures,
 		"cache_db_failures", stats.CacheDBFailures)
@@ -627,6 +663,7 @@ const (
 	cacheEvictTTL cacheEvictionKind = iota
 	cacheEvictProjectQuota
 	cacheEvictGlobalQuota
+	cacheEvictPending
 )
 
 func (k cacheEvictionKind) String() string {
@@ -635,6 +672,8 @@ func (k cacheEvictionKind) String() string {
 		return "project_quota"
 	case cacheEvictGlobalQuota:
 		return "global_quota"
+	case cacheEvictPending:
+		return "pending"
 	default:
 		return "ttl"
 	}
@@ -665,6 +704,8 @@ func (s *Sweeper) deleteCaches(ctx context.Context, rows []store.ExpiredCache, s
 			stats.CachesDeletedByQuota++
 		case cacheEvictGlobalQuota:
 			stats.CachesDeletedByGlobalQuota++
+		case cacheEvictPending:
+			stats.CachesPendingDeleted++
 		default:
 			stats.CachesDeleted++
 		}
@@ -685,6 +726,7 @@ type Snapshot struct {
 	GlobalQuotaBytes       int64         `json:"global_quota_bytes"`
 	CacheTTL               time.Duration `json:"cache_ttl"`
 	CacheScopedTTL         time.Duration `json:"cache_scoped_ttl"`
+	CachePendingGrace      time.Duration `json:"cache_pending_grace"`
 	CacheProjectQuotaBytes int64         `json:"cache_project_quota_bytes"`
 	CacheGlobalQuotaBytes  int64         `json:"cache_global_quota_bytes"`
 	LastSweepAt            time.Time     `json:"last_sweep_at,omitempty"`
@@ -706,6 +748,7 @@ func (s *Sweeper) Snapshot() Snapshot {
 		GlobalQuotaBytes:       s.globalQuotaBytes,
 		CacheTTL:               s.cacheTTL,
 		CacheScopedTTL:         s.cacheScopedTTL,
+		CachePendingGrace:      s.cachePendingGrace,
 		CacheProjectQuotaBytes: s.cacheProjectQuotaBytes,
 		CacheGlobalQuotaBytes:  s.cacheGlobalQuotaBytes,
 		LastSweepAt:            s.lastSweepAt,
