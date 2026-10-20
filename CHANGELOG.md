@@ -34,12 +34,15 @@ convention that minor bumps may carry breaking changes until 1.0).
   a just-completed cache is never immediately evicted. The *Project →
   Caches* page shows each row's lane ("default" = the shared lane).
   Migration `00093`. **Upgrade note:** `00093` swaps a UNIQUE constraint
-  and is not online-safe against the previous binary — roll this upgrade
-  out without overlap (`server.strategy: { type: Recreate }` for the
-  upgrade, or scale the server to 0 → migrate → scale up), then revert to
-  RollingUpdate if desired. The cache path is fail-open, so the worst case
-  of a plain rolling upgrade is wrong/cold cache for the ~minute overlap,
-  never a failed job.
+  and is not online-safe against the previous binary, so the chart now
+  defaults the server Deployment to `strategy: Recreate` (no two-version
+  overlap). During a RollingUpdate overlap the old pod's cache GET (which
+  ignores the new `scope`) can hand a ref-scoped blob to a default-branch
+  build — cross-ref cache poisoning that can fail tasks or alter build
+  outputs (the cache RPC is fail-open, but a wrong-yet-valid blob isn't an
+  error, so fail-open doesn't catch it). Keep `Recreate` until your minimum
+  supported version is past `00093`; only then is reverting to
+  `RollingUpdate` safe.
 
 ### Fixed
 

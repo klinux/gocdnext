@@ -31,9 +31,13 @@ const CacheScopeShared = "@"
 var sharedLaneCauses = map[string]bool{
 	string(domain.CauseWebhook):  true, // branch push (default label)
 	string(domain.CauseManual):   true, // manual run / deploy of the branch
-	string(domain.CauseSchedule): true, // cron on the branch
+	string(domain.CauseSchedule): true, // reserved schedule cause
 	string(domain.CausePoll):     true, // SCM poll of the branch
 	string(domain.CauseUpstream): true, // fanout carrying the parent's lane
+	// Per-pipeline cron stamps cause="cron" literally (cron.go), distinct
+	// from CauseSchedule — a cron on the default branch is a legit shared-
+	// lane build, so list it or it'd needlessly run cold on its own lane.
+	"cron": true,
 }
 
 // CacheScopeFor decides which cache lane a run writes to, from the
@@ -120,10 +124,24 @@ func cacheStorageKeyScoped(projectID uuid.UUID, key, scope string) string {
 	return fmt.Sprintf("cache/%s/%s", projectID, hex.EncodeToString(sum[:]))
 }
 
+// ErrCacheReclaiming signals the lane's row is mid-reclaim (status
+// 'deleting'): the sweeper has claimed it and is about to delete its blob,
+// which shares the deterministic storage_key. Reviving it here would let
+// the sweeper delete THIS upload's object. The cache RPC treats it as a
+// soft PUT failure (the agent is fail-open: logs + the next run rebuilds).
+var ErrCacheReclaiming = errors.New("store: cache lane is being reclaimed")
+
 // UpsertPendingCacheScoped marks a fresh upload in flight for
 // (project_id, key, scope). First call on a new lane inserts; a repeat
 // flips the row back to pending so GETs miss until MarkCacheReady. The
 // storage_key is stable per lane, so re-uploads overwrite in place.
+//
+// It will NOT revive a row the sweeper has tombstoned (status='deleting')
+// — the WHERE guard makes the upsert a no-op in that case, returning
+// ErrCacheReclaiming. Because the storage_key is deterministic, reviving a
+// tombstone would point a fresh upload at a blob the sweeper is about to
+// delete (see ClaimStalePendingCaches). The window is tiny (one sweep tick
+// deletes the blob + row, then a plain INSERT succeeds) and non-corrupting.
 func (s *Store) UpsertPendingCacheScoped(ctx context.Context, projectID uuid.UUID, key, scope string) (Cache, error) {
 	if key == "" {
 		return Cache{}, fmt.Errorf("store: cache key required")
@@ -139,6 +157,7 @@ func (s *Store) UpsertPendingCacheScoped(ctx context.Context, projectID uuid.UUI
 		ON CONFLICT (project_id, key, scope) DO UPDATE
 		SET status     = 'pending',
 		    updated_at = NOW()
+		WHERE caches.status <> 'deleting'
 		RETURNING id, project_id, key, scope, storage_key, size_bytes,
 		          COALESCE(content_sha256, ''), status,
 		          created_at, updated_at, last_accessed_at
@@ -146,6 +165,10 @@ func (s *Store) UpsertPendingCacheScoped(ctx context.Context, projectID uuid.UUI
 		&c.ID, &c.ProjectID, &c.Key, &c.Scope, &c.StorageKey, &c.SizeBytes,
 		&c.ContentSHA256, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.LastAccessedAt,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Conflict row is a tombstone; the DO UPDATE WHERE suppressed it.
+		return Cache{}, ErrCacheReclaiming
+	}
 	if err != nil {
 		return Cache{}, fmt.Errorf("store: upsert pending cache: %w", err)
 	}
@@ -241,33 +264,50 @@ func (s *Store) ListExpiredCachesScoped(ctx context.Context, sharedTTL, scopedTT
 	return out, rows.Err()
 }
 
-// ListExpiredPendingCaches returns rows stuck in `pending` past a grace
-// window measured from updated_at — an agent that requested a PUT ticket
-// and then died (before or after the blob upload, but before
-// MarkCacheReady) leaves one of these. Pre-scoping the leak was bounded
-// to one row per (project, key) because the upsert reused it; with
-// per-ref lanes it grows with branch/PR/tag churn, so the sweeper must
-// reclaim them. The grace must comfortably exceed the signed-PUT-URL TTL
-// (the longest a legitimate upload can still be in flight) so a slow-but-
-// live upload is never reaped mid-flight. Blob delete is idempotent, so
-// it's safe whether or not the agent got as far as uploading.
-func (s *Store) ListExpiredPendingCaches(ctx context.Context, grace time.Duration, limit int) ([]ExpiredCache, error) {
+// ClaimStalePendingCaches atomically TOMBSTONES (status -> 'deleting') a
+// bounded batch of reclaimable rows and returns their storage keys so the
+// sweeper can delete each blob and then the row. Two populations are
+// claimed, mirroring ClaimArtifactsForSweep:
+//
+//  1. `pending` rows past `grace` — an agent that got a PUT ticket and
+//     died before MarkCacheReady. Pre-scoping this leak was bounded to one
+//     row per (project, key); per-ref lanes make it grow with branch/PR/
+//     tag churn. `grace` must exceed the signed-PUT-URL TTL so a slow-but-
+//     live upload is never reaped mid-flight.
+//  2. `deleting` rows past `retryGrace` — a previous sweep crashed between
+//     the blob delete and the row delete. Re-claimed and retried
+//     idempotently so a transient storage error can't orphan the object.
+//
+// Tombstoning (not deleting) is the claim: the storage_key is deterministic
+// per lane, so if we deleted the row outright a concurrent RequestCachePut
+// would recreate it with the SAME key and our pending blob delete would hit
+// that fresh upload. The 'deleting' marker blocks revival
+// (UpsertPendingCacheScoped) and promotion (MarkCacheReady), so the blob is
+// ours to delete. FOR UPDATE SKIP LOCKED keeps it safe across sweepers.
+func (s *Store) ClaimStalePendingCaches(ctx context.Context, grace, retryGrace time.Duration, limit int) ([]ExpiredCache, error) {
 	if grace <= 0 {
 		return nil, fmt.Errorf("store: cache pending grace must be positive")
+	}
+	if retryGrace <= 0 {
+		retryGrace = grace
 	}
 	if limit <= 0 {
 		limit = 500
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, storage_key, size_bytes
-		FROM caches
-		WHERE status = 'pending'
-		  AND updated_at < NOW() - make_interval(secs => $1)
-		ORDER BY updated_at ASC
-		LIMIT $2
-	`, grace.Seconds(), limit)
+		UPDATE caches SET status = 'deleting', updated_at = NOW()
+		WHERE id IN (
+			SELECT id FROM caches
+			WHERE (status = 'pending'  AND updated_at < NOW() - make_interval(secs => $1))
+			   OR (status = 'deleting' AND updated_at < NOW() - make_interval(secs => $2))
+			ORDER BY updated_at ASC
+			LIMIT $3
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, storage_key, size_bytes
+	`, grace.Seconds(), retryGrace.Seconds(), limit)
 	if err != nil {
-		return nil, fmt.Errorf("store: list expired pending caches: %w", err)
+		return nil, fmt.Errorf("store: claim stale pending caches: %w", err)
 	}
 	defer rows.Close()
 
@@ -275,40 +315,9 @@ func (s *Store) ListExpiredPendingCaches(ctx context.Context, grace time.Duratio
 	for rows.Next() {
 		var ec ExpiredCache
 		if err := rows.Scan(&ec.ID, &ec.StorageKey, &ec.SizeBytes); err != nil {
-			return nil, fmt.Errorf("store: scan expired pending cache: %w", err)
+			return nil, fmt.Errorf("store: scan claimed pending cache: %w", err)
 		}
 		out = append(out, ec)
 	}
 	return out, rows.Err()
-}
-
-// ClaimStalePendingCache atomically deletes one pending row ONLY if it is
-// still pending AND still past the grace, returning its storage key so
-// the caller can then delete the blob. claimed=false means a concurrent
-// RequestCachePut renewed it (bumped updated_at) or MarkCacheReady
-// flipped it to ready in the window between the sweeper listing the row
-// and acting on it — in which case we must NOT touch its blob, because a
-// live upload session now owns it. This is the race fix for the
-// list-then-delete gap: the row delete is the claim, and the blob delete
-// only follows a successful claim (never the reverse), so a renewed
-// upload keeps both its row and its object.
-func (s *Store) ClaimStalePendingCache(ctx context.Context, id uuid.UUID, grace time.Duration) (ExpiredCache, bool, error) {
-	if grace <= 0 {
-		return ExpiredCache{}, false, fmt.Errorf("store: cache pending grace must be positive")
-	}
-	var ec ExpiredCache
-	err := s.pool.QueryRow(ctx, `
-		DELETE FROM caches
-		WHERE id = $1
-		  AND status = 'pending'
-		  AND updated_at < NOW() - make_interval(secs => $2)
-		RETURNING id, storage_key, size_bytes
-	`, id, grace.Seconds()).Scan(&ec.ID, &ec.StorageKey, &ec.SizeBytes)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ExpiredCache{}, false, nil
-	}
-	if err != nil {
-		return ExpiredCache{}, false, fmt.Errorf("store: claim stale pending cache: %w", err)
-	}
-	return ec, true, nil
 }

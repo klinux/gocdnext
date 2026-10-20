@@ -11,21 +11,24 @@ global:
 server:
   enabled: true
   replicas: 1
-  # Deployment update strategy. Empty = Kubernetes default (RollingUpdate).
+  # Deployment update strategy. Defaults to Recreate (no two-version
+  # overlap) because migration 00093 (PR-safe cache scoping) swaps a UNIQUE
+  # constraint and is NOT online-safe against the previous binary: during a
+  # RollingUpdate overlap the old pod runs against the new schema and its
+  # cache GET (which ignores `scope`) can hand a ref-scoped blob to a job
+  # that asked for the shared cache — cross-ref cache poisoning. The cache
+  # RPC is fail-open, but a wrong-yet-valid blob is not an error, so it can
+  # fail tasks or change build outputs; fail-open does not catch it.
   #
-  # UPGRADE NOTE: a migration that swaps a UNIQUE constraint is not
-  # online-safe against the previous binary — during a RollingUpdate the
-  # old pod briefly runs against the new schema. For the PR-safe cache
-  # scoping migration (00093) the old pod's cache GET could return a
-  # ref-scoped blob to a job that asked for the shared one (the cache path
-  # is fail-open, so the fallout is wrong/cold cache for the overlap, never
-  # a failed job or data loss — but it breaks the isolation invariant for
-  # that window). To upgrade TO that version without overlap, set:
-  #   strategy: { type: Recreate }
-  # for the upgrade (or scale the server to 0, let the new pod migrate +
-  # start, then scale up). Revert to RollingUpdate afterwards if you don't
-  # want per-deploy downtime on future upgrades.
-  strategy: {}
+  # Recreate trades a brief restart gap for correctness. Do NOT switch back
+  # to RollingUpdate just because you've upgraded past 00093: an operator
+  # whose smallest supported upgrade still crosses 00093 would hit the same
+  # window. It's only safe to revert once your minimum supported version is
+  # already past 00093 (or via a future expand/contract). An operator who
+  # has crossed the migration and accepts that can set, explicitly:
+  #   strategy: { type: RollingUpdate }
+  strategy:
+    type: Recreate
   image:
     repository: gocdnext-server
     tag: ""           # defaults to Chart.appVersion

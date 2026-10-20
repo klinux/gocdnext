@@ -672,42 +672,39 @@ func (k cacheEvictionKind) String() string {
 	}
 }
 
-// reclaimStalePending reclaims abandoned `pending` cache rows race-safely.
-// Unlike the ready-row passes (blob delete, then row delete), the order is
-// REVERSED: claim the row first (a conditional DELETE that only fires if
-// it's still stale-pending), and delete the blob ONLY on a successful
-// claim. That closes the list-then-act race — if a concurrent
-// RequestCachePut renewed the row (new upload session) between the list
-// and the claim, the claim no-ops and we never touch the live blob.
+// reclaimStalePending reclaims abandoned `pending` cache rows (and retries
+// stuck `deleting` tombstones) race-safely via a tombstone claim. The claim
+// flips the row to 'deleting' FIRST (blocking revival/promotion), THEN the
+// blob is deleted, THEN the row. A storage failure leaves the tombstone in
+// place so the next tick retries it — no orphaned object, and no risk of
+// deleting a blob a concurrent PUT recreated under the same deterministic
+// storage_key (that PUT can't revive a 'deleting' row). The retry grace for
+// stuck tombstones reuses graceMinutes (the same window the artifact sweep
+// uses for a crashed 'deleting').
 func (s *Sweeper) reclaimStalePending(ctx context.Context, stats *SweepStats) {
-	candidates, err := s.store.ListExpiredPendingCaches(ctx, s.cachePendingGrace, s.batchSize)
+	retryGrace := time.Duration(s.graceMinutes) * time.Minute
+	claimed, err := s.store.ClaimStalePendingCaches(ctx, s.cachePendingGrace, retryGrace, s.batchSize)
 	if err != nil {
-		s.log.Warn("retention: list expired pending caches", "err", err)
+		s.log.Warn("retention: claim stale pending caches", "err", err)
+		return
 	}
-	for _, c := range candidates {
-		claimed, ok, err := s.store.ClaimStalePendingCache(ctx, c.ID, s.cachePendingGrace)
-		if err != nil {
-			s.log.Warn("retention: claim stale pending cache", "cache_id", c.ID, "err", err)
-			stats.CacheDBFailures++
-			continue
-		}
-		if !ok {
-			// Renewed by a concurrent PUT (or finalised) in the window —
-			// leave its blob alone.
-			continue
-		}
-		if err := s.storage.Delete(ctx, claimed.StorageKey); err != nil && !errors.Is(err, artifacts.ErrNotFound) {
-			// Row already gone; a rare blob-delete failure orphans the
-			// object (no row to retry from). Acceptable: pending blobs are
-			// rare and small, and the alternative (blob-first) reopens the
-			// race. Log loudly.
-			s.log.Warn("retention: pending blob delete failed (orphaned)",
-				"storage_key", claimed.StorageKey, "err", err)
+	for _, c := range claimed {
+		if err := s.storage.Delete(ctx, c.StorageKey); err != nil && !errors.Is(err, artifacts.ErrNotFound) {
+			// Leave the 'deleting' tombstone; the next tick re-claims it
+			// past retryGrace and retries the blob delete. No orphan.
+			s.log.Warn("retention: pending blob delete failed (tombstone kept for retry)",
+				"storage_key", c.StorageKey, "err", err)
 			stats.CacheStorageFailures++
 			continue
 		}
+		if err := s.store.DeleteCacheRow(ctx, c.ID); err != nil {
+			s.log.Warn("retention: pending row delete failed (tombstone kept for retry)",
+				"cache_id", c.ID, "err", err)
+			stats.CacheDBFailures++
+			continue
+		}
 		stats.CachesPendingDeleted++
-		stats.CacheBytesFreed += claimed.SizeBytes
+		stats.CacheBytesFreed += c.SizeBytes
 	}
 }
 

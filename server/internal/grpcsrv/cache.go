@@ -82,6 +82,15 @@ func (a *AgentService) RequestCachePut(
 
 	scope := a.resolveCacheScope(ctx, req.GetRunId(), projectID)
 	c, err := a.store.UpsertPendingCacheScoped(ctx, projectID, req.GetKey(), scope)
+	if errors.Is(err, store.ErrCacheReclaiming) {
+		// The lane is being reclaimed by the sweeper (tombstone). Not a
+		// server fault — tell the agent to skip this store (it's fail-open:
+		// the next run rebuilds). Brief and self-clearing once the sweep
+		// finishes.
+		a.log.Info("cache put: lane reclaiming, skipping store",
+			"session", sess.ID, "project", projectID, "key", req.GetKey(), "scope", scope)
+		return nil, status.Error(codes.FailedPrecondition, "cache lane is being reclaimed")
+	}
 	if err != nil {
 		a.log.Error("cache put: upsert failed", "err", err, "session", sess.ID, "key", req.GetKey())
 		return nil, status.Error(codes.Internal, "persist cache")

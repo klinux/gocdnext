@@ -32,6 +32,7 @@ func TestCacheScopeFor(t *testing.T) {
 		{"manual run on default branch is shared", "manual", "main", def, store.CacheScopeShared},
 		{"upstream fanout on default lane is shared", "upstream", "main", def, store.CacheScopeShared},
 		{"schedule on default branch is shared", "schedule", "main", def, store.CacheScopeShared},
+		{"cron (real per-pipeline cause) on default branch is shared", "cron", "main", def, store.CacheScopeShared},
 		{"poll on default branch is shared", "poll", "main", def, store.CacheScopeShared},
 		{"push to feature branch is isolated", "webhook", "feature-x", def, "webhook/feature-x"},
 		{"pull_request is isolated by pr lane", "pull_request", "pr:42", def, "pull_request/pr:42"},
@@ -216,100 +217,113 @@ func TestListExpiredCachesScoped_DualTTL(t *testing.T) {
 	}
 }
 
-// TestListExpiredPendingCaches proves abandoned `pending` lanes are
-// reclaimable by updated_at past a grace, while a fresh pending (upload
-// still plausibly in flight) and a ready row are left alone. Without
-// this the per-ref lanes leak unboundedly when agents die mid-upload.
-func TestListExpiredPendingCaches(t *testing.T) {
-	pool := dbtest.SetupPool(t)
-	s := store.New(pool)
-	ctx := context.Background()
-	projectID := seedProject(t, s, "pending-leak")
-
-	stale, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", "pull_request/pr:1")
-	fresh, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", "pull_request/pr:2")
-	ready, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", store.CacheScopeShared)
-	_ = s.MarkCacheReady(ctx, ready.ID, 1, "x")
-
-	// Backdate only the stale pending row's updated_at past the grace.
-	if _, err := pool.Exec(ctx,
-		`UPDATE caches SET updated_at = NOW() - interval '48 hours' WHERE id = $1`, stale.ID); err != nil {
-		t.Fatalf("backdate: %v", err)
-	}
-
-	got, err := s.ListExpiredPendingCaches(ctx, 24*time.Hour, 10)
-	if err != nil {
-		t.Fatalf("list expired pending: %v", err)
-	}
-	ids := map[uuid.UUID]bool{}
-	for _, e := range got {
-		ids[e.ID] = true
-	}
-	if !ids[stale.ID] {
-		t.Error("stale pending lane not returned")
-	}
-	if ids[fresh.ID] {
-		t.Error("fresh pending lane returned (upload may still be in flight)")
-	}
-	if ids[ready.ID] {
-		t.Error("ready row returned by the pending sweep")
-	}
-}
-
-// TestClaimStalePendingCache proves the race-safe reclaim: a stale
-// pending row is claimed exactly once, but a row renewed by a concurrent
-// PUT (updated_at bumped) or already flipped to ready is NOT claimed — so
-// the sweeper never deletes the blob of a live upload session.
-func TestClaimStalePendingCache(t *testing.T) {
+// TestClaimStalePendingCaches proves the tombstone claim: a stale pending
+// row is claimed (flipped to 'deleting'), a fresh pending row and a ready
+// row are left alone, and a stuck 'deleting' row past the retry grace is
+// re-claimed for a blob-delete retry.
+func TestClaimStalePendingCaches(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	ctx := context.Background()
 	projectID := seedProject(t, s, "pending-claim")
 	grace := 24 * time.Hour
+	retry := 5 * time.Minute
 
-	backdate := func(id uuid.UUID) {
+	backdateUpdated := func(id uuid.UUID, interval string) {
 		if _, err := pool.Exec(ctx,
-			`UPDATE caches SET updated_at = NOW() - interval '48 hours' WHERE id = $1`, id); err != nil {
+			`UPDATE caches SET updated_at = NOW() - `+interval+` WHERE id = $1`, id); err != nil {
 			t.Fatalf("backdate: %v", err)
 		}
 	}
 
-	t.Run("stale pending is claimed once", func(t *testing.T) {
-		c, _ := s.UpsertPendingCacheScoped(ctx, projectID, "a", "webhook/x")
-		backdate(c.ID)
-		got, ok, err := s.ClaimStalePendingCache(ctx, c.ID, grace)
-		if err != nil || !ok {
-			t.Fatalf("claim: ok=%v err=%v", ok, err)
-		}
-		if got.StorageKey != c.StorageKey {
-			t.Errorf("storage key = %q, want %q", got.StorageKey, c.StorageKey)
-		}
-		// Second claim finds nothing (row gone).
-		if _, ok, _ := s.ClaimStalePendingCache(ctx, c.ID, grace); ok {
-			t.Error("row claimed twice")
-		}
-	})
+	stale, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", "pull_request/pr:1")
+	fresh, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", "pull_request/pr:2")
+	ready, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", store.CacheScopeShared)
+	_ = s.MarkCacheReady(ctx, ready.ID, 1, "x")
+	backdateUpdated(stale.ID, "interval '48 hours'")
 
-	t.Run("renewed pending is NOT claimed", func(t *testing.T) {
-		c, _ := s.UpsertPendingCacheScoped(ctx, projectID, "b", "webhook/y")
-		backdate(c.ID)
-		// A concurrent PUT renews the row between list and claim.
-		if _, err := s.UpsertPendingCacheScoped(ctx, projectID, "b", "webhook/y"); err != nil {
-			t.Fatalf("renew: %v", err)
-		}
-		if _, ok, err := s.ClaimStalePendingCache(ctx, c.ID, grace); err != nil || ok {
-			t.Errorf("renewed row claimed: ok=%v err=%v", ok, err)
-		}
-	})
+	claimed, err := s.ClaimStalePendingCaches(ctx, grace, retry, 10)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	ids := map[uuid.UUID]bool{}
+	for _, e := range claimed {
+		ids[e.ID] = true
+	}
+	if !ids[stale.ID] {
+		t.Error("stale pending lane not claimed")
+	}
+	if ids[fresh.ID] {
+		t.Error("fresh pending lane claimed (upload may still be in flight)")
+	}
+	if ids[ready.ID] {
+		t.Error("ready row claimed by the pending reclaim")
+	}
 
-	t.Run("ready row is NOT claimed", func(t *testing.T) {
-		c, _ := s.UpsertPendingCacheScoped(ctx, projectID, "c", "webhook/z")
-		backdate(c.ID)
-		_ = s.MarkCacheReady(ctx, c.ID, 1, "x")
-		if _, ok, _ := s.ClaimStalePendingCache(ctx, c.ID, grace); ok {
-			t.Error("ready row claimed by pending reclaim")
+	// The claimed row is now a tombstone, not deleted.
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM caches WHERE id = $1`, stale.ID).Scan(&status); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status != "deleting" {
+		t.Errorf("claimed row status = %q, want deleting", status)
+	}
+
+	// Freshly tombstoned (updated_at just bumped) → not re-claimed yet.
+	again, _ := s.ClaimStalePendingCaches(ctx, grace, retry, 10)
+	for _, e := range again {
+		if e.ID == stale.ID {
+			t.Error("fresh tombstone re-claimed before the retry grace")
 		}
-	})
+	}
+
+	// A tombstone stuck past the retry grace IS re-claimed (crash retry).
+	backdateUpdated(stale.ID, "interval '10 minutes'")
+	retried, _ := s.ClaimStalePendingCaches(ctx, grace, retry, 10)
+	var sawRetry bool
+	for _, e := range retried {
+		if e.ID == stale.ID {
+			sawRetry = true
+		}
+	}
+	if !sawRetry {
+		t.Error("stuck 'deleting' tombstone not re-claimed past the retry grace")
+	}
+}
+
+// TestTombstoneBlocksReviveAndPromote proves a 'deleting' row can't be
+// resurrected by a racing PUT (which would point a fresh upload at the
+// blob the sweeper is deleting) or finalised by a racing MarkCacheReady.
+func TestTombstoneBlocksReviveAndPromote(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, s, "tombstone-guard")
+
+	c, _ := s.UpsertPendingCacheScoped(ctx, projectID, "k", "webhook/x")
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET updated_at = NOW() - interval '48 hours' WHERE id = $1`, c.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	// Tombstone it.
+	if _, err := s.ClaimStalePendingCaches(ctx, 24*time.Hour, 5*time.Minute, 10); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	// A racing PUT must not revive the tombstone.
+	if _, err := s.UpsertPendingCacheScoped(ctx, projectID, "k", "webhook/x"); !errors.Is(err, store.ErrCacheReclaiming) {
+		t.Errorf("revive err = %v, want ErrCacheReclaiming", err)
+	}
+	// A racing finalise must not promote it.
+	if err := s.MarkCacheReady(ctx, c.ID, 1, "x"); !errors.Is(err, store.ErrCacheNotFound) {
+		t.Errorf("promote err = %v, want ErrCacheNotFound", err)
+	}
+	// Still a tombstone.
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM caches WHERE id = $1`, c.ID).Scan(&status)
+	if status != "deleting" {
+		t.Errorf("status = %q, want deleting", status)
+	}
 }
 
 // TestMarkCacheReady_BumpsLastAccessed proves a long-idle row re-uploaded

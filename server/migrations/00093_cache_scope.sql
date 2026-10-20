@@ -35,14 +35,11 @@ ALTER TABLE caches ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT '@';
 -- match MULTIPLE lanes, return one with a valid SHA, and hand a
 -- ref-scoped blob to a job that asked for the shared cache. The cache
 -- path is fail-open (errors → cold build), but a wrong-but-valid blob
--- restore is NOT an error, so it bypasses fail-open and breaks the
--- isolation invariant for the overlap window. Deploy this WITHOUT overlap:
--- set the server Deployment strategy to Recreate for the upgrade, or scale
--- to 0 → migrate → scale up (chart: server.strategy, see values.yaml).
--- In practice the window is small (before this migration every row is the
--- '@' lane, and a scoped 'ready' row only appears after a full non-default
--- job finishes + uploads, which outlasts a normal drain) — but the safe
--- rollout is cheap, so do it.
+-- restore is NOT an error, so it bypasses fail-open: it can poison a
+-- default-branch build with a PR's cache and fail tasks or change outputs.
+-- Deploy this WITHOUT overlap. The chart defaults the server Deployment to
+-- strategy: Recreate for exactly this reason (see values.yaml); keep it
+-- until your minimum supported version is past 00093.
 --
 -- The LRU index is intentionally left as-is on (last_accessed_at): a
 -- (scope, ...) index doesn't serve the global-LRU/quota scans or the
@@ -51,14 +48,15 @@ ALTER TABLE caches DROP CONSTRAINT IF EXISTS caches_project_id_key_key;
 ALTER TABLE caches ADD CONSTRAINT caches_project_key_scope_key
     UNIQUE (project_id, key, scope);
 
--- The retention sweeper reclaims rows stuck in `pending` past a grace
--- window (abandoned uploads), scanning by (status='pending', updated_at).
--- The existing LRU index is partial on status='ready', so without this
--- the pending sweep is a full-table Seq Scan + Sort every tick. Per-ref
--- lanes make pending rows accumulate, so index them.
+-- The retention sweeper reclaims abandoned `pending` uploads and retries
+-- rows stuck in `deleting` (tombstones), scanning by updated_at. The
+-- existing LRU index is partial on status='ready', so without this the
+-- reclaim pass is a full-table Seq Scan + Sort every tick. Per-ref lanes
+-- make pending rows accumulate; `deleting` rows are rare (only on a blob-
+-- delete failure) but share the index so the retry scan stays cheap too.
 CREATE INDEX caches_pending_updated_idx
     ON caches (updated_at)
-    WHERE status = 'pending';
+    WHERE status IN ('pending', 'deleting');
 
 -- +goose StatementEnd
 

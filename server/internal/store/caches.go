@@ -66,6 +66,11 @@ func (s *Store) UpsertPendingCache(ctx context.Context, projectID uuid.UUID, key
 // or a re-upload over a long-idle row) is freshly usable now, so it
 // must start its TTL clock from here — otherwise a stale timestamp
 // could make the sweeper evict a just-completed cache.
+//
+// A row the sweeper has tombstoned (status='deleting', its blob being
+// reclaimed) is NOT promoted — the `status <> 'deleting'` guard makes
+// this a no-op → ErrCacheNotFound, so a finalise racing a reclaim can't
+// resurrect a row whose blob is about to vanish.
 func (s *Store) MarkCacheReady(ctx context.Context, cacheID uuid.UUID, size int64, sha string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE caches
@@ -74,7 +79,7 @@ func (s *Store) MarkCacheReady(ctx context.Context, cacheID uuid.UUID, size int6
 		    content_sha256   = $3,
 		    updated_at       = NOW(),
 		    last_accessed_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status <> 'deleting'
 	`, cacheID, size, sha)
 	if err != nil {
 		return fmt.Errorf("store: mark cache ready: %w", err)
