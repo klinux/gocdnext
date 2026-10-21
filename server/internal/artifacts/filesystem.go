@@ -25,8 +25,15 @@ import (
 func (f *FilesystemStore) PruneByPrefixAge(ctx context.Context, prefix string, olderThan time.Duration) (int, int64, error) {
 	base := filepath.Join(f.root, filepath.Clean(prefix))
 	cutoff := time.Now().Add(-olderThan)
-	var count int
+	var count, failures int
 	var freed int64
+	var firstErr error
+	note := func(err error) {
+		failures++
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
 	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -42,18 +49,28 @@ func (f *FilesystemStore) PruneByPrefixAge(ctx context.Context, prefix string, o
 		}
 		info, infoErr := d.Info()
 		if infoErr != nil {
-			return nil // raced with a delete; skip
+			if !os.IsNotExist(infoErr) { // a racing delete is fine; anything else isn't
+				note(infoErr)
+			}
+			return nil
 		}
 		if info.ModTime().Before(cutoff) {
-			if os.Remove(path) == nil {
-				count++
-				freed += info.Size()
+			if rmErr := os.Remove(path); rmErr != nil {
+				if !os.IsNotExist(rmErr) {
+					note(rmErr) // e.g. a permission problem would silently stall eviction
+				}
+				return nil
 			}
+			count++
+			freed += info.Size()
 		}
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) {
 		return count, freed, fmt.Errorf("artifacts: filesystem: prune %s: %w", prefix, err)
+	}
+	if firstErr != nil {
+		return count, freed, fmt.Errorf("artifacts: filesystem: prune %s: %d of its entries failed (first: %w)", prefix, failures, firstErr)
 	}
 	return count, freed, nil
 }

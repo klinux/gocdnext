@@ -101,6 +101,8 @@ spec:
               value: {{ .Values.artifacts.maxBodyMB | quote }}
             - name: GOCDNEXT_ARTIFACT_WRITE_ONCE
               value: {{ .Values.artifacts.writeOnce | quote }}
+            - name: GOCDNEXT_BUILD_CACHE_MAX_ENTRY_MB
+              value: {{ .Values.caches.buildCacheMaxEntryMB | quote }}
             - name: GOCDNEXT_CACHE_TTL_DAYS
               value: {{ .Values.caches.ttlDays | quote }}
             - name: GOCDNEXT_CACHE_SCOPED_TTL_DAYS

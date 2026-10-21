@@ -51,6 +51,15 @@ describe("ProjectBuildCacheSettings", () => {
     );
     expect(rotateProjectCacheToken.mock.calls[0]![0]).toEqual({ slug: "demo" });
     expect(screen.getByText("Enabled")).toBeTruthy();
+    // The token is shown once and is copyable.
+    expect(
+      (screen.getByLabelText("Build cache token") as HTMLInputElement).value,
+    ).toBe("cache-token");
+    fireEvent.click(screen.getByRole("button", { name: /copy token/i }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith("cache-token"),
+    );
+
     expect(
       (
         screen.getByLabelText(

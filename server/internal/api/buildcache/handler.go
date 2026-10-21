@@ -190,9 +190,14 @@ func (h *Handler) resolveToken(r *http.Request, slug, token string) (uuid.UUID, 
 			return uuid.Nil, false, false, nil
 		}
 		slugID, enabled, err := h.store.ProjectCacheAuthBySlug(r.Context(), slug)
-		if err != nil || !enabled || slugID != mintedID {
+		if err != nil {
+			// A real DB error must surface as 500, not a silent 401 — otherwise
+			// an outage reads as "bad token" and hides the fault.
+			return uuid.Nil, false, false, err
+		}
+		if !enabled || slugID != mintedID {
 			// Unknown slug, disabled cache, or project mismatch → the same
-			// indistinguishable auth failure (never a 500 for a bad token).
+			// indistinguishable auth failure.
 			return uuid.Nil, false, false, nil
 		}
 		return mintedID, write, true, nil

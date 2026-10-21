@@ -238,8 +238,10 @@ Why this is better than tarring the build-cache dir:
 - **No whole-dir transfer.** A build fetches only the entries it
   needs and pushes only new ones.
 - **No extra service.** It's an endpoint on the gocdnext server,
-  backed by the same object store. Reads redirect to a signed
-  object-store URL, so entry bytes don't stream through the server.
+  backed by the same object store. The handler is stateless, so scale
+  it with server replicas. (Entry bytes are proxied through the server:
+  Gradle's cache client rejects HTTP redirects, so a signed-URL
+  redirect isn't an option.)
 
 ### Enable it
 
@@ -262,7 +264,17 @@ below still works.
 
 For a build that doesn't use the `gradle` plugin, point Gradle at the
 cache yourself in `settings.gradle.kts` (the rotate response gives you
-this snippet pre-filled):
+this snippet pre-filled).
+
+:::caution
+The **static project token is read/write and has no ref awareness** —
+anyone who can present it can push. The read-only-for-PRs guarantee
+only applies to the auto-wired (`gradle`-plugin) path, where the server
+mints a per-run token scoped to the run's ref. If you use the static
+token, give it **only to trusted (default-branch) builds** — store it
+as a secret that PR jobs can't read. Prefer the auto-wired path when
+you can.
+:::
 
 ```kotlin
 buildCache {

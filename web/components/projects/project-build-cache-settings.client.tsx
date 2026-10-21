@@ -35,10 +35,11 @@ type Props = {
 export function ProjectBuildCacheSettings({ slug, initialEnabled }: Props) {
   const [enabled, setEnabled] = useState(initialEnabled);
   const [creds, setCreds] = useState<{
+    token: string;
     snippet: string;
     cacheURL: string;
   } | null>(null);
-  const [copied, setCopied] = useState<"snippet" | "url" | null>(null);
+  const [copied, setCopied] = useState<"token" | "snippet" | "url" | null>(null);
   const [pending, startTransition] = useTransition();
 
   const onRotate = () => {
@@ -49,7 +50,11 @@ export function ProjectBuildCacheSettings({ slug, initialEnabled }: Props) {
         return;
       }
       setEnabled(true);
-      setCreds({ snippet: res.gradle_snippet, cacheURL: res.cache_url });
+      setCreds({
+        token: res.token,
+        snippet: res.gradle_snippet,
+        cacheURL: res.cache_url,
+      });
       setCopied(null);
       toast.success(
         enabled ? "Build cache token rotated" : "Build cache enabled",
@@ -71,7 +76,7 @@ export function ProjectBuildCacheSettings({ slug, initialEnabled }: Props) {
     });
   };
 
-  const copyText = async (kind: "snippet" | "url", value: string) => {
+  const copyText = async (kind: "token" | "snippet" | "url", value: string) => {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(kind);
@@ -106,6 +111,32 @@ export function ProjectBuildCacheSettings({ slug, initialEnabled }: Props) {
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800/60 dark:bg-amber-950/40">
             <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
               Copy the token now — it is shown only once.
+            </p>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <input
+                readOnly
+                value={creds.token}
+                aria-label="Build cache token"
+                className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => copyText("token", creds.token)}
+              >
+                {copied === "token" ? (
+                  <Check className="size-3.5" aria-hidden />
+                ) : (
+                  <Copy className="size-3.5" aria-hidden />
+                )}
+                {copied === "token" ? "Copied" : "Copy token"}
+              </Button>
+            </div>
+            <p className="mt-2 text-xs text-amber-700/90 dark:text-amber-400/90">
+              For auto-wired <code className="rounded bg-muted px-1 py-0.5">gradle</code>{" "}
+              plugin jobs you don&apos;t need this. For manual setup, store it as
+              a CI secret <code className="rounded bg-muted px-1 py-0.5">GOCDNEXT_CACHE_TOKEN</code>{" "}
+              and use the snippet below.
             </p>
             <div className="mt-2 flex flex-col gap-2 sm:flex-row">
               <Textarea

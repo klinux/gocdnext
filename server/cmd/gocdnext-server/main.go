@@ -489,6 +489,12 @@ func main() {
 		logger.Error("GOCDNEXT_BUILD_CACHE_SIGN_KEY: not hex", "err", err)
 		os.Exit(1)
 	}
+	if len(buildCacheSignKey) > 0 && len(buildCacheSignKey) < 32 {
+		// A short HMAC key weakens the per-run token. Fail loud rather than
+		// auto-wire with a guessable signing key.
+		logger.Error("GOCDNEXT_BUILD_CACHE_SIGN_KEY: too short", "bytes", len(buildCacheSignKey), "min", 32)
+		os.Exit(1)
+	}
 	if artifactStore != nil && len(buildCacheSignKey) > 0 && cfg.PublicBase != "" {
 		sched = sched.WithBuildCache(cfg.PublicBase, buildCacheSignKey, 2*time.Hour)
 	}

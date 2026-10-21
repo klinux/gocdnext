@@ -2,11 +2,29 @@ package scheduler
 
 import (
 	"context"
+	"strings"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	bctoken "github.com/gocdnext/gocdnext/server/internal/buildcache"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
+
+// gradlePluginImage is the image substring that identifies the gocdnext gradle
+// plugin — the only runtime that materialises the build-cache init script. A
+// registry mirror or tag doesn't change the repository segment, so a substring
+// match is robust.
+const gradlePluginImage = "gocdnext-plugin-gradle"
+
+// usesGradlePlugin reports whether any of the job's plugin tasks run the gradle
+// plugin, so auto-wiring is injected only where it's actually consumed.
+func usesGradlePlugin(a *gocdnextv1.JobAssignment) bool {
+	for _, t := range a.GetTasks() {
+		if strings.Contains(t.GetPlugin().GetImage(), gradlePluginImage) {
+			return true
+		}
+	}
+	return false
+}
 
 // injectBuildCache auto-wires the embedded Gradle build cache for a job whose
 // project has it enabled: it injects the cache URL + a freshly minted, masked
@@ -19,6 +37,12 @@ import (
 // accelerator, never a correctness dependency.
 func (s *Scheduler) injectBuildCache(ctx context.Context, run store.RunForDispatch, a *gocdnextv1.JobAssignment) {
 	if len(s.buildCacheSignKey) == 0 || s.buildCachePublicBase == "" || a == nil {
+		return
+	}
+	// Only auto-wire jobs that actually run the gocdnext gradle plugin — that's
+	// the only place the init script gets written, so injecting the credential
+	// anywhere else just exposes it (and costs DB lookups) for nothing.
+	if !usesGradlePlugin(a) {
 		return
 	}
 	enabled, err := s.store.GetProjectCacheEnabledBySlug(ctx, run.ProjectSlug)
