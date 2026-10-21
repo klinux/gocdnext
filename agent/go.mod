@@ -10,6 +10,11 @@ require (
 )
 
 require (
+	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/moby/spdystream v0.5.1 // indirect
+)
+
+require (
 	github.com/klauspost/compress v1.20.0
 	go.opentelemetry.io/otel v1.41.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.40.0 // indirect

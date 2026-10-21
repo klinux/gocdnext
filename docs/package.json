@@ -12,9 +12,9 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.30.0",
-    "astro": "^5.0.0",
-    "sharp": "^0.33.5",
-    "yaml": "^2.6.1"
+    "@astrojs/starlight": "^0.42.6",
+    "astro": "^7.4.1",
+    "sharp": "^0.35.5",
+    "yaml": "^2.9.1"
   }
 }

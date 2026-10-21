@@ -26,9 +26,13 @@ export default defineConfig({
         dark: "./src/assets/logo-dark.svg",
         replacesTitle: true,
       },
-      social: {
-        github: "https://github.com/klinux/gocdnext",
-      },
+      social: [
+        {
+          icon: "github",
+          label: "GitHub",
+          href: "https://github.com/klinux/gocdnext",
+        },
+      ],
       editLink: {
         baseUrl: "https://github.com/klinux/gocdnext/edit/main/docs/",
       },
