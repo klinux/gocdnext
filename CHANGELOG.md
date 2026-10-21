@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.121.0 — 2026-10-20
+
 ### Added
 
 - **Embedded Gradle build cache (remote, entry-addressable).** gocdnext now
