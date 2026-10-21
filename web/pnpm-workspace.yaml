@@ -1,0 +1,11 @@
+# pnpm v10 moved settings out of package.json's `pnpm` field into this file.
+# `overrides` force a minimum (patched) version on transitive deps whose parent
+# otherwise pins a vulnerable range. All of these are dev/build/test-only deps
+# (not in the production bundle); runtime deps are patched via the regular range
+# updates in package.json.
+overrides:
+  # Migrated from package.json's now-ignored pnpm.overrides.
+  postcss: "^8.5.10"
+  # postcss-selector-parser <7.1.6: quadratic-complexity DoS. Pulled by
+  # @tailwindcss/typography (build time).
+  postcss-selector-parser: ">=7.1.6"

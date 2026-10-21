@@ -8,6 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Security
+
+- **Dependency vulnerability sweep.** Go: bumped `golang.org/x/crypto`
+  (critical), `google.golang.org/grpc`, `github.com/go-chi/chi/v5`,
+  `go.opentelemetry.io/otel/sdk`, `github.com/moby/go-archive`,
+  `github.com/gorilla/websocket` and `github.com/moby/spdystream` — `govulncheck`
+  now reports **0 reachable vulnerabilities** across all modules (server, agent,
+  cli, proto, plugins). The bumps raise the Go toolchain to 1.26 (CI +
+  Dockerfiles). web: updated `next`, `vite`, `vitest` and transitive deps
+  (undici, hono, fast-uri, browserslist, …) — `pnpm audit` down from 150 to 1
+  (a dev-only `braces` advisory with no patched release yet). docs: upgraded
+  Astro 5 → 7, Starlight 0.30 → 0.42 and `sharp` (clears a critical Astro RCE) —
+  `pnpm audit` clean.
+
 ## v0.121.0 — 2026-10-20
 
 ### Added
