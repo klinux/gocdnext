@@ -138,6 +138,10 @@ export function ProjectBuildCacheSettings({ slug, initialEnabled }: Props) {
               a CI secret <code className="rounded bg-muted px-1 py-0.5">GOCDNEXT_CACHE_TOKEN</code>{" "}
               and use the snippet below.
             </p>
+            <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-400">
+              This token is read/write and not ref-aware — give it only to
+              trusted (default-branch) builds, never to jobs that run PR code.
+            </p>
             <div className="mt-2 flex flex-col gap-2 sm:flex-row">
               <Textarea
                 readOnly
