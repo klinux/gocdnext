@@ -59,6 +59,7 @@ type fakeStore struct {
 	hash    string
 	id      uuid.UUID
 	enabled bool
+	gen     string // current credential generation (cache_token_hash) for minted auth
 }
 
 func (s *fakeStore) VerifyProjectCacheToken(_ context.Context, slug, tokenHash string) (uuid.UUID, bool, error) {
@@ -68,11 +69,11 @@ func (s *fakeStore) VerifyProjectCacheToken(_ context.Context, slug, tokenHash s
 	return uuid.Nil, false, nil
 }
 
-func (s *fakeStore) ProjectCacheAuthBySlug(_ context.Context, slug string) (uuid.UUID, bool, error) {
-	if slug == s.slug {
-		return s.id, s.enabled, nil
+func (s *fakeStore) ProjectCacheAuthBySlug(_ context.Context, slug string) (uuid.UUID, string, error) {
+	if slug == s.slug && s.enabled {
+		return s.id, s.gen, nil
 	}
-	return uuid.Nil, false, nil
+	return uuid.Nil, "", nil
 }
 
 // --- harness ---------------------------------------------------------------
@@ -87,7 +88,8 @@ func newTestHandler(t *testing.T, maxEntry int64) (*chi.Mux, *fakeBlobs, string,
 	}
 	projID := uuid.New()
 	blobs := newFakeBlobs()
-	st := &fakeStore{slug: "proj", hash: badgetoken.HashToken(token), id: projID, enabled: true}
+	hash := badgetoken.HashToken(token)
+	st := &fakeStore{slug: "proj", hash: hash, id: projID, enabled: true, gen: hash}
 	h := New(st, blobs, nil, maxEntry, testSignKey)
 	r := chi.NewRouter()
 	h.Mount(r)
@@ -188,10 +190,11 @@ func TestBuildCache_InvalidKey(t *testing.T) {
 }
 
 func TestBuildCache_MintedTokenAuth(t *testing.T) {
-	r, blobs, _, projID := newTestHandler(t, 0)
+	r, blobs, token, projID := newTestHandler(t, 0)
+	gen := []byte(badgetoken.HashToken(token)) // the fake's current generation
 
 	// A WRITE minted token for the project authenticates the PUT.
-	minted := bctoken.MintToken(projID, true, time.Minute, testSignKey)
+	minted := bctoken.MintToken(projID, true, time.Minute, testSignKey, gen)
 	put := httptest.NewRequest(http.MethodPut, "/api/v1/buildcache/proj/"+validGradleKey, strings.NewReader("x"))
 	put.SetBasicAuth("gocdnext", minted)
 	w := httptest.NewRecorder()
@@ -204,7 +207,7 @@ func TestBuildCache_MintedTokenAuth(t *testing.T) {
 	}
 
 	// A READ-ONLY minted token can GET but NOT PUT (403) — PRs can't poison.
-	ro := bctoken.MintToken(projID, false, time.Minute, testSignKey)
+	ro := bctoken.MintToken(projID, false, time.Minute, testSignKey, gen)
 	roGet := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
 	roGet.SetBasicAuth("gocdnext", ro)
 	wg := httptest.NewRecorder()
@@ -221,7 +224,7 @@ func TestBuildCache_MintedTokenAuth(t *testing.T) {
 	}
 
 	// A minted token for a DIFFERENT project id is rejected on this slug.
-	other := bctoken.MintToken(uuid.New(), true, time.Minute, testSignKey)
+	other := bctoken.MintToken(uuid.New(), true, time.Minute, testSignKey, gen)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
 	req.SetBasicAuth("gocdnext", other)
 	w2 := httptest.NewRecorder()
@@ -233,15 +236,15 @@ func TestBuildCache_MintedTokenAuth(t *testing.T) {
 
 func TestBuildCache_DisableRevokesMintedToken(t *testing.T) {
 	// A valid minted token must stop working the moment the project disables
-	// the cache (enabled=false), even though the token hasn't expired.
-	token, _ := badgetoken.NewToken()
+	// the cache (gen cleared), even though the token hasn't expired.
 	projID := uuid.New()
-	st := &fakeStore{slug: "proj", hash: badgetoken.HashToken(token), id: projID, enabled: false}
+	gen := []byte("genA-current-cache-token-hash-value")
+	st := &fakeStore{slug: "proj", id: projID, enabled: false, gen: string(gen)}
 	h := New(st, newFakeBlobs(), nil, 0, testSignKey)
 	r := chi.NewRouter()
 	h.Mount(r)
 
-	minted := bctoken.MintToken(projID, true, time.Minute, testSignKey)
+	minted := bctoken.MintToken(projID, true, time.Minute, testSignKey, gen)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
 	req.SetBasicAuth("gocdnext", minted)
 	w := httptest.NewRecorder()
@@ -251,10 +254,42 @@ func TestBuildCache_DisableRevokesMintedToken(t *testing.T) {
 	}
 }
 
+func TestBuildCache_RotateRevokesMintedToken(t *testing.T) {
+	// The corner the generation binding fixes: a token minted under generation A
+	// must stop working once the project rotates (or disables→re-enables) to
+	// generation B, even while still enabled and unexpired.
+	projID := uuid.New()
+	st := &fakeStore{slug: "proj", id: projID, enabled: true, gen: "genA-hash"}
+	h := New(st, newFakeBlobs(), nil, 0, testSignKey)
+	r := chi.NewRouter()
+	h.Mount(r)
+
+	minted := bctoken.MintToken(projID, true, time.Minute, testSignKey, []byte("genA-hash"))
+
+	// Still generation A → works.
+	ok := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
+	ok.SetBasicAuth("gocdnext", minted)
+	wok := httptest.NewRecorder()
+	r.ServeHTTP(wok, ok)
+	if wok.Code != http.StatusNotFound { // authed → cache miss (empty store)
+		t.Fatalf("gen-A token = %d, want 404 (authed miss)", wok.Code)
+	}
+
+	// Rotate to generation B → the old token no longer verifies.
+	st.gen = "genB-hash"
+	stale := httptest.NewRequest(http.MethodGet, "/api/v1/buildcache/proj/"+validGradleKey, nil)
+	stale.SetBasicAuth("gocdnext", minted)
+	ws := httptest.NewRecorder()
+	r.ServeHTTP(ws, stale)
+	if ws.Code != http.StatusUnauthorized {
+		t.Fatalf("gen-A token after rotate = %d, want 401", ws.Code)
+	}
+}
+
 func TestMintedTokenExpiry(t *testing.T) {
 	projID := uuid.New()
-	exp := bctoken.MintToken(projID, true, time.Second, testSignKey)
-	if _, _, ok := bctoken.VerifyMintedToken(exp, testSignKey, time.Now().Add(time.Hour)); ok {
+	exp := bctoken.MintToken(projID, true, time.Second, testSignKey, []byte("gen"))
+	if _, _, ok := bctoken.VerifyMintedToken(exp, testSignKey, []byte("gen"), time.Now().Add(time.Hour)); ok {
 		t.Error("token verified an hour past a 1s ttl")
 	}
 }

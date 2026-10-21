@@ -65,12 +65,15 @@ func (s *Scheduler) injectBuildCache(ctx context.Context, run store.RunForDispat
 	if !usesGradlePlugin(a) {
 		return
 	}
-	enabled, err := s.store.GetProjectCacheEnabledBySlug(ctx, run.ProjectSlug)
+	// gen is the project's current credential generation (token hash); "" means
+	// the cache is disabled. Minting with it binds the token to this generation,
+	// so a later rotate/disable invalidates it.
+	_, gen, err := s.store.ProjectCacheAuthBySlug(ctx, run.ProjectSlug)
 	if err != nil {
-		s.log.Warn("scheduler: build cache enabled lookup", "project", run.ProjectSlug, "err", err)
+		s.log.Warn("scheduler: build cache lookup", "project", run.ProjectSlug, "err", err)
 		return
 	}
-	if !enabled {
+	if gen == "" {
 		return
 	}
 	// Write (push) access only for runs that own the shared lane — i.e. a
@@ -86,7 +89,7 @@ func (s *Scheduler) injectBuildCache(ctx context.Context, run store.RunForDispat
 		s.log.Warn("scheduler: build cache scope resolve", "run_id", run.ID, "err", err)
 	}
 
-	token := bctoken.MintToken(run.ProjectID, write, s.buildCacheTokenTTL, s.buildCacheSignKey)
+	token := bctoken.MintToken(run.ProjectID, write, s.buildCacheTokenTTL, s.buildCacheSignKey, []byte(gen))
 	if token == "" {
 		return
 	}

@@ -17,11 +17,12 @@ convention that minor bumps may carry breaking changes until 1.0).
   server. Unlike the `cache:` block (one tar per key, whole-blob overwrite),
   each task output is one object keyed by its input hash: concurrent
   branches/PRs **share entries by key**, writes are idempotent (no
-  clobbering), and only new entries transfer. Reads redirect to a signed
-  object-store URL so entry bytes never stream through the server; writes
-  (cache misses) proxy through, bounded by the artifact body cap. Auth is a
-  per-project token (HTTP Basic) — generate/rotate/disable via *Project →
-  Settings* or `POST/DELETE /api/v1/projects/{slug}/build-cache/token`
+  clobbering), and only new entries transfer. Entry bytes are proxied through
+  the server on GET and PUT (Gradle's cache client rejects HTTP redirects); the
+  handler is stateless, so scale reads with replicas. A PUT is bounded by
+  `GOCDNEXT_BUILD_CACHE_MAX_ENTRY_MB` (default 512) and streamed, not buffered.
+  Auth is a per-project token (HTTP Basic) — generate/rotate/disable via
+  *Project → Settings* or `POST/DELETE /api/v1/projects/{slug}/build-cache/token`
   (maintainer+); only its SHA-256 hash is stored (migration `00094`). Point
   Gradle's `HttpBuildCache` at the URL and keep the `cache:` block for
   `GRADLE_USER_HOME` deps. Eviction is via an object-store lifecycle rule on
@@ -31,9 +32,10 @@ convention that minor bumps may carry breaking changes until 1.0).
     cache URL + a short-lived, per-run token (masked in logs) into the job
     env, and the plugin drops a Gradle init script that points
     `HttpBuildCache` at gocdnext. The per-run token is a stateless HMAC
-    (verified without a DB lookup, and revoked immediately when the cache is
-    disabled) — enable it by setting `GOCDNEXT_BUILD_CACHE_SIGN_KEY`; without
-    it the static per-project token still works for manual setups.
+    (its signature is bound to the project's credential generation, so a
+    rotate or disable→re-enable revokes outstanding tokens immediately) —
+    enable it by setting `GOCDNEXT_BUILD_CACHE_SIGN_KEY` (min 32 bytes);
+    without it the static per-project token still works for manual setups.
   - **Only default-branch builds write; PRs/branches are read-only.** The
     auto-wired token carries write access only for default-branch runs (the
     same rule as PR-safe scoping); PR/branch runs get a read-only token, so an

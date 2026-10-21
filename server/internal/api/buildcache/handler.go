@@ -39,10 +39,11 @@ import (
 // auth path, and a slug → id lookup for the minted (auto-wired) auth path.
 type cacheStore interface {
 	VerifyProjectCacheToken(ctx context.Context, slug, tokenHash string) (uuid.UUID, bool, error)
-	// ProjectCacheAuthBySlug resolves a slug to its project id and whether the
-	// build cache is currently enabled — used to authorize minted tokens AND to
-	// make a disable revoke outstanding minted tokens immediately.
-	ProjectCacheAuthBySlug(ctx context.Context, slug string) (uuid.UUID, bool, error)
+	// ProjectCacheAuthBySlug resolves a slug to its project id and current cache
+	// credential generation (the stored token hash, "" when disabled/unknown) —
+	// used to authorize minted tokens AND to bind them to that generation, so a
+	// rotate or disable→re-enable revokes outstanding minted tokens immediately.
+	ProjectCacheAuthBySlug(ctx context.Context, slug string) (uuid.UUID, string, error)
 }
 
 // Handler serves the build cache protocol for a project.
@@ -186,19 +187,21 @@ func (h *Handler) authAndKey(w http.ResponseWriter, r *http.Request) (authResult
 //     credential, so it carries write access.
 func (h *Handler) resolveToken(r *http.Request, slug, token string) (uuid.UUID, bool, bool, error) {
 	if bctoken.LooksLikeMinted(token) {
-		mintedID, write, ok := bctoken.VerifyMintedToken(token, h.signKey, time.Now())
-		if !ok {
-			return uuid.Nil, false, false, nil
-		}
-		slugID, enabled, err := h.store.ProjectCacheAuthBySlug(r.Context(), slug)
+		// Fetch the project's current credential generation (token hash) first —
+		// the minted token's signature is bound to it, so a rotate/disable
+		// revokes it even within its TTL.
+		slugID, gen, err := h.store.ProjectCacheAuthBySlug(r.Context(), slug)
 		if err != nil {
 			// A real DB error must surface as 500, not a silent 401 — otherwise
 			// an outage reads as "bad token" and hides the fault.
 			return uuid.Nil, false, false, err
 		}
-		if !enabled || slugID != mintedID {
-			// Unknown slug, disabled cache, or project mismatch → the same
-			// indistinguishable auth failure.
+		if gen == "" {
+			// Unknown slug or disabled cache → indistinguishable auth failure.
+			return uuid.Nil, false, false, nil
+		}
+		mintedID, write, ok := bctoken.VerifyMintedToken(token, h.signKey, []byte(gen), time.Now())
+		if !ok || slugID != mintedID {
 			return uuid.Nil, false, false, nil
 		}
 		return mintedID, write, true, nil

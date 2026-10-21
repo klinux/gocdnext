@@ -70,25 +70,26 @@ func TestProjectCacheAuthBySlug(t *testing.T) {
 	if _, _, err := s.VerifyProjectCacheToken(ctx, "bc-auth", hex64("a")); err != nil {
 		t.Fatal(err)
 	}
-	id, enabled, err := s.ProjectCacheAuthBySlug(ctx, "bc-auth")
+	id, gen, err := s.ProjectCacheAuthBySlug(ctx, "bc-auth")
 	if err != nil {
 		t.Fatalf("auth by slug: %v", err)
 	}
-	if id != projectID || enabled {
-		t.Errorf("before enable: id=%s enabled=%v, want %s/false", id, enabled, projectID)
+	if id != projectID || gen != "" {
+		t.Errorf("before enable: id=%s gen=%q, want %s/empty", id, gen, projectID)
 	}
 
-	if err := s.SetProjectCacheTokenHashBySlug(ctx, "bc-auth", hex64("b")); err != nil {
+	hash := hex64("b")
+	if err := s.SetProjectCacheTokenHashBySlug(ctx, "bc-auth", hash); err != nil {
 		t.Fatal(err)
 	}
-	id, enabled, _ = s.ProjectCacheAuthBySlug(ctx, "bc-auth")
-	if id != projectID || !enabled {
-		t.Errorf("after enable: id=%s enabled=%v, want %s/true", id, enabled, projectID)
+	id, gen, _ = s.ProjectCacheAuthBySlug(ctx, "bc-auth")
+	if id != projectID || gen != hash {
+		t.Errorf("after enable: id=%s gen=%q, want %s/%s (the token hash)", id, gen, projectID, hash)
 	}
 
-	// Unknown slug → zero id, not enabled, no error.
-	if gotID, gotEnabled, err := s.ProjectCacheAuthBySlug(ctx, "ghost"); err != nil || gotEnabled || gotID != [16]byte{} {
-		t.Errorf("unknown slug: id=%v enabled=%v err=%v", gotID, gotEnabled, err)
+	// Unknown slug → zero id, empty gen, no error.
+	if gotID, gotGen, err := s.ProjectCacheAuthBySlug(ctx, "ghost"); err != nil || gotGen != "" || gotID != [16]byte{} {
+		t.Errorf("unknown slug: id=%v gen=%q err=%v", gotID, gotGen, err)
 	}
 }
 

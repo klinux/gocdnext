@@ -60,25 +60,26 @@ func (s *Store) GetProjectCacheEnabledBySlug(ctx context.Context, slug string) (
 	return enabled, nil
 }
 
-// ProjectCacheAuthBySlug resolves a slug to its project id and whether the
-// embedded build cache is currently enabled (a token hash is set). The build
-// cache endpoint uses it to authorize minted (per-run) tokens: the slug must
-// map to the token's project AND the cache must still be enabled, so clearing
-// the token (disable) immediately revokes outstanding minted tokens even though
-// they're stateless. ok=false for an unknown slug.
-func (s *Store) ProjectCacheAuthBySlug(ctx context.Context, slug string) (uuid.UUID, bool, error) {
+// ProjectCacheAuthBySlug resolves a slug to its project id and current cache
+// credential generation — the stored cache_token_hash, or "" when the cache is
+// disabled (NULL) or the slug is unknown. The build cache endpoint uses it to
+// authorize minted tokens: the slug must map to the token's project, and the
+// returned hash is the generation the token's signature must match. Because the
+// hash changes on rotate and clears on disable, both revoke outstanding minted
+// tokens immediately — including a disable→re-enable, which mints a new hash.
+func (s *Store) ProjectCacheAuthBySlug(ctx context.Context, slug string) (uuid.UUID, string, error) {
 	var id uuid.UUID
-	var enabled bool
+	var tokenHash string
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, cache_token_hash IS NOT NULL FROM projects WHERE slug = $1`, slug).
-		Scan(&id, &enabled)
+		`SELECT id, COALESCE(cache_token_hash, '') FROM projects WHERE slug = $1`, slug).
+		Scan(&id, &tokenHash)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, false, nil
+		return uuid.Nil, "", nil
 	}
 	if err != nil {
-		return uuid.Nil, false, fmt.Errorf("store: project cache auth by slug: %w", err)
+		return uuid.Nil, "", fmt.Errorf("store: project cache auth by slug: %w", err)
 	}
-	return id, enabled, nil
+	return id, tokenHash, nil
 }
 
 // VerifyProjectCacheToken resolves (slug, tokenHash) to the owning project id.
