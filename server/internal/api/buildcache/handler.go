@@ -10,11 +10,12 @@
 // the whole-blob last-writer-wins problem of the directory cache for Gradle's
 // additive build cache, and lets concurrent branches/PRs share entries by key.
 //
-// Reads redirect to a signed object-store URL so entry bytes never stream
-// through the server (the hot path stays off the control plane); writes (cache
-// misses, far rarer and per-task small) proxy through. Auth is HTTP Basic — the
-// password is the project build-cache token (what Gradle's `credentials {}`
-// sends) — matched against projects.cache_token_hash.
+// Entry bytes are PROXIED through the server on both GET and PUT — Gradle's
+// HttpBuildCache client rejects HTTP redirects, so a signed-URL redirect isn't
+// an option. The handler is stateless, so scale reads with replicas. Auth is
+// HTTP Basic — the password is either the project build-cache token (static,
+// matched against projects.cache_token_hash) or a minted per-run token (see
+// token.go); write (PUT) requires a write-scoped credential.
 package buildcache
 
 import (

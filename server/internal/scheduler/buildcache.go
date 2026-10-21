@@ -9,21 +9,41 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
-// gradlePluginImage is the image substring that identifies the gocdnext gradle
-// plugin — the only runtime that materialises the build-cache init script. A
-// registry mirror or tag doesn't change the repository segment, so a substring
-// match is robust.
-const gradlePluginImage = "gocdnext-plugin-gradle"
+// gradlePluginRepo is the EXACT repository basename of the gocdnext gradle
+// plugin — the only runtime that materialises the build-cache init script.
+const gradlePluginRepo = "gocdnext-plugin-gradle"
 
 // usesGradlePlugin reports whether any of the job's plugin tasks run the gradle
-// plugin, so auto-wiring is injected only where it's actually consumed.
+// plugin, so auto-wiring is injected only where it's actually consumed. It
+// compares the image's repository BASENAME exactly (not a substring) so a
+// look-alike like "ghcr.io/evil/gocdnext-plugin-gradle-backdoor" is not
+// mistaken for the real plugin and handed a cache credential.
 func usesGradlePlugin(a *gocdnextv1.JobAssignment) bool {
 	for _, t := range a.GetTasks() {
-		if strings.Contains(t.GetPlugin().GetImage(), gradlePluginImage) {
+		if imageRepoBasename(t.GetPlugin().GetImage()) == gradlePluginRepo {
 			return true
 		}
 	}
 	return false
+}
+
+// imageRepoBasename extracts the last path segment of an image reference's
+// repository, stripping any @digest and :tag. Handles a registry host:port
+// prefix because the tag is only the ':' AFTER the last '/'.
+//
+//	ghcr.io/klinux/gocdnext-plugin-gradle@sha256:… -> gocdnext-plugin-gradle
+//	host:5000/klinux/gocdnext-plugin-gradle:v1     -> gocdnext-plugin-gradle
+func imageRepoBasename(image string) string {
+	if i := strings.IndexByte(image, '@'); i >= 0 {
+		image = image[:i]
+	}
+	if i := strings.LastIndexByte(image, '/'); i >= 0 {
+		image = image[i+1:]
+	}
+	if i := strings.IndexByte(image, ':'); i >= 0 {
+		image = image[:i]
+	}
+	return image
 }
 
 // injectBuildCache auto-wires the embedded Gradle build cache for a job whose

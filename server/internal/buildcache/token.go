@@ -15,7 +15,9 @@ import (
 // without ever handling the project's static token (only its hash is stored).
 // A token is a short-lived, stateless bearer credential:
 //
-//	bc1.<base64url(projectID[16] || expUnixSec[8])>.<base64url(HMAC-SHA256)>
+//	bc1.<base64url(projectID[16] || expUnixSec[8] || flags[1])>.<base64url(HMAC-SHA256)>
+//
+// flags bit 0 (flagWrite) grants PUT (push); the rest are reserved.
 //
 // The endpoint verifies the HMAC with the server signing key (no DB lookup on
 // the hot path), checks expiry, and confirms the embedded project id matches
