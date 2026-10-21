@@ -180,15 +180,23 @@ func (g *GCSStore) Delete(ctx context.Context, key string) error {
 }
 
 func (g *GCSStore) Put(ctx context.Context, key string, r io.Reader) (int64, error) {
-	w := g.client.Bucket(g.bucket).Object(key).NewWriter(ctx)
+	// A GCS object is only created when Close() finalizes it. If the copy fails
+	// mid-stream we must NOT finalize, or a partial/corrupt object becomes
+	// visible under the key. Canceling the writer's context before Close aborts
+	// the upload so nothing is published.
+	wctx, cancel := context.WithCancel(ctx)
+	w := g.client.Bucket(g.bucket).Object(key).NewWriter(wctx)
 	n, copyErr := io.Copy(w, r)
-	closeErr := w.Close()
 	if copyErr != nil {
+		cancel()      // abort: the pending object is not created
+		_ = w.Close() // best-effort; returns the cancellation error
 		return 0, fmt.Errorf("artifacts: gcs: put body: %w", copyErr)
 	}
-	if closeErr != nil {
-		return 0, fmt.Errorf("artifacts: gcs: put close: %w", closeErr)
+	if err := w.Close(); err != nil {
+		cancel()
+		return 0, fmt.Errorf("artifacts: gcs: put close: %w", err)
 	}
+	cancel()
 	return n, nil
 }
 

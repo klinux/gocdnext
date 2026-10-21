@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -176,22 +177,35 @@ func (s *S3Store) Put(ctx context.Context, key string, r io.Reader) (int64, erro
 	// and the handler's direct-write fallback.
 	body, ok := r.(io.ReadSeeker)
 	if !ok {
-		// Buffer so SDK can compute Content-Length; accept the memory
-		// cost, it's only used by tests/tooling.
-		b, err := io.ReadAll(r)
+		// A non-seekable reader (the build-cache PUT proxy streams the HTTP
+		// body here) must not be buffered fully in memory — a large entry would
+		// OOM the server pod. Spool it to a temp FILE instead (bounded by the
+		// caller's size cap), then upload the seekable file. Disk, not RAM.
+		tmp, err := os.CreateTemp("", "gocdnext-s3-put-*")
 		if err != nil {
-			return 0, fmt.Errorf("artifacts: s3: read body: %w", err)
+			return 0, fmt.Errorf("artifacts: s3: spool: %w", err)
+		}
+		defer func() {
+			_ = tmp.Close()
+			_ = os.Remove(tmp.Name())
+		}()
+		n, err := io.Copy(tmp, r)
+		if err != nil {
+			return 0, fmt.Errorf("artifacts: s3: spool body: %w", err)
+		}
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return 0, fmt.Errorf("artifacts: s3: spool seek: %w", err)
 		}
 		_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
 			Bucket:        aws.String(s.bucket),
 			Key:           aws.String(key),
-			Body:          &byteSliceReader{buf: b},
-			ContentLength: aws.Int64(int64(len(b))),
+			Body:          tmp,
+			ContentLength: aws.Int64(n),
 		})
 		if err != nil {
 			return 0, fmt.Errorf("artifacts: s3: put: %w", err)
 		}
-		return int64(len(b)), nil
+		return n, nil
 	}
 	size, err := seekSize(body)
 	if err != nil {
@@ -280,39 +294,4 @@ func seekSize(rs io.ReadSeeker) (int64, error) {
 		return 0, fmt.Errorf("artifacts: s3: seek restore: %w", err)
 	}
 	return end - cur, nil
-}
-
-// byteSliceReader is a minimal ReadSeeker over a byte slice — avoids
-// pulling bytes.Reader just to satisfy the SDK's body type.
-type byteSliceReader struct {
-	buf []byte
-	pos int64
-}
-
-func (b *byteSliceReader) Read(p []byte) (int, error) {
-	if b.pos >= int64(len(b.buf)) {
-		return 0, io.EOF
-	}
-	n := copy(p, b.buf[b.pos:])
-	b.pos += int64(n)
-	return n, nil
-}
-
-func (b *byteSliceReader) Seek(offset int64, whence int) (int64, error) {
-	var abs int64
-	switch whence {
-	case io.SeekStart:
-		abs = offset
-	case io.SeekCurrent:
-		abs = b.pos + offset
-	case io.SeekEnd:
-		abs = int64(len(b.buf)) + offset
-	default:
-		return 0, errors.New("byteSliceReader: invalid whence")
-	}
-	if abs < 0 {
-		return 0, errors.New("byteSliceReader: negative position")
-	}
-	b.pos = abs
-	return abs, nil
 }

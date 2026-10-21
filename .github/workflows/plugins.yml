@@ -102,7 +102,12 @@ jobs:
             base_needed=false
           fi
 
-          arr=$(printf '%s\n' $matrix_picks | jq -R . | jq -sc .)
+          # `jq -R 'select(length>0)'` drops the empty line that
+          # `printf '%s\n' <empty>` produces — otherwise an empty
+          # matrix_picks (no plugin changed this push) would serialise
+          # to ["" ] instead of [], slip past the `!= '[]'` guard on the
+          # images job, and try to build plugins//Dockerfile.
+          arr=$(printf '%s\n' $matrix_picks | jq -R 'select(length > 0)' | jq -sc .)
           echo "plugins=$arr" >> "$GITHUB_OUTPUT"
           if [[ "$arr" == "[]" ]] && [[ "$base_needed" == "false" ]]; then
             echo "any=false" >> "$GITHUB_OUTPUT"

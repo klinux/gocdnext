@@ -63,6 +63,14 @@ type Config struct {
 	ArtifactsProjectQuotaBytes int64 // per-project soft cap; 0 disables
 	ArtifactsGlobalQuotaBytes  int64 // global hard cap; 0 disables
 
+	// BuildCacheSignKeyHex is the hex HMAC key used to mint + verify per-run
+	// Gradle build-cache tokens (auto-wiring). Empty disables auto-wiring; the
+	// per-project static token still works for manual Gradle config.
+	BuildCacheSignKeyHex string
+	// BuildCacheMaxEntryMB caps a single build-cache entry PUT (MiB). Gradle
+	// task outputs are small; a tight cap bounds abuse + memory. 0 disables.
+	BuildCacheMaxEntryMB int64
+
 	// Cache eviction. Default is 30 days of inactivity; 0 disables.
 	// Governs the shared ("@") lane — the default-branch cache.
 	CacheTTLDays int
@@ -267,11 +275,12 @@ func Load() (*Config, error) {
 		LogBufferMaxBytes: int64(envInt("GOCDNEXT_LOG_BUFFER_MAX_BYTES", 0)),
 		SecretKeyHex:      env("GOCDNEXT_SECRET_KEY", ""),
 
-		ArtifactsBackend:    strings.ToLower(env("GOCDNEXT_ARTIFACTS_BACKEND", "filesystem")),
-		ArtifactsFSRoot:     env("GOCDNEXT_ARTIFACTS_FS_ROOT", "/var/lib/gocdnext/artifacts"),
-		ArtifactsPublicBase: env("GOCDNEXT_ARTIFACTS_PUBLIC_BASE", "http://localhost:8153"),
-		ArtifactsSignKeyHex: env("GOCDNEXT_ARTIFACTS_SIGN_KEY", ""),
-		ArtifactsMaxBodyMB:  maxBodyMB,
+		ArtifactsBackend:     strings.ToLower(env("GOCDNEXT_ARTIFACTS_BACKEND", "filesystem")),
+		ArtifactsFSRoot:      env("GOCDNEXT_ARTIFACTS_FS_ROOT", "/var/lib/gocdnext/artifacts"),
+		ArtifactsPublicBase:  env("GOCDNEXT_ARTIFACTS_PUBLIC_BASE", "http://localhost:8153"),
+		ArtifactsSignKeyHex:  env("GOCDNEXT_ARTIFACTS_SIGN_KEY", ""),
+		BuildCacheSignKeyHex: env("GOCDNEXT_BUILD_CACHE_SIGN_KEY", ""),
+		ArtifactsMaxBodyMB:   maxBodyMB,
 
 		ArtifactsS3Bucket:       env("GOCDNEXT_ARTIFACTS_S3_BUCKET", ""),
 		ArtifactsS3Region:       env("GOCDNEXT_ARTIFACTS_S3_REGION", "us-east-1"),
@@ -306,6 +315,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_ARTIFACTS_GLOBAL_QUOTA_BYTES: %w", err)
 	}
 	c.ArtifactsGlobalQuotaBytes = globalQuota
+
+	buildCacheMaxEntryMB, err := strconv.ParseInt(env("GOCDNEXT_BUILD_CACHE_MAX_ENTRY_MB", "512"), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("GOCDNEXT_BUILD_CACHE_MAX_ENTRY_MB: %w", err)
+	}
+	c.BuildCacheMaxEntryMB = buildCacheMaxEntryMB
 
 	cacheTTLDays, err := strconv.Atoi(env("GOCDNEXT_CACHE_TTL_DAYS", "30"))
 	if err != nil {

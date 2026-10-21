@@ -8,6 +8,45 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Embedded Gradle build cache (remote, entry-addressable).** gocdnext now
+  speaks the Gradle HTTP build cache protocol directly — `GET/PUT
+  /api/v1/buildcache/{slug}/{key}` — backed by the same object store, so a
+  project gets a proper remote build cache without running a separate cache
+  server. Unlike the `cache:` block (one tar per key, whole-blob overwrite),
+  each task output is one object keyed by its input hash: concurrent
+  branches/PRs **share entries by key**, writes are idempotent (no
+  clobbering), and only new entries transfer. Entry bytes are proxied through
+  the server on GET and PUT (Gradle's cache client rejects HTTP redirects); the
+  handler is stateless, so scale reads with replicas. A PUT is bounded by
+  `GOCDNEXT_BUILD_CACHE_MAX_ENTRY_MB` (default 512) and streamed, not buffered.
+  Auth is a per-project token (HTTP Basic) — generate/rotate/disable via
+  *Project → Settings* or `POST/DELETE /api/v1/projects/{slug}/build-cache/token`
+  (maintainer+); only its SHA-256 hash is stored (migration `00094`). Point
+  Gradle's `HttpBuildCache` at the URL and keep the `cache:` block for
+  `GRADLE_USER_HOME` deps. Eviction is via an object-store lifecycle rule on
+  the `gradle-cache/` prefix.
+  - **Auto-wiring.** Jobs using the `gradle` plugin need no manual config:
+    when a project has the build cache enabled, the scheduler injects the
+    cache URL + a short-lived, per-run token (masked in logs) into the job
+    env, and the plugin drops a Gradle init script that points
+    `HttpBuildCache` at gocdnext. The per-run token is a stateless HMAC
+    (its signature is bound to the project's credential generation, so a
+    rotate or disable→re-enable revokes outstanding tokens immediately) —
+    enable it by setting `GOCDNEXT_BUILD_CACHE_SIGN_KEY` (min 32 bytes);
+    without it the static per-project token still works for manual setups.
+  - **Only default-branch builds write; PRs/branches are read-only.** The
+    auto-wired token carries write access only for default-branch runs (the
+    same rule as PR-safe scoping); PR/branch runs get a read-only token, so an
+    untrusted run can't poison the shared cache or exhaust its storage. A
+    single entry PUT is capped (`GOCDNEXT_BUILD_CACHE_MAX_ENTRY_MB`, default
+    512) and streamed to the backend. Entry reads are proxied through the
+    server (Gradle's cache client rejects HTTP redirects); the handler is
+    stateless, scale with replicas.
+  - **UI.** *Project → Settings → Gradle build cache* enables/rotates/disables
+    the cache and shows the one-time token + a copy-paste Gradle snippet.
+
 ## v0.120.0 — 2026-10-20
 
 ### Added

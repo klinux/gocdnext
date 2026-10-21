@@ -85,6 +85,12 @@ spec:
                   name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.artifactsSignKey.existingSecret }}
                   key: {{ default "artifacts-sign-key" (ternary "ARTIFACTS_SIGN_KEY" "artifacts-sign-key" (ne .Values.artifactsSignKey.existingSecret "")) }}
                   optional: true
+            - name: GOCDNEXT_BUILD_CACHE_SIGN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.buildCacheSignKey.existingSecret }}
+                  key: {{ default "build-cache-sign-key" (ternary "BUILD_CACHE_SIGN_KEY" "build-cache-sign-key" (ne .Values.buildCacheSignKey.existingSecret "")) }}
+                  optional: true
             - name: GOCDNEXT_ARTIFACTS_KEEP_LAST
               value: {{ .Values.artifacts.keepLastPerPipeline | quote }}
             - name: GOCDNEXT_ARTIFACTS_PROJECT_QUOTA_BYTES
@@ -95,6 +101,8 @@ spec:
               value: {{ .Values.artifacts.maxBodyMB | quote }}
             - name: GOCDNEXT_ARTIFACT_WRITE_ONCE
               value: {{ .Values.artifacts.writeOnce | quote }}
+            - name: GOCDNEXT_BUILD_CACHE_MAX_ENTRY_MB
+              value: {{ .Values.caches.buildCacheMaxEntryMB | quote }}
             - name: GOCDNEXT_CACHE_TTL_DAYS
               value: {{ .Values.caches.ttlDays | quote }}
             - name: GOCDNEXT_CACHE_SCOPED_TTL_DAYS

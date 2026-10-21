@@ -133,6 +133,18 @@ type Sweeper struct {
 	lastSweepAt time.Time
 }
 
+// buildCachePrefix is the object-store key prefix the embedded Gradle build
+// cache writes under (see api/buildcache). The sweeper prunes it by age on
+// backends that support prefix pruning.
+const buildCachePrefix = "gradle-cache"
+
+// prefixAgePruner is implemented by the filesystem backend: delete objects under
+// a prefix older than a duration. S3/GCS don't implement it (they use native
+// bucket lifecycle rules), so the build-cache prune pass is a no-op there.
+type prefixAgePruner interface {
+	PruneByPrefixAge(ctx context.Context, prefix string, olderThan time.Duration) (int, int64, error)
+}
+
 // archiveSubmitter is the slice of *logarchive.Archiver the sweeper
 // touches — defined here as an interface so the retention package
 // doesn't take a hard dep on internal/logarchive's whole surface.
@@ -406,6 +418,11 @@ type SweepStats struct {
 	CacheStorageFailures int
 	CacheDBFailures      int
 	CacheBytesFreed      int64
+
+	// Embedded Gradle build cache prune (filesystem backend only; S3/GCS use
+	// bucket lifecycle rules). Entries older than the cache TTL removed.
+	BuildCacheEntriesPruned int
+	BuildCacheBytesFreed    int64
 }
 
 // SweepOnce runs a single batch and returns what happened. Exported so
@@ -610,6 +627,22 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 					"bytes", total, "quota", s.cacheGlobalQuotaBytes, "targeted", len(toDelete))
 				s.deleteCaches(ctx, toDelete, &stats, cacheEvictGlobalQuota)
 			}
+		}
+	}
+
+	// Embedded build cache (gradle-cache/) prune. Entries are immutable objects
+	// that no DB row tracks, so TTL/quota above don't see them. On the
+	// filesystem backend there are no native lifecycle rules, so bound growth
+	// here by deleting entries older than the cache TTL. S3/GCS skip this (they
+	// implement no prefix-pruner) and rely on bucket lifecycle rules instead.
+	if s.cacheTTL > 0 {
+		if pruner, ok := s.storage.(prefixAgePruner); ok {
+			n, bytes, err := pruner.PruneByPrefixAge(ctx, buildCachePrefix, s.cacheTTL)
+			if err != nil {
+				s.log.Warn("retention: build cache prune", "err", err)
+			}
+			stats.BuildCacheEntriesPruned = n
+			stats.BuildCacheBytesFreed = bytes
 		}
 	}
 

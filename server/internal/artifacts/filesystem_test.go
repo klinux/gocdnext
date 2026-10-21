@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -198,5 +200,53 @@ func TestFilesystem_PutCreateOnlyAllowsIdenticalRetryAndRejectsOverwrite(t *test
 	_ = rc.Close()
 	if !bytes.Equal(got, first) {
 		t.Errorf("object was overwritten: got %q", got)
+	}
+}
+
+func TestFilesystemPruneByPrefixAge(t *testing.T) {
+	root := t.TempDir()
+	fs, err := NewFilesystemStore(root, "http://localhost:8153", mustSigner(t))
+	if err != nil {
+		t.Fatalf("new fs: %v", err)
+	}
+	ctx := context.Background()
+
+	// Two gradle-cache entries + one unrelated artifact.
+	if _, err := fs.Put(ctx, "gradle-cache/p/old", strings.NewReader("old")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Put(ctx, "gradle-cache/p/fresh", strings.NewReader("fresh")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Put(ctx, "artifacts/x", strings.NewReader("keep")); err != nil {
+		t.Fatal(err)
+	}
+	// Backdate only the "old" entry's modtime.
+	oldPath := filepath.Join(root, "gradle-cache/p/old")
+	past := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(oldPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	n, bytes, err := fs.PruneByPrefixAge(ctx, "gradle-cache", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if n != 1 || bytes != 3 {
+		t.Errorf("pruned n=%d bytes=%d, want 1/3", n, bytes)
+	}
+	if _, err := fs.Head(ctx, "gradle-cache/p/old"); err == nil {
+		t.Error("old entry survived prune")
+	}
+	if _, err := fs.Head(ctx, "gradle-cache/p/fresh"); err != nil {
+		t.Error("fresh entry pruned")
+	}
+	if _, err := fs.Head(ctx, "artifacts/x"); err != nil {
+		t.Error("unrelated artifact pruned")
+	}
+
+	// Missing prefix is not an error.
+	if _, _, err := fs.PruneByPrefixAge(ctx, "nonexistent-prefix", time.Hour); err != nil {
+		t.Errorf("missing prefix: %v", err)
 	}
 }

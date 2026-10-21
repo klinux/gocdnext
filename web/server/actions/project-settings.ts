@@ -267,6 +267,97 @@ export async function rotateProjectBadgeToken(
   }
 }
 
+export type CacheTokenPayload = {
+  enabled: true;
+  token: string;
+  cache_url: string;
+  gradle_snippet: string;
+};
+
+export type CacheTokenResult =
+  | ({ ok: true } & CacheTokenPayload)
+  | { ok: false; error: string };
+
+export async function rotateProjectCacheToken(
+  input: z.infer<typeof badgeTokenSchema>,
+): Promise<CacheTokenResult> {
+  const parsed = badgeTokenSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/build-cache/token`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        error: `server ${res.status}: ${body.trim().slice(0, 300) || "rotate failed"}`,
+      };
+    }
+    const payload = (await res.json()) as CacheTokenPayload;
+    revalidatePath(`/projects/${parsed.data.slug}/settings`);
+    return { ok: true, ...payload };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export async function disableProjectCacheToken(
+  input: z.infer<typeof badgeTokenSchema>,
+): Promise<ActionResult> {
+  const parsed = badgeTokenSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/build-cache/token`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "DELETE",
+      cache: "no-store",
+      headers: {
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        error: `server ${res.status}: ${body.trim().slice(0, 300) || "disable failed"}`,
+      };
+    }
+    revalidatePath(`/projects/${parsed.data.slug}/settings`);
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export async function disableProjectBadgeToken(
   input: z.infer<typeof badgeTokenSchema>,
 ): Promise<ActionResult> {

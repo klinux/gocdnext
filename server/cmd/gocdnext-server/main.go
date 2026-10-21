@@ -31,6 +31,7 @@ import (
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	badgesapi "github.com/gocdnext/gocdnext/server/internal/api/badges"
+	buildcacheapi "github.com/gocdnext/gocdnext/server/internal/api/buildcache"
 	dashboardapi "github.com/gocdnext/gocdnext/server/internal/api/dashboard"
 	"github.com/gocdnext/gocdnext/server/internal/api/openapi"
 	pipelinesapi "github.com/gocdnext/gocdnext/server/internal/api/pipelines"
@@ -478,6 +479,25 @@ func main() {
 	if artifactStore != nil {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}
+	// Embedded build-cache auto-wiring: the scheduler mints a per-run token and
+	// injects the cache URL + token into each job's env, so a Gradle build uses
+	// the cache with no manual config. Needs a signing key + an artifact backend
+	// + a reachable public base; absent any, auto-wiring is off (the per-project
+	// static token still works for manual Gradle config).
+	buildCacheSignKey, err := hex.DecodeString(cfg.BuildCacheSignKeyHex)
+	if err != nil {
+		logger.Error("GOCDNEXT_BUILD_CACHE_SIGN_KEY: not hex", "err", err)
+		os.Exit(1)
+	}
+	if len(buildCacheSignKey) > 0 && len(buildCacheSignKey) < 32 {
+		// A short HMAC key weakens the per-run token. Fail loud rather than
+		// auto-wire with a guessable signing key.
+		logger.Error("GOCDNEXT_BUILD_CACHE_SIGN_KEY: too short", "bytes", len(buildCacheSignKey), "min", 32)
+		os.Exit(1)
+	}
+	if artifactStore != nil && len(buildCacheSignKey) > 0 && cfg.PublicBase != "" {
+		sched = sched.WithBuildCache(cfg.PublicBase, buildCacheSignKey, 2*time.Hour)
+	}
 	if checksReporter != nil {
 		// Same reporter the AgentService uses, so a supersede-cancel closes the
 		// same check run the JobResult path would have (#97).
@@ -713,6 +733,13 @@ func main() {
 		artifactHandler.Mount(r)
 	}
 
+	// Embedded Gradle HTTP build cache. Needs an artifact backend to store
+	// entries; reads redirect to a signed object-store URL, writes proxy
+	// through. Per-project token auth (projects.cache_token_hash).
+	if artifactStore != nil {
+		buildcacheapi.New(st, artifactStore, logger, cfg.BuildCacheMaxEntryMB*1024*1024, buildCacheSignKey).Mount(r)
+	}
+
 	// Anonymous status badges. Access is public-by-design for README/wiki/CDN
 	// embeds, but gated by a per-project unguessable token hash so private
 	// projects do not leak status unless a maintainer explicitly opts in.
@@ -818,6 +845,11 @@ func main() {
 		p.Get("/api/v1/projects/{slug}/badge", projectsHandler.GetBadgeConfig)
 		p.Post("/api/v1/projects/{slug}/badge/token", projectsHandler.RotateBadgeToken)
 		p.Delete("/api/v1/projects/{slug}/badge/token", projectsHandler.DisableBadgeToken)
+		// Embedded Gradle build cache token (projects.cache_token_hash). The
+		// cache endpoint itself is /api/v1/buildcache/{slug}/{key}.
+		p.Get("/api/v1/projects/{slug}/build-cache", projectsHandler.GetCacheConfig)
+		p.Post("/api/v1/projects/{slug}/build-cache/token", projectsHandler.RotateCacheToken)
+		p.Delete("/api/v1/projects/{slug}/build-cache/token", projectsHandler.DisableCacheToken)
 		p.Get("/api/v1/projects/{slug}/crons", projectsHandler.ListProjectCrons)
 		p.Post("/api/v1/projects/{slug}/crons", projectsHandler.CreateProjectCron)
 		p.Put("/api/v1/projects/{slug}/crons/{id}", projectsHandler.UpdateProjectCron)
