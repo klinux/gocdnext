@@ -1,0 +1,8 @@
+# pnpm v10 reads overrides from here. These force patched versions on build-time
+# transitive deps whose parent pins a vulnerable range (dev/build only — this is
+# the static docs site, nothing ships to prod from here).
+overrides:
+  # Quadratic-complexity DoS (<7.1.6), pulled via the markdown/postcss chain.
+  postcss-selector-parser: ">=7.1.6"
+  # esbuild <0.28.1 dev-server arbitrary file read (used by astro/vite at build).
+  esbuild: ">=0.28.1"
