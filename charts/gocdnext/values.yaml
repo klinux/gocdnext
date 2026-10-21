@@ -493,6 +493,9 @@ artifacts:
 # Eviction is layered: TTL by last_accessed_at, then per-project
 # quota, then global quota. 0 disables a layer.
 caches:
+  # Max size (MiB) of a single embedded Gradle build-cache entry PUT. Gradle
+  # task outputs are small; a tight cap bounds abuse + server memory. 0 = no cap.
+  buildCacheMaxEntryMB: 512
   # Days of inactivity before a `ready` cache row is evicted. 0 =
   # disabled (TTL pass off; quotas alone govern eviction). Governs the
   # shared ("@") lane — the project default branch's cache.
@@ -574,6 +577,14 @@ secretKey:
   existingSecret: ""
   value: ""
 artifactsSignKey:
+  existingSecret: ""
+  value: ""
+
+# Hex HMAC key for minting per-run Gradle build-cache tokens (embedded build
+# cache auto-wiring). Empty leaves auto-wiring off — the per-project static
+# token still works for manual Gradle config. Same shape as artifactsSignKey:
+# set `value` to have the chart manage it, or point `existingSecret` at your own.
+buildCacheSignKey:
   existingSecret: ""
   value: ""
 

@@ -7,12 +7,73 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// PruneByPrefixAge deletes files under <root>/<prefix> whose modtime is older
+// than olderThan, returning the count + bytes freed. The embedded build cache
+// (gradle-cache/) stores immutable objects that no DB row tracks, so the
+// retention sweeper calls this to bound growth on the FILESYSTEM backend (S3
+// and GCS use native object-lifecycle rules instead). It walks the subtree each
+// call — acceptable for the filesystem backend's scale (dev / small self-
+// hosted). A missing prefix (nothing cached yet) is not an error.
+func (f *FilesystemStore) PruneByPrefixAge(ctx context.Context, prefix string, olderThan time.Duration) (int, int64, error) {
+	base := filepath.Join(f.root, filepath.Clean(prefix))
+	cutoff := time.Now().Add(-olderThan)
+	var count, failures int
+	var freed int64
+	var firstErr error
+	note := func(err error) {
+		failures++
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			if !os.IsNotExist(infoErr) { // a racing delete is fine; anything else isn't
+				note(infoErr)
+			}
+			return nil
+		}
+		if info.ModTime().Before(cutoff) {
+			if rmErr := os.Remove(path); rmErr != nil {
+				if !os.IsNotExist(rmErr) {
+					note(rmErr) // e.g. a permission problem would silently stall eviction
+				}
+				return nil
+			}
+			count++
+			freed += info.Size()
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return count, freed, fmt.Errorf("artifacts: filesystem: prune %s: %w", prefix, err)
+	}
+	if firstErr != nil {
+		return count, freed, fmt.Errorf("artifacts: filesystem: prune %s: %d of its entries failed (first: %w)", prefix, failures, firstErr)
+	}
+	return count, freed, nil
+}
 
 // FilesystemStore writes blobs under `root`, one file per storage_key.
 // Keys are stored verbatim as the relative path (sanitised against path
@@ -142,12 +203,16 @@ func (f *FilesystemStore) Put(_ context.Context, key string, r io.Reader) (int64
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return 0, fmt.Errorf("artifacts: filesystem: mkdir: %w", err)
 	}
-	// Write to tmp, rename — avoids a half-written file becoming visible.
-	tmp := full + ".part"
-	out, err := os.Create(tmp)
+	// Write to a UNIQUE temp, then atomic rename — a per-call temp name is
+	// required because the build-cache proxy can PUT the same key concurrently
+	// (two builds computing the same entry); a shared "<key>.part" would let
+	// those interleave into a corrupt file. The rename is atomic, so last writer
+	// wins with intact bytes (fine for content-addressed entries).
+	out, err := os.CreateTemp(filepath.Dir(full), "."+filepath.Base(full)+".*.part")
 	if err != nil {
 		return 0, fmt.Errorf("artifacts: filesystem: create: %w", err)
 	}
+	tmp := out.Name()
 	n, copyErr := io.Copy(out, r)
 	closeErr := out.Close()
 	if copyErr != nil {
