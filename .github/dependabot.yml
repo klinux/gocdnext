@@ -1,0 +1,37 @@
+# Dependabot configuration.
+#
+# Repo-level "Dependabot security updates" is ON, so Dependabot opens a PR for
+# any vulnerable dependency that has a fix. GitHub has no native severity
+# filter, so the companion workflow `.github/workflows/dependabot-critical-only.yml`
+# auto-closes the non-critical ones (CVSS < 9.0) — only CRITICAL security PRs
+# stay open.
+#
+# This file does NOT enable weekly version-bump PRs (`open-pull-requests-limit: 0`);
+# it only tells Dependabot which manifests to watch. Raise the limit to opt into
+# scheduled version updates later.
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directories:
+      - "/server"
+      - "/agent"
+      - "/cli"
+      - "/proto"
+      - "/plugins/slack"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: "npm"
+    directories:
+      - "/web"
+      - "/docs"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
