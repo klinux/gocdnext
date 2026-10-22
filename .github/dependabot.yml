@@ -1,0 +1,50 @@
+# Dependabot configuration.
+#
+# Security updates (auto-PRs for vulnerable deps that have a fix) are enabled at
+# the repo level ("Dependabot security updates"). This file does NOT turn on
+# weekly version-bump PRs — `open-pull-requests-limit: 0` keeps those off — it
+# only tells Dependabot which manifests to watch and GROUPS the security PRs so
+# a multi-package advisory lands as one PR per ecosystem instead of many.
+#
+# To also get scheduled version-update PRs later, raise the limit (e.g. 10).
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directories:
+      - "/server"
+      - "/agent"
+      - "/cli"
+      - "/proto"
+      - "/plugins/slack"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      go-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directories:
+      - "/web"
+      - "/docs"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
