@@ -1,0 +1,47 @@
+# Keep only CRITICAL Dependabot security PRs.
+#
+# Repo-level "Dependabot security updates" opens a PR for every fixable vuln
+# regardless of severity, and GitHub offers no native severity filter. This
+# workflow closes the non-critical ones (CVSS < 9.0) right after they open, so
+# only critical security updates remain for review. Fail-safe: if the CVSS can't
+# be read, the PR is left open.
+name: Dependabot critical-only
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  filter:
+    # Only act on Dependabot's own PRs.
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+
+      - name: Close non-critical security PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          CVSS: ${{ steps.meta.outputs.cvss }}
+        run: |
+          set -euo pipefail
+          # Empty CVSS (e.g. a non-security update, or metadata unavailable) →
+          # leave the PR open. Only close when we KNOW it's below critical.
+          if [ -z "${CVSS}" ] || [ "${CVSS}" = "0" ]; then
+            echo "No CVSS score available — leaving PR open (fail-safe)."
+            exit 0
+          fi
+          if awk "BEGIN{exit !(${CVSS} < 9.0)}"; then
+            echo "CVSS ${CVSS} < 9.0 (not critical) — closing."
+            gh pr close "${PR_URL}" --delete-branch --comment \
+              "Auto-closed: this repo keeps only **critical** (CVSS ≥ 9.0) Dependabot security PRs. This one is CVSS \`${CVSS}\`. It's tracked in the Dependabot alerts; bump it in a batch sweep if you want it sooner."
+          else
+            echo "CVSS ${CVSS} ≥ 9.0 (critical) — keeping open."
+          fi

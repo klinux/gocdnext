@@ -20,7 +20,11 @@ convention that minor bumps may carry breaking changes until 1.0).
   (undici, hono, fast-uri, browserslist, …) — `pnpm audit` down from 150 to 1
   (a dev-only `braces` advisory with no patched release yet). docs: upgraded
   Astro 5 → 7, Starlight 0.30 → 0.42 and `sharp` (clears a critical Astro RCE) —
-  `pnpm audit` clean.
+  `pnpm audit` clean. Follow-up: applied the same Go bumps to the remaining
+  modules Dependabot still flagged by dependency graph — `grpc` + `x/net` in
+  `proto` and `agent`, `moby/go-archive` + `moby/sys/user` + `klauspost/compress`
+  in `cli`, and `jackc/pgx/v5` in `server` — clearing all fixable Go alerts
+  (the sole remaining alert is the dev-only `braces` with no upstream patch).
 
 ## v0.121.0 — 2026-10-20
 
