@@ -31,9 +31,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Version comes from docs/package.json `packageManager` (pnpm 10): the
+      # overrides live in pnpm-workspace.yaml, which pnpm 9 rejects without a
+      # `packages` field.
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          package_json_file: docs/package.json
 
       - uses: actions/setup-node@v4
         with:
