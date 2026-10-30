@@ -21,10 +21,11 @@ import (
 //
 //	202 Accepted → { job_run_id, run_id, stage_completed, stage_status, run_completed, run_status }
 //	400 → malformed id
-//	403 → user not in approvers allow-list
+//	403 → user not in approvers allow-list, or a service account (#172)
 //	404 → unknown gate, or the job isn't an approval row at all
 //	409 → gate already decided (race, duplicate click)
-//	503 → gate exists but store returned an unexpected error
+//	500 → gate exists but store returned an unexpected error
+//	503 → external approver-group source unavailable (fail-closed, retryable)
 func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) {
 	h.decideGate(w, r, true)
 }
@@ -76,6 +77,10 @@ func (h *Handler) decideGate(w http.ResponseWriter, r *http.Request, approve boo
 		// it directly — under OIDC `User` is the display name, not the
 		// stable email/username an operator would list (#51).
 		decision.UserEmail = u.Email
+		// The stable IdP subject matches `sub:` approver entries (#172), and
+		// the provider lets the store refuse service-account tokens.
+		decision.Provider = u.Provider
+		decision.Subject = u.ExternalID
 	}
 
 	var (
@@ -141,6 +146,14 @@ func (h *Handler) decideGate(w http.ResponseWriter, r *http.Request, approve boo
 		http.Error(w, "gate already decided", http.StatusConflict)
 	case errors.Is(err, store.ErrApproverNotAllowed):
 		http.Error(w, "user not in approvers list", http.StatusForbidden)
+	case errors.Is(err, store.ErrApproverNotHuman):
+		http.Error(w, "a service account cannot cast an approval vote", http.StatusForbidden)
+	case errors.Is(err, store.ErrApproverGroupsUnavailable):
+		// Fail-closed external group resolution. The upstream error stays in
+		// the log; the caller only learns it's retryable.
+		h.log.Warn("approval group resolution failed",
+			"job_run_id", jobRunID, "err", err)
+		http.Error(w, "approver group membership is unavailable — try again shortly", http.StatusServiceUnavailable)
 	default:
 		verb := "approve"
 		if !approve {

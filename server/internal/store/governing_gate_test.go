@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestGoverningGateValidate(t *testing.T) {
 	tests := []struct {
@@ -16,6 +19,10 @@ func TestGoverningGateValidate(t *testing.T) {
 		{"too many approvers rejected", &GoverningGate{Required: 1, Approvers: make([]string, maxGateApprovers+1)}, true},
 		{"too many groups rejected", &GoverningGate{Required: 1, ApproverGroups: make([]string, maxGateGroups+1)}, true},
 		{"full valid gate", &GoverningGate{Required: 2, Approvers: []string{"a"}, ApproverGroups: []string{"g"}, Description: "d"}, false},
+		{"subject ref ok", &GoverningGate{Required: 1, Approvers: []string{"alice", "sub:oidc:0f3c-11"}}, false},
+		{"subject ref missing subject rejected", &GoverningGate{Required: 1, Approvers: []string{"sub:oidc:"}}, true},
+		{"subject ref missing provider rejected", &GoverningGate{Required: 1, Approvers: []string{"sub::abc"}}, true},
+		{"subject ref with whitespace rejected", &GoverningGate{Required: 1, Approvers: []string{"sub:oidc:a b"}}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -23,6 +30,22 @@ func TestGoverningGateValidate(t *testing.T) {
 				t.Errorf("Validate() err = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// The error must cite the list index, never echo the entry (mirrors the
+// job-gate parser and domain.ValidateApproverRef).
+func TestGoverningGateValidate_SubjectRefErrorDoesNotLeakValue(t *testing.T) {
+	g := &GoverningGate{Required: 1, Approvers: []string{"alice", "sub:oidc:secret value"}}
+	err := g.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want error for malformed subject ref")
+	}
+	if !strings.Contains(err.Error(), "approvers[1]") {
+		t.Errorf("error %q should cite approvers[1]", err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Errorf("error %q leaks the entry value", err)
 	}
 }
 

@@ -180,7 +180,7 @@ func (m *Middleware) authenticateBearer(r *http.Request) (store.User, bool) {
 			ID:       sa.ID,
 			Email:    sa.Name + "@service-account",
 			Name:     sa.Name,
-			Provider: "service_account",
+			Provider: store.ProviderServiceAccount,
 			Role:     sa.Role,
 		}, true
 	}
