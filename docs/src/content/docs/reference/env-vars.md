@@ -79,6 +79,9 @@ only, no redeploy) if your object store doesn't support conditional writes.
 | Var | Default | Notes |
 |---|---|---|
 | `GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT` | `168h` | How long an approval gate may sit unanswered before its run is **canceled** (not failed). Applies to every gate that doesn't set its own `timeout:` in YAML. Go duration, no `d` unit (`168h` = 7 days); clamped to `[1m, 2160h]`. `never` / `off` / `0` disables the fleet-wide window — per-gate `timeout:` still applies. A typo aborts boot. |
+| `GOCDNEXT_APPROVER_GROUPS_URL` | — | External approver-group source ([ADR-0002](https://github.com/klinux/gocdnext/blob/main/adr/0002-approval-identity-and-group-resolution.md)). When set, `approver_groups:` membership is also resolved against this endpoint at vote time (`GET <url>?provider=&subject=`, answer `{"groups":[...]}`, `404` = none). Fails closed: an error refuses the vote with `503`. https only (http to loopback). See [Approvals](/concepts/approvals/). |
+| `GOCDNEXT_APPROVER_GROUPS_TOKEN` | — | Bearer token for the endpoint above. Required when the URL is set; boot aborts without it. |
+| `GOCDNEXT_APPROVER_GROUPS_TIMEOUT` | `2s` | Per-lookup bound, Go duration within `[100ms, 30s]`. Out of range aborts boot. |
 
 ## Logs
 

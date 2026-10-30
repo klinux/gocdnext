@@ -160,6 +160,19 @@ spec:
             - name: GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT
               value: {{ .Values.approvals.defaultTimeout | quote }}
             {{- end }}
+            {{- with .Values.approvals.groupSource }}
+            {{- if .url }}
+            - name: GOCDNEXT_APPROVER_GROUPS_URL
+              value: {{ .url | quote }}
+            - name: GOCDNEXT_APPROVER_GROUPS_TIMEOUT
+              value: {{ .timeout | quote }}
+            - name: GOCDNEXT_APPROVER_GROUPS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "approvals.groupSource.tokenSecret.name is required when approvals.groupSource.url is set" .tokenSecret.name }}
+                  key: {{ .tokenSecret.key | default "token" }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.logs.retention }}
             - name: GOCDNEXT_LOG_RETENTION
               value: {{ .Values.logs.retention | quote }}
