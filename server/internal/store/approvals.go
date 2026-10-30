@@ -120,6 +120,15 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	if d.JobRunID == uuid.Nil {
 		return ApprovalResult{}, fmt.Errorf("store: approval decision: job run id required")
 	}
+	who := ApproverIdentity{
+		UserID: d.UserID, Label: d.User, Email: d.UserEmail, Provider: d.Provider, Subject: d.Subject,
+	}
+	// External group membership (I/O to the IdP/platform) is resolved BEFORE the
+	// transaction opens — never with a pooled connection held or a lock taken.
+	external, err := s.externalGroupsForJobGate(ctx, d.JobRunID, who)
+	if err != nil {
+		return ApprovalResult{}, err
+	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -200,15 +209,13 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 
 	// Allow-list check (shared with the rollout gate — see authorizeApprover):
 	// service accounts refused, then `approvers` by subject ref or name/email,
-	// then `approver_groups` via the local table and the optional external
-	// source. Empty BOTH lists = any authenticated human.
+	// then `approver_groups` via the local table and the pre-resolved external
+	// names. Empty BOTH lists = any authenticated human.
 	//
 	// Runs BEFORE any lock: an unauthorized approver must not be able to make
 	// the server take advisory locks on a production environment, however
 	// briefly.
-	if err := s.authorizeApprover(ctx, s.q.WithTx(tx), ApproverIdentity{
-		UserID: d.UserID, Label: d.User, Email: d.UserEmail, Provider: d.Provider, Subject: d.Subject,
-	}, approvers, approverGroups); err != nil {
+	if err := s.authorizeApprover(ctx, s.q.WithTx(tx), who, approvers, approverGroups, external); err != nil {
 		return ApprovalResult{}, err
 	}
 

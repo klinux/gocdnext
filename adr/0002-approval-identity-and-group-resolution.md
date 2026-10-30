@@ -72,6 +72,13 @@ platform's token could approve as anyone.
    2. member of a listed group in the local `group_members` table;
    3. member of a listed group per the external source.
 
+   The source is called **before the decision transaction opens** — never with a pooled
+   connection pinned or the gate's row lock held — and only when its answer can matter
+   (the gate lists groups, the voter isn't named in `approvers:`, the local table didn't
+   grant). The allow-list it uses is a pre-transaction read; the locked read re-evaluates
+   with the resolved names as membership data only, and both gate configs are immutable
+   snapshots.
+
    The local table is **additive**, not a fallback: standalone and air-gapped installs
    need it, and a local grant is an explicit decision by a gocdnext admin, not a mirror.
    Platforms that own teams should resolve through the source and **not** mirror into
@@ -111,9 +118,8 @@ platform's token could approve as anyone.
 
 - **An `ApproverGroupSource` implementation** (platform HTTP / SCIM / IdP admin API),
   wired from config, with its own timeout, metrics, and no positive-answer caching
-  beyond the decision. It runs inside the decision transaction — before any lock on the
-  job gate, but under the deploy-watch row lock on the rollout gate — so it must bound
-  its latency; moving the rollout call ahead of the lock is part of that work.
+  beyond the decision. It still adds latency to every vote that needs it, so it must
+  bound that latency (timeout, circuit breaker).
 - **IdP-signed bearer tokens (RFC 8693 output)** accepted by the auth middleware,
   verified against the issuer + audience and mapped to users by `(provider, sub)`.
 - **UI rendering of `sub:` approvers** as the resolved user's name.

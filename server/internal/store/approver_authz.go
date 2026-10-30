@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
@@ -49,9 +50,11 @@ type ApproverIdentity struct {
 // login isn't honoured from a login-time snapshot. It is additive to the local
 // group_members table, consulted only when the local table didn't already grant.
 //
-// Implementations own their timeout — the call runs inside the decision transaction —
-// and must return an error rather than an empty list when they couldn't resolve:
-// an empty list means "member of nothing", an error refuses the vote.
+// The call runs BEFORE the decision transaction opens (resolveExternalApproverGroups),
+// never inside it: a slow source must not pin a pooled connection or hold the gate's
+// row lock. Implementations own their timeout, and must return an error rather than
+// an empty list when they couldn't resolve: an empty list means "member of nothing",
+// an error refuses the vote.
 type ApproverGroupSource interface {
 	ApproverGroupNames(ctx context.Context, who ApproverIdentity) ([]string, error)
 }
@@ -71,10 +74,11 @@ func (s *Store) WithApproverGroupSource(src ApproverGroupSource) *Store {
 //  2. empty approvers AND groups = any authenticated human;
 //  3. listed in `approvers` (subject ref, or name/email for plain entries);
 //  4. member of a listed group in the local table (by user id);
-//  5. member of a listed group per the external source — error = fail closed.
+//  5. member of a listed group per `external` — the names resolveExternalApproverGroups
+//     fetched before the transaction (nil when no source, or it wasn't needed).
 //
 // q must be the caller's tx-bound queries: decideGate runs everything on one tx.
-func (s *Store) authorizeApprover(ctx context.Context, q *db.Queries, who ApproverIdentity, approvers, groups []string) error {
+func (s *Store) authorizeApprover(ctx context.Context, q *db.Queries, who ApproverIdentity, approvers, groups, external []string) error {
 	if who.Provider == ProviderServiceAccount {
 		return ErrApproverNotHuman
 	}
@@ -93,20 +97,41 @@ func (s *Store) authorizeApprover(ctx context.Context, q *db.Queries, who Approv
 	if err != nil {
 		return fmt.Errorf("store: load user groups: %w", err)
 	}
-	if intersects(local, groups) {
-		return nil
-	}
-	if s.approverGroups == nil {
-		return ErrApproverNotAllowed
-	}
-	external, err := s.approverGroups.ApproverGroupNames(ctx, who)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrApproverGroupsUnavailable, err)
-	}
-	if intersects(external, groups) {
+	if intersects(local, groups) || intersects(external, groups) {
 		return nil
 	}
 	return ErrApproverNotAllowed
+}
+
+// resolveExternalApproverGroups asks the external source for `who`'s groups, OUTSIDE
+// any transaction, and only when the answer can matter: a source is configured, the
+// gate lists groups, `who` is a human not already named in `approvers`, and the local
+// table doesn't already grant. Otherwise it returns nil without calling the source, so
+// votes the source isn't needed for keep working while it's down.
+//
+// The allow-list passed here is a pre-transaction read; authorizeApprover re-evaluates
+// against the locked read. Both gate configs are immutable snapshots (job_runs rows,
+// deploy_watches gate columns), and `external` is only membership data — a stale list
+// here can't grant anything the locked check wouldn't.
+//
+// Source error = fail closed: ErrApproverGroupsUnavailable, before any vote is written.
+func (s *Store) resolveExternalApproverGroups(ctx context.Context, who ApproverIdentity, approvers, groups []string) ([]string, error) {
+	if s.approverGroups == nil || len(groups) == 0 || who.UserID == uuid.Nil ||
+		who.Provider == ProviderServiceAccount || approverListed(who, approvers) {
+		return nil, nil
+	}
+	local, err := s.q.ListUserGroupNames(ctx, pgUUID(who.UserID))
+	if err != nil {
+		return nil, fmt.Errorf("store: load user groups: %w", err)
+	}
+	if intersects(local, groups) {
+		return nil, nil
+	}
+	external, err := s.approverGroups.ApproverGroupNames(ctx, who)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrApproverGroupsUnavailable, err)
+	}
+	return external, nil
 }
 
 // approverListed reports whether `who` is named by an `approvers:` entry. A subject
@@ -127,6 +152,48 @@ func approverListed(who ApproverIdentity, approvers []string) bool {
 		}
 	}
 	return false
+}
+
+// externalGroupsForJobGate reads a pending job gate's allow-list WITHOUT a transaction
+// and resolves the external groups it may need. Free when no source is configured. A
+// missing / decided gate resolves nothing — the transaction reports it properly.
+func (s *Store) externalGroupsForJobGate(ctx context.Context, jobRunID uuid.UUID, who ApproverIdentity) ([]string, error) {
+	if s.approverGroups == nil {
+		return nil, nil
+	}
+	var approvers, groups []string
+	err := s.pool.QueryRow(ctx, `
+		SELECT approvers, approver_groups FROM job_runs
+		WHERE id = $1 AND approval_gate AND status = 'awaiting_approval'
+	`, jobRunID).Scan(&approvers, &groups)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: pre-read approval allow-list: %w", err)
+	}
+	return s.resolveExternalApproverGroups(ctx, who, approvers, groups)
+}
+
+// externalGroupsForRolloutGate is externalGroupsForJobGate for an armed, undecided
+// rollout gate (allow-list denormalized on the deploy_watch).
+func (s *Store) externalGroupsForRolloutGate(ctx context.Context, revisionID, projectID uuid.UUID, who ApproverIdentity) ([]string, error) {
+	if s.approverGroups == nil {
+		return nil, nil
+	}
+	var approvers, groups []string
+	err := s.pool.QueryRow(ctx, `
+		SELECT gate_approvers, gate_approver_groups FROM deploy_watches
+		WHERE deployment_revision_id = $1 AND project_id = $2
+		  AND gate_id IS NOT NULL AND gate_decision IS NULL
+	`, revisionID, projectID).Scan(&approvers, &groups)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: pre-read rollout gate allow-list: %w", err)
+	}
+	return s.resolveExternalApproverGroups(ctx, who, approvers, groups)
 }
 
 func intersects(have, want []string) bool {

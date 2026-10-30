@@ -121,11 +121,18 @@ type fakeGroupSource struct {
 	err    error
 	calls  int
 	seen   store.ApproverIdentity
+	// pool, when set, records how many connections were checked out at call time:
+	// the source must run outside the decision tx (no pinned connection).
+	pool       *pgxpool.Pool
+	heldAtCall int32
 }
 
 func (f *fakeGroupSource) ApproverGroupNames(_ context.Context, who store.ApproverIdentity) ([]string, error) {
 	f.calls++
 	f.seen = who
+	if f.pool != nil {
+		f.heldAtCall = f.pool.Stat().AcquiredConns()
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -146,7 +153,7 @@ func groupGate(t *testing.T, pool *pgxpool.Pool, slug string, groups []string) u
 func TestApproveGate_ExternalGroupSource(t *testing.T) {
 	t.Run("grants membership resolved at vote time", func(t *testing.T) {
 		pool := dbtest.SetupPool(t)
-		src := &fakeGroupSource{groups: map[string][]string{"sub-alice": {"platform-sre"}}}
+		src := &fakeGroupSource{groups: map[string][]string{"sub-alice": {"platform-sre"}}, pool: pool}
 		s := store.New(pool).WithApproverGroupSource(src)
 		gate := groupGate(t, pool, "gate-ext-grant", []string{"platform-sre"})
 		dave := oidcUser(t, s, "sub-dave", "dave@corp.com", "Dave")
@@ -160,6 +167,11 @@ func TestApproveGate_ExternalGroupSource(t *testing.T) {
 		}
 		if src.seen.Provider != "oidc" || src.seen.Subject != "sub-alice" || src.seen.UserID != alice.ID {
 			t.Fatalf("source saw %+v, want alice's provider/subject/id", src.seen)
+		}
+		// External I/O must not run inside the decision tx: no connection is held
+		// while the source is called.
+		if src.heldAtCall != 0 {
+			t.Fatalf("source called with %d connection(s) checked out, want 0 (outside the tx)", src.heldAtCall)
 		}
 	})
 
@@ -221,5 +233,31 @@ func TestDecideRolloutGate_IdentityRules(t *testing.T) {
 	res, err := gr.s.DecideRolloutGate(gr.ctx, in)
 	if err != nil || !res.Decided {
 		t.Fatalf("subject approve = %+v err=%v, want Decided", res, err)
+	}
+}
+
+// Rollout parity for the external source: grants by resolved membership, and the
+// call happens before the transaction (no connection held, no watch-row lock).
+func TestDecideRolloutGate_ExternalGroupSource(t *testing.T) {
+	gr := seedGatedRollout(t, "rg-ext", 1, nil)
+	src := &fakeGroupSource{groups: map[string][]string{"sub-alice": {"platform-sre"}}, pool: gr.pool}
+	gr.s.WithApproverGroupSource(src)
+	if _, err := gr.pool.Exec(gr.ctx,
+		`UPDATE deploy_watches SET gate_approvers = '{}', gate_approver_groups = '{platform-sre}' WHERE deployment_revision_id = $1`,
+		gr.revID); err != nil {
+		t.Fatalf("set groups: %v", err)
+	}
+	alice := oidcUser(t, gr.s, "sub-alice", "alice@corp.com", "Alice")
+
+	res, err := gr.s.DecideRolloutGate(gr.ctx, store.RolloutGateDecisionInput{
+		RevisionID: gr.revID, ProjectID: gr.projectID, GateID: gr.gateID, Decision: "approved",
+		UserID: alice.ID, User: alice.Name, UserEmail: alice.Email,
+		Provider: alice.Provider, Subject: alice.ExternalID,
+	})
+	if err != nil || !res.Decided {
+		t.Fatalf("external member approve = %+v err=%v, want Decided", res, err)
+	}
+	if src.calls != 1 || src.heldAtCall != 0 {
+		t.Fatalf("source calls=%d held=%d, want 1 call with 0 connections held", src.calls, src.heldAtCall)
 	}
 }
