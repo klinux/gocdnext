@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>gocdnext — modern CI/CD orchestrator</title>
+<meta name="description" content="Modern CI/CD orchestrator. The good ideas from GoCD, Woodpecker and GitLab CI — rebuilt in Go. Container-native, webhook-first, VSM-driven. Open source, Apache-2.0.">
+<link rel="canonical" href="https://klinux.github.io/gocdnext/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="gocdnext">
+<meta property="og:title" content="gocdnext — modern CI/CD orchestrator">
+<meta property="og:description" content="The good ideas from GoCD, Woodpecker and GitLab CI — rebuilt in Go. Container-native, webhook-first, VSM-driven.">
+<meta property="og:url" content="https://klinux.github.io/gocdnext/">
+<meta property="og:image" content="https://raw.githubusercontent.com/klinux/gocdnext/main/docs/public/screenshots/03-project-pipelines.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="gocdnext — modern CI/CD orchestrator">
+<meta name="twitter:description" content="The good ideas from GoCD, Woodpecker and GitLab CI — rebuilt in Go.">
+<meta name="twitter:image" content="https://raw.githubusercontent.com/klinux/gocdnext/main/docs/public/screenshots/03-project-pipelines.png">
+<style>
+  /* baseline reset (standalone — replaces the Claude artifact skeleton) */
+  :root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  html { -webkit-text-size-adjust: 100%; }
+  img { max-width: 100%; height: auto; }
+  [hidden] { display: none !important; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  /* Layout: dark control-plane. Hero fanout graph as the thesis, then why → features → pipeline-as-code → quick start. Teal brand accent on blued-slate neutrals. */
+  :root {
+    --bg: #fcfdfe;
+    --surface: #ffffff;
+    --surface-2: #f5f7fa;
+    --border: #ebeef3;
+    --border-strong: #dde2ea;
+    --fg: #101620;
+    --muted: #5c6878;
+    --faint: #93a0b0;
+    --accent: #0d9b90;
+    --accent-ink: #0b857b;
+    --accent-soft: #edf7f5;
+    --brand-teal: #0ea5a0;
+    --brand-teal-lt: #8fe4ea;
+    --code-kw: #0a7a72;
+    --code-str: #1d6fb8;
+    --code-key: #8a5a00;
+    --code-com: #7c8aa3;
+    --glow: rgba(13,155,144,0.12);
+    --shadow: 0 1px 3px rgba(16,22,32,0.04), 0 14px 40px -24px rgba(16,22,32,0.10);
+    --section: clamp(84px, 11vw, 132px);
+    --radius: 14px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0a0d12;
+      --surface: #0f141c;
+      --surface-2: #141a24;
+      --border: #1d2530;
+      --border-strong: #2a3340;
+      --fg: #e7ecf3;
+      --muted: #97a3b4;
+      --faint: #637082;
+      --accent: #2dd4bf;
+      --accent-ink: #5fe3d2;
+      --accent-soft: rgba(45,212,191,0.09);
+      --brand-teal: #2dd4bf;
+      --brand-teal-lt: #8fe4ea;
+      --code-kw: #5de0cf;
+      --code-str: #7cc4ff;
+      --code-key: #f0b86e;
+      --code-com: #5f708c;
+      --glow: rgba(45,212,191,0.16);
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 28px 60px -34px rgba(0,0,0,0.7);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0d12;
+    --surface: #0f141c;
+    --surface-2: #141a24;
+    --border: #1d2530;
+    --border-strong: #2a3340;
+    --fg: #e7ecf3;
+    --muted: #97a3b4;
+    --faint: #637082;
+    --accent: #2dd4bf;
+    --accent-ink: #5fe3d2;
+    --accent-soft: rgba(45,212,191,0.09);
+    --brand-teal: #2dd4bf;
+    --brand-teal-lt: #8fe4ea;
+    --code-kw: #5de0cf;
+    --code-str: #7cc4ff;
+    --code-key: #f0b86e;
+    --code-com: #5f708c;
+    --glow: rgba(45,212,191,0.16);
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 28px 60px -34px rgba(0,0,0,0.7);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  .wrap {
+    max-width: 1080px;
+    margin-inline: auto;
+    padding-left: max(24px, env(safe-area-inset-left, 0px));
+    padding-right: max(24px, env(safe-area-inset-right, 0px));
+  }
+  h1, h2, h3 { font-family: "Archivo", "Inter", sans-serif; line-height: 1.08; text-wrap: balance; margin: 0; letter-spacing: -0.02em; }
+  a { color: inherit; }
+  code, pre, .mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  .eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+  }
+
+  /* ---------- nav ---------- */
+  header.nav {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 50;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-row { display: flex; align-items: center; gap: 20px; padding-block: 13px; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
+  .brand .mark { width: 30px; height: 30px; flex: none; }
+  .brand .word { font-family: "Archivo", sans-serif; font-weight: 800; font-size: 1.22rem; letter-spacing: -0.03em; }
+  .brand .word .nx { color: var(--brand-teal); }
+  .nav-links { display: flex; gap: 22px; margin-left: auto; align-items: center; }
+  .nav-links a { text-decoration: none; color: var(--muted); font-size: 0.9rem; font-weight: 500; transition: color .15s; }
+  .nav-links a:hover { color: var(--fg); }
+  .nav-ghost { display: inline-flex; align-items: center; gap: 7px; }
+  .icon-btn {
+    display: inline-grid; place-items: center; width: 34px; height: 34px;
+    border: 1px solid var(--border); border-radius: 9px; background: var(--surface);
+    color: var(--muted); cursor: pointer; transition: color .15s, border-color .15s;
+  }
+  .icon-btn:hover { color: var(--fg); border-color: var(--border-strong); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; justify-content: center;
+    padding: 10px 17px; border-radius: 10px; font-weight: 600; font-size: 0.92rem;
+    text-decoration: none; border: 1px solid transparent; cursor: pointer; transition: transform .12s, background .15s, border-color .15s;
+  }
+  .btn svg { width: 17px; height: 17px; }
+  .btn-primary { background: var(--accent); color: #05241f; border-color: var(--accent); }
+  :root[data-theme="dark"] .btn-primary, :root:not([data-theme="light"]) .btn-primary { color: #04231f; }
+  .btn-primary:hover { transform: translateY(-1px); }
+  .btn-ghost { background: var(--surface); color: var(--fg); border-color: var(--border-strong); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent-ink); }
+
+  /* ---------- hero ---------- */
+  .hero { position: relative; padding-block: 92px 76px; overflow: hidden; }
+  .hero .wrap { position: relative; z-index: 1; }
+  .hero-bg { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+  .hero-bg .grid {
+    position: absolute; inset: 0;
+    background-image: radial-gradient(color-mix(in srgb, var(--fg) 7%, transparent) 1px, transparent 1.5px);
+    background-size: 26px 26px;
+    -webkit-mask-image: radial-gradient(115% 78% at 62% -8%, #000 32%, transparent 72%);
+    mask-image: radial-gradient(115% 78% at 62% -8%, #000 32%, transparent 72%);
+  }
+  .hero-bg .aura {
+    position: absolute; top: -34%; right: -16%; width: 760px; height: 620px; max-width: 90%;
+    background: radial-gradient(46% 50% at 58% 42%, var(--glow), transparent 70%);
+    filter: blur(6px);
+  }
+  .hero-bg .hex { position: absolute; top: -96px; right: -64px; width: 400px; height: 400px; max-width: 48vw; color: var(--accent); opacity: .09; }
+  .hero-bg .hex svg { width: 100%; height: 100%; display: block; }
+  .hero-bg .flow { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .hero-bg .flow path { fill: none; stroke: var(--accent); stroke-width: 1.3; opacity: .16; stroke-dasharray: 5 8; }
+  @media (prefers-reduced-motion: no-preference) {
+    .hero-bg .flow path { animation: drift 2.4s linear infinite; }
+    @keyframes drift { to { stroke-dashoffset: -26; } }
+    .hero-bg .hex { animation: floaty 16s ease-in-out infinite; }
+    @keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(16px); } }
+  }
+  .hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 68px; align-items: center; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 9px; padding: 5px 13px 5px 10px;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+    font-size: 0.76rem; color: var(--muted); font-weight: 500; margin-bottom: 26px;
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .hero h1 { font-size: clamp(2.25rem, 5vw, 3.4rem); font-weight: 800; letter-spacing: -0.03em; }
+  .hero h1 .tint { color: var(--brand-teal); }
+  .lede { color: var(--muted); font-size: 1.12rem; line-height: 1.7; margin-top: 22px; max-width: 33em; }
+  .lede b { color: var(--fg); font-weight: 600; }
+  .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
+  .meta-line { margin-top: 20px; font-size: 0.82rem; color: var(--faint); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  .meta-line .mono { color: var(--muted); }
+  .meta-line .sep { width: 4px; height: 4px; border-radius: 50%; background: var(--border-strong); }
+
+  /* ---------- fanout graph (signature visual) ---------- */
+  .graph-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    box-shadow: var(--shadow); padding: 20px; position: relative; overflow: hidden;
+  }
+  .graph-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .graph-head .t { font-family: "JetBrains Mono", monospace; font-size: 0.74rem; color: var(--faint); letter-spacing: 0.04em; }
+  .graph-head .sha { font-family: "JetBrains Mono", monospace; font-size: 0.74rem; color: var(--accent-ink); background: var(--accent-soft); padding: 2px 8px; border-radius: 6px; }
+  .graph { position: relative; }
+  .gnode {
+    border: 1px solid var(--border-strong); border-radius: 11px; background: var(--surface-2);
+    padding: 11px 13px; display: flex; align-items: center; gap: 10px;
+  }
+  .gnode.up { border-color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 70%, var(--surface)); }
+  .gnode .ic { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 7px; background: var(--surface); border: 1px solid var(--border); }
+  .gnode .ic svg { width: 15px; height: 15px; color: var(--accent); }
+  .gnode .nm { font-weight: 600; font-size: 0.88rem; }
+  .gnode .st { font-family: "JetBrains Mono", monospace; font-size: 0.68rem; color: var(--faint); }
+  .gnode .ok { margin-left: auto; font-size: 0.68rem; font-family: "JetBrains Mono", monospace; color: var(--accent-ink); }
+  .gnode .wait { margin-left: auto; font-size: 0.68rem; font-family: "JetBrains Mono", monospace; color: var(--muted); }
+  .fan-svg { display: block; width: 100%; height: 46px; }
+  .fan-svg path { fill: none; stroke: var(--accent); stroke-width: 1.6; opacity: 0.55; stroke-dasharray: 4 5; }
+  .downs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .graph-foot { margin-top: 14px; font-size: 0.78rem; color: var(--muted); display: flex; gap: 8px; align-items: flex-start; }
+  .graph-foot svg { width: 15px; height: 15px; color: var(--accent); flex: none; margin-top: 2px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .fan-svg path { animation: flow 1.4s linear infinite; }
+    @keyframes flow { to { stroke-dashoffset: -18; } }
+  }
+
+  /* ---------- logo strip ---------- */
+  .lineage { border-block: 1px solid var(--border); background: var(--surface); }
+  .lineage .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 26px; padding-block: 18px; }
+  .lineage .lbl { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+  .lineage .chip { font-size: 0.86rem; color: var(--muted); font-weight: 500; }
+  .lineage .chip b { color: var(--fg); }
+
+  /* ---------- sections ---------- */
+  section { padding-block: var(--section); }
+  .sec-head { max-width: 40em; margin-bottom: 56px; }
+  .sec-head h2 { font-size: clamp(1.7rem, 3.4vw, 2.25rem); font-weight: 700; margin-top: 16px; }
+  .sec-head p { color: var(--muted); font-size: 1.05rem; margin-top: 16px; line-height: 1.65; }
+
+  .why { background: var(--surface); border-block: 1px solid var(--border); }
+  .why-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: center; }
+  .why p { color: var(--muted); font-size: 1.05rem; }
+  .why p + p { margin-top: 16px; }
+  .why b { color: var(--fg); }
+  .why .teardown { list-style: none; margin: 0; padding: 0; display: grid; gap: 15px; }
+  .why .teardown li { display: flex; gap: 12px; align-items: flex-start; font-size: 0.95rem; color: var(--muted); line-height: 1.55; }
+  .why .teardown .x { color: var(--faint); font-family: "JetBrains Mono", monospace; flex: none; }
+  .why .teardown .arrow { color: var(--accent); }
+  .why .panel { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 30px; }
+  .why .panel h3 { font-size: 0.74rem; font-family: "JetBrains Mono", monospace; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); margin-bottom: 20px; }
+
+  /* ---------- features ---------- */
+  .feat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px 44px; }
+  .feat { padding: 26px 0; position: relative; }
+  .feat .ic {
+    width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); margin-bottom: 20px;
+    transition: color .18s, border-color .18s;
+  }
+  .feat:hover .ic { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+  .feat .ic svg { width: 19px; height: 19px; }
+  .feat h3 { font-size: 1.06rem; font-weight: 700; margin-bottom: 9px; letter-spacing: -0.01em; }
+  .feat p { color: var(--muted); font-size: 0.92rem; margin: 0; line-height: 1.62; }
+  .feat code { font-size: 0.82em; color: var(--accent-ink); background: var(--accent-soft); padding: 1px 5px; border-radius: 5px; }
+
+  /* ---------- pipeline as code ---------- */
+  .code-sec { background: var(--surface); border-block: 1px solid var(--border); }
+  .code-grid { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 60px; align-items: center; }
+  .code-grid ul { list-style: none; padding: 0; margin: 22px 0 0; display: grid; gap: 16px; }
+  .code-grid li { display: flex; gap: 12px; align-items: flex-start; }
+  .code-grid li .k { width: 30px; height: 30px; flex: none; border-radius: 8px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; }
+  .code-grid li .k svg { width: 16px; height: 16px; }
+  .code-grid li .ttl { font-weight: 600; font-size: 0.95rem; }
+  .code-grid li .ds { color: var(--muted); font-size: 0.88rem; }
+  .editor { background: #0a1322; border: 1px solid var(--border-strong); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }
+  :root[data-theme="light"] .editor, :root:not([data-theme="dark"]) .editor { background: #0a1322; }
+  .editor .bar { display: flex; align-items: center; gap: 7px; padding: 11px 15px; border-bottom: 1px solid #1c2a44; background: #0d1829; }
+  .editor .bar .d { width: 11px; height: 11px; border-radius: 50%; background: #2a3a58; }
+  .editor .bar .fn { margin-left: 10px; font-family: "JetBrains Mono", monospace; font-size: 0.76rem; color: #6b7c99; }
+  .editor pre { margin: 0; padding: 18px 16px; overflow-x: auto; font-size: 0.82rem; line-height: 1.75; color: #c3d0e6; }
+  .editor .ln { color: #37486a; user-select: none; display: inline-block; width: 1.6em; text-align: right; margin-right: 1.2em; }
+  .tok-kw { color: #5de0cf; }
+  .tok-key { color: #f0b86e; }
+  .tok-str { color: #7cc4ff; }
+  .tok-com { color: #5f708c; font-style: italic; }
+  .tok-num { color: #c89bff; }
+
+  /* ---------- stack strip ---------- */
+  .stack { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .stack .s { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 26px 24px; }
+  .stack .s .n { font-family: "Archivo", sans-serif; font-weight: 800; font-size: 1.55rem; color: var(--brand-teal); letter-spacing: -0.02em; }
+  .stack .s .l { font-weight: 600; margin-top: 4px; font-size: 0.95rem; }
+  .stack .s .d { color: var(--muted); font-size: 0.84rem; margin-top: 3px; }
+
+  /* ---------- quick start ---------- */
+  .qs { background: var(--surface); border-block: 1px solid var(--border); }
+  .qs-grid { display: grid; grid-template-columns: 1fr 1.15fr; gap: 60px; align-items: center; }
+  .term { background: #0a1322; border: 1px solid var(--border-strong); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }
+  .term .bar { display: flex; align-items: center; gap: 7px; padding: 11px 15px; border-bottom: 1px solid #1c2a44; background: #0d1829; }
+  .term .bar .d { width: 11px; height: 11px; border-radius: 50%; background: #2a3a58; }
+  .term .bar .fn { margin-left: 10px; font-family: "JetBrains Mono", monospace; font-size: 0.76rem; color: #6b7c99; }
+  .term pre { margin: 0; padding: 18px 16px; overflow-x: auto; font-size: 0.83rem; line-height: 1.95; color: #c3d0e6; }
+  .term .cmt { color: #5f708c; }
+  .term .cmd { color: #5de0cf; }
+  .term .flag { color: #f0b86e; }
+  .term .out { color: #6b7c99; }
+  .copy {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 6px; background: transparent;
+    border: 1px solid #2a3a58; color: #8ea0bf; font-size: 0.74rem; padding: 4px 9px; border-radius: 7px; cursor: pointer;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .copy:hover { color: #cdd8ec; border-color: #3a4d72; }
+
+  /* ---------- final cta ---------- */
+  .final { text-align: center; }
+  .final h2 { font-size: clamp(1.9rem, 4.2vw, 2.7rem); font-weight: 800; }
+  .final p { color: var(--muted); font-size: 1.08rem; max-width: 32em; margin: 16px auto 0; }
+  .final .cta-row { justify-content: center; }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--border); background: var(--surface); padding-block: 36px 44px; }
+  .foot-top { display: flex; flex-wrap: wrap; gap: 28px; justify-content: space-between; }
+  .foot-links { display: flex; flex-wrap: wrap; gap: 28px; }
+  .foot-col h4 { font-size: 0.72rem; font-family: "JetBrains Mono", monospace; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); margin: 0 0 12px; }
+  .foot-col a { display: block; text-decoration: none; color: var(--muted); font-size: 0.9rem; margin-bottom: 8px; transition: color .15s; }
+  .foot-col a:hover { color: var(--accent-ink); }
+  .foot-bottom { margin-top: 32px; padding-top: 22px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; font-size: 0.82rem; color: var(--faint); }
+  .foot-bottom .mono { font-family: "JetBrains Mono", monospace; }
+
+  @media (max-width: 880px) {
+    .hero-grid, .why-grid, .code-grid, .qs-grid { grid-template-columns: 1fr; gap: 36px; }
+    .hero { padding-block: 44px 28px; }
+    .feat-grid { grid-template-columns: repeat(2, 1fr); }
+    .stack { grid-template-columns: repeat(2, 1fr); }
+    .nav-links a:not(.nav-cta):not(.theme-skip) { display: none; }
+  }
+  @media (max-width: 560px) {
+    .feat-grid, .stack { grid-template-columns: 1fr; }
+    .downs { grid-template-columns: 1fr; }
+    .fan-svg { display: none; }
+    .downs { margin-top: 12px; position: relative; }
+    .downs::before { content: ""; position: absolute; top: -12px; left: 50%; width: 1px; height: 12px; background: var(--accent); opacity: .5; }
+    section { padding-block: 54px; }
+  }
+</style>
+</head>
+<body>
+<template id="mark">
+  <svg class="mark" viewBox="0 0 160 160" role="img" aria-label="gocdnext logo" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="gTop" x1="24" y1="63" x2="86" y2="125" gradientTransform="matrix(1.24 0.087 -0.038 0.54 17.4 9.5)" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#8FE4EA"/><stop offset="55%" stop-color="#0ea5b5"/><stop offset="100%" stop-color="#086370"/>
+      </linearGradient>
+      <linearGradient id="gBot" x1="27" y1="121" x2="86" y2="179" gradientTransform="matrix(1.21 -0.09 0.039 0.529 10.6 22.5)" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#4FD1DB"/><stop offset="100%" stop-color="#086370"/>
+      </linearGradient>
+    </defs>
+    <path d="M 64.41 21 Q 80 12 95.59 21 L 123.30 37 Q 138.89 46 138.89 64 L 138.89 96 Q 138.89 114 123.30 123 L 95.59 139 Q 80 148 64.41 139 L 36.70 123 Q 21.11 114 21.11 96 L 21.11 64 Q 21.11 46 36.70 37 Z" stroke="currentColor" stroke-width="5" fill="currentColor" fill-opacity="0.05"/>
+    <path d="M 46.18 111.57 C 58.40 117.10 75.31 113.69 96.92 101.35 C 111.30 92.77 118.82 85.77 119.49 80.36 C 107.44 76.97 92.46 77.55 74.56 82.10 C 56.74 87.72 60.63 97.15 46.18 111.57 Z" fill="url(#gBot)"/>
+    <path d="M 44.24 49.25 C 56.72 43.54 74.05 46.96 96.23 59.51 C 110.99 68.24 118.73 75.38 119.43 80.92 C 107.10 84.44 91.76 83.91 73.42 79.32 C 62.41 75.60 45.42 63.61 44.24 49.25 Z" fill="url(#gTop)"/>
+  </svg>
+</template>
+
+<header class="nav">
+  <div class="wrap nav-row">
+    <a class="brand" href="#top" aria-label="gocdnext home">
+      <span class="mark-slot" style="color:var(--fg)"></span>
+      <span class="word">gocd<span class="nx">next</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#features">Features</a>
+      <a href="#pipeline">Pipelines</a>
+      <a href="#start">Quick start</a>
+      <a href="https://klinux.github.io/gocdnext/docs/" class="theme-skip">Docs</a>
+      <button class="icon-btn theme-skip" id="theme" aria-label="Toggle colour theme" title="Toggle theme">
+        <svg id="theme-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+      </button>
+      <a class="btn btn-primary nav-cta" href="https://github.com/klinux/gocdnext" style="padding:8px 14px">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.37.5 0 5.87 0 12.5c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 016 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.65.25 2.87.12 3.17.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.82.58A12 12 0 0024 12.5C24 5.87 18.63.5 12 .5z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <!-- ================= HERO ================= -->
+  <section class="hero">
+    <div class="hero-bg" aria-hidden="true">
+      <div class="grid"></div>
+      <div class="aura"></div>
+      <div class="hex">
+        <svg viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M 64.41 21 Q 80 12 95.59 21 L 123.30 37 Q 138.89 46 138.89 64 L 138.89 96 Q 138.89 114 123.30 123 L 95.59 139 Q 80 148 64.41 139 L 36.70 123 Q 21.11 114 21.11 96 L 21.11 64 Q 21.11 46 36.70 37 Z" stroke="currentColor" stroke-width="2.5"/>
+        </svg>
+      </div>
+      <svg class="flow" viewBox="0 0 1200 500" preserveAspectRatio="xMidYMid slice">
+        <path d="M-60 60 C 400 60 480 190 900 190 S 1200 100 1320 100"/>
+        <path d="M-60 180 C 300 180 380 320 800 320 S 1150 240 1320 240"/>
+        <path d="M-60 300 C 260 300 440 420 840 420 S 1180 360 1320 360"/>
+      </svg>
+    </div>
+    <div class="wrap hero-grid">
+      <div>
+        <span class="pill"><span class="dot"></span> Open source · Apache-2.0 · shipping monthly</span>
+        <h1>Modern CI/CD, with the <span class="tint">value stream</span> at the center.</h1>
+        <p class="lede">The good ideas from <b>GoCD</b> (VSM, fanout, pipeline dependencies), <b>Woodpecker</b> (plugin = container) and <b>GitLab CI</b> (stages, needs, matrix) — rebuilt in <b>Go</b>. Container-native, webhook-first, VSM-driven.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/klinux/gocdnext">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.37.5 0 5.87 0 12.5c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 016 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.65.25 2.87.12 3.17.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.82.58A12 12 0 0024 12.5C24 5.87 18.63.5 12 .5z"/></svg>
+            Star on GitHub
+          </a>
+          <a class="btn btn-ghost" href="https://klinux.github.io/gocdnext/docs/">Read the docs →</a>
+        </div>
+        <div class="meta-line">
+          <span class="mono">klinux/gocdnext</span>
+          <span class="sep"></span>
+          <span>Go control plane + agent</span>
+          <span class="sep"></span>
+          <span>Next.js UI</span>
+          <span class="sep"></span>
+          <span>60+ plugins</span>
+        </div>
+      </div>
+
+      <!-- signature visual: upstream material fanout on the same SHA -->
+      <div class="graph-card" aria-label="Upstream material fanout diagram">
+        <div class="graph-head">
+          <span class="t">upstream material · fanout</span>
+          <span class="sha">@ a1b9f3c</span>
+        </div>
+        <div class="graph">
+          <div class="gnode up" style="margin-bottom:6px">
+            <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg></span>
+            <span><span class="nm">api</span> &nbsp;<span class="st">stage: build</span></span>
+            <span class="ok">✓ passed</span>
+          </div>
+          <svg class="fan-svg" viewBox="0 0 300 46" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M150 0 C150 20 50 14 50 46"/>
+            <path d="M150 0 L150 46"/>
+            <path d="M150 0 C150 20 250 14 250 46"/>
+          </svg>
+          <div class="downs">
+            <div class="gnode"><span class="nm">web</span><span class="wait">queued</span></div>
+            <div class="gnode"><span class="nm">worker</span><span class="wait">queued</span></div>
+            <div class="gnode"><span class="nm">migrations</span><span class="wait">queued</span></div>
+          </div>
+        </div>
+        <div class="graph-foot">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/><path d="M12 8v4l3 2"/></svg>
+          <span>Downstream pipelines wait for <b style="color:var(--fg)">the same commit SHA</b> — no drift between what built and what deploys.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- lineage strip -->
+  <div class="lineage">
+    <div class="wrap">
+      <span class="lbl">Built on what worked</span>
+      <span class="chip"><b>GoCD</b> stage → job → task, VSM</span>
+      <span class="chip"><b>Woodpecker</b> plugin = container</span>
+      <span class="chip"><b>GitLab CI</b> stages · needs · matrix</span>
+      <span class="chip" style="color:var(--faint)"><b style="color:var(--muted); font-weight:600">without</b> the Java / XML / poll-first stack</span>
+    </div>
+  </div>
+
+  <!-- ================= WHY ================= -->
+  <section class="why" id="why">
+    <div class="wrap why-grid">
+      <div>
+        <span class="eyebrow">Why another CI tool</span>
+        <h2 style="margin-top:12px; font-size:clamp(1.7rem,3.6vw,2.3rem); font-weight:700">We loved GoCD's model. We didn't love its stack.</h2>
+        <p style="margin-top:18px">The explicit <b>stage → job → task</b> shape, dependency materials and the Value Stream Map were ahead of their time. The runtime underneath them wasn't.</p>
+        <p>gocdnext keeps the model and rebuilds everything else: container-native execution, webhook-first triggering, a real plugin catalog, and a UI that reflects the graph you actually run. This is what GoCD would look like if you started it today.</p>
+      </div>
+      <div class="panel">
+        <h3>The trade we rejected</h3>
+        <ul class="teardown">
+          <li><span class="x">✗</span> <span><b style="color:var(--fg)">Java / Spring / Hibernate</b> → single Go binary per role</span></li>
+          <li><span class="x">✗</span> <span><b style="color:var(--fg)">XML config</b> → declarative <code style="font-family:'JetBrains Mono',monospace;color:var(--accent-ink)">.gocdnext/</code> YAML, validated by the CLI</span></li>
+          <li><span class="x">✗</span> <span><b style="color:var(--fg)">Poll-first</b> → webhook-first, auto-registered on GitHub / GitLab / Bitbucket</span></li>
+          <li><span class="x">✗</span> <span><b style="color:var(--fg)">No marketplace</b> → 60+ versioned plugin images with typed inputs</span></li>
+          <li><span class="x">✗</span> <span><b style="color:var(--fg)">Rails-era UI</b> → Next.js 15 with a live VSM</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FEATURES ================= -->
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">What sets it apart</span>
+        <h2>Primitives other CI tools make you bolt on.</h2>
+        <p>Every one of these is first-class in the model — not a plugin, a webhook hack or a convention you have to police yourself.</p>
+      </div>
+      <div class="feat-grid">
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9c0 7-12 5-12 9"/></svg></div>
+          <h3>Upstream material fanout</h3>
+          <p>A pipeline waits for another's stage to pass <b style="color:var(--fg)">with the same commit SHA</b>, then fans out to every downstream automatically. No drift, no re-triggering.</p>
+        </div>
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><circle cx="19" cy="6" r="2"/><path d="M5 8v2a3 3 0 003 3h8a3 3 0 003-3V8"/><path d="M12 13v3"/></svg></div>
+          <h3>Value Stream Map</h3>
+          <p>See the whole graph of pipelines and materials — not a single pipeline's steps, but how a commit flows across every pipeline it touches.</p>
+        </div>
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12A10 10 0 112 12a10 10 0 0120 0z"/><path d="M8 12l3 3 5-6"/></svg></div>
+          <h3>Webhook-first</h3>
+          <p>Push triggers a run instantly; polling is only a fallback. Create a git material and the webhook auto-registers on GitHub, GitLab or Bitbucket.</p>
+        </div>
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg></div>
+          <h3>Plugin catalog</h3>
+          <p>60+ reference plugins for build, test, scan, sign, deploy, migrate and notify — each a versioned container image with a typed input contract.</p>
+        </div>
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L3 7l9 5 9-5-9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg></div>
+          <h3>Kubernetes-native runtime</h3>
+          <p>Pod-per-job execution with runner profiles (K1–K4), <code>node_selector</code> / tolerations scheduling — or classic Docker on the agent host.</p>
+        </div>
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
+          <h3>Keyless cloud auth</h3>
+          <p>Jobs mint short-lived OIDC <code>id_tokens:</code> and federate them for cloud credentials — no static service-account keys living in your secrets.</p>
+        </div>
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 019-9 9 9 0 018 5"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 01-9 9 9 9 0 01-8-5"/><path d="M3 21v-5h5"/></svg></div>
+          <h3>Deployment tracking + rollback</h3>
+          <p><code>deploy:</code> markers record version-per-environment with history. One-click rollback reuses the prior revision's <b style="color:var(--fg)">immutable outputs</b>.</p>
+        </div>
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M12 3a9 9 0 00-9 9c0 4 3 7 6 8 .5.1 1-.3 1-.8V18"/><path d="M12 3a9 9 0 019 9c0 4-3 7-6 8-.5.1-1-.3-1-.8V18"/></svg></div>
+          <h3>Approval gates</h3>
+          <p>Gate stages on approver groups with quorum (incl. PR-label-driven <code>quorum_by_label</code>), fully audited — and <b style="color:var(--fg)">zero compute held</b> while waiting.</p>
+        </div>
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg></div>
+          <h3>Run it locally</h3>
+          <p><code>gocdnext run-local</code> executes a real pipeline on your machine before you push — same dispatch path as the server.</p>
+        </div>
+        <div class="feat">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/><path d="M2 12h20"/><path d="M12 2a15 15 0 010 20 15 15 0 010-20z"/></svg></div>
+          <h3>Pipeline services</h3>
+          <p>Sibling service containers (postgres, redis…) declared in YAML, reachable by every job via DNS alias and drawn as nodes in the graph.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PIPELINE AS CODE ================= -->
+  <section class="code-sec" id="pipeline">
+    <div class="wrap code-grid">
+      <div>
+        <span class="eyebrow">Pipeline as code</span>
+        <h2 style="margin-top:12px; font-size:clamp(1.7rem,3.6vw,2.3rem); font-weight:700">A <code style="font-family:'JetBrains Mono',monospace; color:var(--accent-ink); font-size:0.75em">.gocdnext/</code> folder in your repo.</h2>
+        <ul>
+          <li><span class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg></span><div><div class="ttl">Explicit stage → job → task</div><div class="ds">The GoCD shape, in YAML. Nothing implicit about ordering.</div></div></li>
+          <li><span class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9c0 7-12 5-12 9"/></svg></span><div><div class="ttl">Dependency materials</div><div class="ds"><code style="font-family:'JetBrains Mono',monospace;color:var(--accent-ink)">upstream:</code> binds a run to another pipeline's exact revision.</div></div></li>
+          <li><span class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12A10 10 0 112 12a10 10 0 0120 0z"/><path d="M8 12l3 3 5-6"/></svg></span><div><div class="ttl">Validated before you push</div><div class="ds"><code style="font-family:'JetBrains Mono',monospace;color:var(--accent-ink)">gocdnext validate</code> catches the error at your desk, not in CI.</div></div></li>
+        </ul>
+      </div>
+      <div class="editor">
+        <div class="bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="fn">.gocdnext/web.yaml</span></div>
+<pre aria-label="example pipeline YAML"><span class="ln">1</span><span class="tok-key">pipeline</span>: web
+<span class="ln">2</span><span class="tok-key">materials</span>:
+<span class="ln">3</span>  - <span class="tok-key">git</span>: <span class="tok-str">git@github.com:acme/web.git</span>
+<span class="ln">4</span>    <span class="tok-key">on</span>: [<span class="tok-str">push</span>, <span class="tok-str">pull_request</span>]
+<span class="ln">5</span>  <span class="tok-com"># wait for api's build on the SAME sha</span>
+<span class="ln">6</span>  - <span class="tok-key">upstream</span>: api
+<span class="ln">7</span>    <span class="tok-key">stage</span>: build
+<span class="ln">8</span>
+<span class="ln">9</span><span class="tok-key">stages</span>:
+<span class="ln">10</span>  - <span class="tok-key">name</span>: test
+<span class="ln">11</span>    <span class="tok-key">jobs</span>:
+<span class="ln">12</span>      - <span class="tok-key">name</span>: unit
+<span class="ln">13</span>        <span class="tok-key">plugin</span>: <span class="tok-str">gocdnext/node@3</span>
+<span class="ln">14</span>        <span class="tok-key">with</span>: { <span class="tok-key">run</span>: <span class="tok-str">"pnpm test"</span> }
+<span class="ln">15</span>  - <span class="tok-key">name</span>: ship
+<span class="ln">16</span>    <span class="tok-key">approval</span>:
+<span class="ln">17</span>      <span class="tok-key">approver_groups</span>: [<span class="tok-str">platform-sre</span>]
+<span class="ln">18</span>      <span class="tok-key">required</span>: <span class="tok-num">2</span>
+<span class="ln">19</span>    <span class="tok-key">jobs</span>:
+<span class="ln">20</span>      - <span class="tok-key">name</span>: deploy
+<span class="ln">21</span>        <span class="tok-key">deploy</span>: { <span class="tok-key">target</span>: <span class="tok-str">prod</span> }</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= STACK ================= -->
+  <section>
+    <div class="wrap">
+      <div class="sec-head" style="max-width:none; text-align:center; margin-inline:auto">
+        <span class="eyebrow">One system, honest parts</span>
+        <h2 style="margin-top:12px">A control plane you can actually read.</h2>
+      </div>
+      <div class="stack">
+        <div class="s"><div class="n">Go</div><div class="l">Server + agent</div><div class="d">HTTP API, gRPC to agents, scheduler and webhooks — one binary per role.</div></div>
+        <div class="s"><div class="n">K8s</div><div class="l">Pod-per-job</div><div class="d">Agents run containers on Kubernetes or classic Docker on the host.</div></div>
+        <div class="s"><div class="n">Next 15</div><div class="l">Live UI</div><div class="d">App Router, RSC and Server Actions — a VSM that reflects real runs.</div></div>
+        <div class="s"><div class="n">60+</div><div class="l">Plugin images</div><div class="d">build · test · scan · sign · deploy · migrate · notify, each versioned.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= QUICK START ================= -->
+  <section class="qs" id="start">
+    <div class="wrap qs-grid">
+      <div>
+        <span class="eyebrow">Quick start</span>
+        <h2 style="margin-top:12px; font-size:clamp(1.7rem,3.6vw,2.3rem); font-weight:700">Up and running with hot reload.</h2>
+        <p style="color:var(--muted); font-size:1.03rem; margin-top:16px"><code style="font-family:'JetBrains Mono',monospace;color:var(--accent-ink)">make dev</code> brings up postgres, minio, server, agent and web behind one foreground process. Ctrl+C tears it all down.</p>
+        <p style="color:var(--muted); font-size:0.95rem; margin-top:14px">Prefer zero local setup? Open it in <b style="color:var(--fg)">GitHub Codespaces</b> or <b style="color:var(--fg)">Gitpod</b> — both give public URLs so real webhooks land during development.</p>
+        <div class="cta-row">
+          <a class="btn btn-ghost" href="https://klinux.github.io/gocdnext/docs/install/local-dev/">Local dev guide →</a>
+        </div>
+      </div>
+      <div class="term">
+        <div class="bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="fn">bash</span>
+          <button class="copy" id="copybtn" type="button">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span id="copytxt">Copy</span>
+          </button>
+        </div>
+<pre id="qscode"><span class="cmt"># 1. one-shot env scaffold (.env + air, goose, sqlc, buf)</span>
+<span class="cmd">make</span> env-setup
+
+<span class="cmt"># 2. bring up the full stack with hot reload</span>
+<span class="cmd">make</span> dev
+
+<span class="out">  ✓ postgres  ready on :5432</span>
+<span class="out">  ✓ server    api   on :8153</span>
+<span class="out">  ✓ agent     gRPC  on :8154</span>
+<span class="out">  ✓ web       UI    on :3000</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FINAL CTA ================= -->
+  <section class="final">
+    <div class="wrap">
+      <span class="eyebrow">Active development · v0.x</span>
+      <h2 style="margin-top:14px">The CI/CD you'd build if you started today.</h2>
+      <p>Open source under Apache-2.0, shipping monthly. Try it, read the model, open an issue — contributions welcome.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/klinux/gocdnext">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.37.5 0 5.87 0 12.5c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 016 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.65.25 2.87.12 3.17.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.82.58A12 12 0 0024 12.5C24 5.87 18.63.5 12 .5z"/></svg>
+          View the repo
+        </a>
+        <a class="btn btn-ghost" href="https://klinux.github.io/gocdnext/docs/">Explore the docs →</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-top">
+      <div style="max-width:22em">
+        <a class="brand" href="#top" style="margin-bottom:12px">
+          <span class="mark-slot" style="color:var(--fg)"></span>
+          <span class="word">gocd<span class="nx">next</span></span>
+        </a>
+        <p style="color:var(--muted); font-size:0.88rem; margin:12px 0 0">Modern CI/CD orchestrator. Container-native, webhook-first, VSM-driven.</p>
+      </div>
+      <div class="foot-links">
+        <div class="foot-col">
+          <h4>Project</h4>
+          <a href="https://github.com/klinux/gocdnext">GitHub repo</a>
+          <a href="https://github.com/klinux/gocdnext/releases/latest">Releases</a>
+          <a href="https://github.com/klinux/gocdnext/issues">Issues</a>
+          <a href="https://github.com/klinux/gocdnext/blob/main/LICENSE">License (Apache-2.0)</a>
+        </div>
+        <div class="foot-col">
+          <h4>Docs</h4>
+          <a href="https://klinux.github.io/gocdnext/docs/">Concepts</a>
+          <a href="https://klinux.github.io/gocdnext/docs/install/local-dev/">Local dev</a>
+          <a href="https://klinux.github.io/gocdnext/docs/">Pipeline reference</a>
+          <a href="https://klinux.github.io/gocdnext/docs/">Plugin catalog</a>
+        </div>
+        <div class="foot-col">
+          <h4>Try it</h4>
+          <a href="https://codespaces.new/klinux/gocdnext">GitHub Codespaces</a>
+          <a href="https://gitpod.io/#https://github.com/klinux/gocdnext">Gitpod</a>
+        </div>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© 2026 gocdnext · Apache-2.0</span>
+      <span class="mono">GoCD, Woodpecker and GitLab are trademarks of their respective owners; gocdnext is an independent project, not affiliated with or endorsed by them.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // inject the hexagon mark into every slot
+  (function () {
+    var tpl = document.getElementById("mark");
+    document.querySelectorAll(".mark-slot").forEach(function (slot) {
+      slot.appendChild(tpl.content.firstElementChild.cloneNode(true));
+    });
+  })();
+
+  // theme: system default, toggle persists per-viewer
+  (function () {
+    var sun = 'M12 3v2M12 19v2M5 5l1.5 1.5M17.5 17.5L19 19M3 12h2M19 12h2M5 19l1.5-1.5M17.5 6.5L19 5M12 8a4 4 0 100 8 4 4 0 000-8z';
+    var moon = 'M21 12.8A9 9 0 1111.2 3 7 7 0 0021 12.8z';
+    var icon = document.getElementById("theme-icon");
+    function current() {
+      var set = document.documentElement.getAttribute("data-theme");
+      if (set) return set;
+      return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    function paint() {
+      // show the icon for the theme you'd switch TO
+      icon.innerHTML = '<path d="' + (current() === "dark" ? sun : moon) + '"></path>';
+    }
+    try {
+      var saved = localStorage.getItem("gocdnext-theme");
+      if (saved === "dark" || saved === "light") document.documentElement.setAttribute("data-theme", saved);
+    } catch (e) {}
+    paint();
+    document.getElementById("theme").addEventListener("click", function () {
+      var next = current() === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("gocdnext-theme", next); } catch (e) {}
+      paint();
+    });
+  })();
+
+  // copy the quick-start commands
+  (function () {
+    var btn = document.getElementById("copybtn");
+    var label = document.getElementById("copytxt");
+    btn.addEventListener("click", function () {
+      var text = "make env-setup\nmake dev";
+      function done() { label.textContent = "Copied"; setTimeout(function () { label.textContent = "Copy"; }, 1600); }
+      try {
+        navigator.clipboard.writeText(text).then(done, select);
+      } catch (e) { select(); }
+      function select() {
+        var r = document.createRange();
+        r.selectNodeContents(document.getElementById("qscode"));
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+        label.textContent = "Select + ⌘C";
+        setTimeout(function () { label.textContent = "Copy"; }, 2200);
+      }
+    });
+  })();
+</script>
+</body>
+</html>
