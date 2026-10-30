@@ -258,6 +258,11 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 		// approvers listed doesn't produce an un-passable gate.
 		// Allow room for generous quorums but fail fast when the
 		// combined list couldn't possibly satisfy Required.
+		for i, a := range jd.Approval.Approvers {
+			if err := domain.ValidateApproverRef(a); err != nil {
+				return domain.Job{}, fmt.Errorf("job %q: approval.approvers[%d]: %w", name, i, err)
+			}
+		}
 		listSize := len(jd.Approval.Approvers) + len(jd.Approval.ApproverGroups)
 		if listSize > 0 && required > listSize {
 			return domain.Job{}, fmt.Errorf(

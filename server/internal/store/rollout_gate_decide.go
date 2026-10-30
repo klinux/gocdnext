@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,6 +39,8 @@ type RolloutGateDecisionInput struct {
 	UserID     uuid.UUID // the authenticated decider (required)
 	User       string    // display label (name-preferred, for votes + audit)
 	UserEmail  string    // for allow-list matching (OIDC name-vs-email)
+	Provider   string    // users.provider — refused when it's a service account
+	Subject    string    // users.external_id — matches `sub:<provider>:<subject>` entries
 	Comment    string
 }
 
@@ -125,26 +126,13 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 		req = 1
 	}
 
-	// Allow-list (same semantics as the job gate): user in `approvers` by name OR email,
-	// OR in one of `approver_groups`. Empty both = any authenticated user.
-	if len(approvers) > 0 || len(groups) > 0 {
-		allowed := (in.User != "" && slices.Contains(approvers, in.User)) ||
-			(in.UserEmail != "" && slices.Contains(approvers, in.UserEmail))
-		if !allowed && len(groups) > 0 {
-			names, gerr := s.q.WithTx(tx).ListUserGroupNames(ctx, pgUUID(in.UserID))
-			if gerr != nil {
-				return RolloutGateResult{}, fmt.Errorf("store: load user groups: %w", gerr)
-			}
-			for _, n := range names {
-				if slices.Contains(groups, n) {
-					allowed = true
-					break
-				}
-			}
-		}
-		if !allowed {
-			return RolloutGateResult{}, ErrApproverNotAllowed
-		}
+	// Allow-list: the same authorizer as the job gate, so the two engines can't drift
+	// on who may decide. Approval authority stays independent of role — this route is
+	// viewer-level and the allow-list is the only gate on the vote.
+	if err := s.authorizeApprover(ctx, s.q.WithTx(tx), ApproverIdentity{
+		UserID: in.UserID, Label: in.User, Email: in.UserEmail, Provider: in.Provider, Subject: in.Subject,
+	}, approvers, groups); err != nil {
+		return RolloutGateResult{}, err
 	}
 
 	// Record the vote — FRESH only. Unlike the job gate (idempotent re-post), a rollout
