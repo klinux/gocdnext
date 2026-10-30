@@ -120,6 +120,10 @@ func (s *Store) resolveExternalApproverGroups(ctx context.Context, who ApproverI
 		who.Provider == ProviderServiceAccount || approverListed(who, approvers) {
 		return nil, nil
 	}
+	// This duplicates authorizeApprover's in-tx lookup on purpose: here it only spares
+	// the external call when the local table already grants; the in-tx read stays the
+	// authoritative one. It runs only on the external path (source wired, groups
+	// listed, voter not named), so ordinary votes pay for one lookup, not two.
 	local, err := s.q.ListUserGroupNames(ctx, pgUUID(who.UserID))
 	if err != nil {
 		return nil, fmt.Errorf("store: load user groups: %w", err)
