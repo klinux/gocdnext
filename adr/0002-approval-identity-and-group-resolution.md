@@ -54,8 +54,9 @@ platform's token could approve as anyone.
    - A `sub:` entry matches **only** by subject, never by label/email. Otherwise a user
      who can set their display name to `sub:oidc:<victim>` would satisfy the victim's
      entry.
-   - Validated at parse (`domain.ValidateApproverRef`: both parts present, bounded,
-     no whitespace/control characters) and matched exactly at decision time. Errors cite
+   - Validated on write by both engines (`domain.ValidateApproverRef`: both parts
+     present, bounded, no whitespace/control characters) — the job-gate parser and
+     `GoverningGate.Validate` for rollout gates — and matched exactly at decision time. Errors cite
      the list index, never the entry.
    - A fixed `sub:` prefix rather than a bare `<provider>:` because provider names are
      operator-chosen and unconstrained; the prefix keeps the form unambiguous against

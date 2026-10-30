@@ -3,6 +3,8 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // GoverningGate is the approval-gate config carried on a deploy target
@@ -52,6 +54,14 @@ func (g *GoverningGate) Validate() error {
 	}
 	if len(g.ApproverGroups) > maxGateGroups {
 		return fmt.Errorf("store: governing_gate has too many approver groups (%d > %d)", len(g.ApproverGroups), maxGateGroups)
+	}
+	// Same per-entry check the job-gate parser runs (ADR-0002 decision 3): a
+	// malformed `sub:` ref would only ever fail closed at decision time, so reject
+	// it here where the operator gets a clear error. Cites the index, never the entry.
+	for i, a := range g.Approvers {
+		if err := domain.ValidateApproverRef(a); err != nil {
+			return fmt.Errorf("store: governing_gate.approvers[%d]: %w", i, err)
+		}
 	}
 	return nil
 }
