@@ -51,7 +51,7 @@ func (h *Handler) decideRolloutGate(w http.ResponseWriter, r *http.Request, deci
 	// A service-account token authenticates, but its synthesized ID is a service_accounts
 	// row, not a users row — recording it as a vote would FK-fail. An approval is a human
 	// sign-off, so reject SAs up front (a permissive empty allow-list must not let one in).
-	if u.Provider == "service_account" {
+	if u.Provider == store.ProviderServiceAccount {
 		http.Error(w, "a service account cannot cast an approval vote", http.StatusForbidden)
 		return
 	}
@@ -82,6 +82,8 @@ func (h *Handler) decideRolloutGate(w http.ResponseWriter, r *http.Request, deci
 		UserID:     u.ID,
 		User:       name,
 		UserEmail:  u.Email,
+		Provider:   u.Provider,
+		Subject:    u.ExternalID,
 		Comment:    body.Comment,
 	})
 	switch {
@@ -102,6 +104,13 @@ func (h *Handler) decideRolloutGate(w http.ResponseWriter, r *http.Request, deci
 		http.Error(w, "you have already voted on this step", http.StatusConflict)
 	case errors.Is(err, store.ErrApproverNotAllowed):
 		http.Error(w, "you are not on this gate's approvers list", http.StatusForbidden)
+	case errors.Is(err, store.ErrApproverNotHuman):
+		// Unreachable past the guard above; kept so a future caller can't turn it into a 500.
+		http.Error(w, "a service account cannot cast an approval vote", http.StatusForbidden)
+	case errors.Is(err, store.ErrApproverGroupsUnavailable):
+		h.log.Warn("rollout gate group resolution failed",
+			"slug", slug, "revision_id", revID, "err", err)
+		http.Error(w, "approver group membership is unavailable — try again shortly", http.StatusServiceUnavailable)
 	default:
 		h.log.Error("rollout gate decision failed",
 			"decision", decision, "slug", slug, "revision_id", revID, "err", err)

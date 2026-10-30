@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -60,6 +59,12 @@ type ApprovalDecision struct {
 	// stable email/username would never match if we only compared User
 	// (#51). Empty in anonymous/dev mode.
 	UserEmail string
+	// Provider + Subject are the identity's auth provider and stable IdP subject
+	// (users.provider / users.external_id). Matched against `sub:<provider>:<subject>`
+	// approver entries — immune to rename/email drift (#172) — and the service-account
+	// provider is refused outright. Empty in anonymous/dev mode.
+	Provider string
+	Subject  string
 	// Comment is optional — "LGTM, merging after 2pm" etc. Shown
 	// in the detail trail alongside the vote.
 	Comment string
@@ -114,6 +119,15 @@ func (s *Store) RejectGate(ctx context.Context, d ApprovalDecision) (ApprovalRes
 func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, nextStatus string) (ApprovalResult, error) {
 	if d.JobRunID == uuid.Nil {
 		return ApprovalResult{}, fmt.Errorf("store: approval decision: job run id required")
+	}
+	who := ApproverIdentity{
+		UserID: d.UserID, Label: d.User, Email: d.UserEmail, Provider: d.Provider, Subject: d.Subject,
+	}
+	// External group membership (I/O to the IdP/platform) is resolved BEFORE the
+	// transaction opens — never with a pooled connection held or a lock taken.
+	external, err := s.externalGroupsForJobGate(ctx, d.JobRunID, who)
+	if err != nil {
+		return ApprovalResult{}, err
 	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -193,39 +207,16 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		required = 1
 	}
 
-	// Allow-list check: the user is either in `approvers` by name
-	// OR in one of the groups listed in `approver_groups`. Empty
-	// BOTH lists = "any authenticated user" (permissive default,
-	// same as the pre-groups era). Group intersection requires a
-	// second read, skipped when the gate lists no groups.
+	// Allow-list check (shared with the rollout gate — see authorizeApprover):
+	// service accounts refused, then `approvers` by subject ref or name/email,
+	// then `approver_groups` via the local table and the pre-resolved external
+	// names. Empty BOTH lists = any authenticated human.
 	//
 	// Runs BEFORE any lock: an unauthorized approver must not be able to make
 	// the server take advisory locks on a production environment, however
 	// briefly.
-	if len(approvers) > 0 || len(approverGroups) > 0 {
-		// Match the approvers list against EITHER the display label
-		// (User — name-preferred) OR the email. Under OIDC the `name`
-		// claim wins as User, so a gate listing the stable email would
-		// never match on User alone (#51). Groups (UserID) below stay
-		// the most robust path, immune to name/email string drift.
-		allowed := (d.User != "" && slices.Contains(approvers, d.User)) ||
-			(d.UserEmail != "" && slices.Contains(approvers, d.UserEmail))
-		if !allowed && len(approverGroups) > 0 && d.UserID != uuid.Nil {
-			q := s.q.WithTx(tx)
-			names, err := q.ListUserGroupNames(ctx, pgUUID(d.UserID))
-			if err != nil {
-				return ApprovalResult{}, fmt.Errorf("store: load user groups: %w", err)
-			}
-			for _, n := range names {
-				if slices.Contains(approverGroups, n) {
-					allowed = true
-					break
-				}
-			}
-		}
-		if !allowed {
-			return ApprovalResult{}, ErrApproverNotAllowed
-		}
+	if err := s.authorizeApprover(ctx, s.q.WithTx(tx), who, approvers, approverGroups, external); err != nil {
+		return ApprovalResult{}, err
 	}
 
 	// Locks, in the mandatory global order. ONLY on approve: a rejection cannot

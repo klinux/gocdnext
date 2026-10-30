@@ -89,8 +89,31 @@ approval:
 Each `approvers:` entry is matched against the deciding user's display
 **name** or **email**, so either works (handy under OIDC, where the
 identity is an email but the display name is a full name). For lists
-that should survive a name/email change, prefer `approver_groups:` —
-those match by user id.
+that should survive a name/email change, name the person by their
+stable identity-provider subject, or use `approver_groups:` — those
+match by user id.
+
+```yaml
+approval:
+  approvers:
+    - sub:oidc:3f2a9c1e-77b0-4c1d-9b1a-0d6c2f4e8a11  # OIDC `sub`
+    - sub:github:1234567                            # GitHub numeric id
+```
+
+A `sub:<provider>:<subject>` entry matches the user who signed in
+through auth provider `<provider>` with that IdP subject, whatever
+their name or email is today. It matches **only** by subject — a user
+whose display name happens to read `sub:…` doesn't satisfy it. The
+parser rejects malformed entries (missing provider or subject,
+whitespace).
+
+Approvals are a human sign-off: a **service-account token is refused**
+(`403`) on every gate, including one with no allow-list. A platform
+that fronts gocdnext should let the user's own session (shared OIDC
+issuer) reach the API rather than approving with its own token. See
+[ADR-0002](https://github.com/klinux/gocdnext/blob/main/adr/0002-approval-identity-and-group-resolution.md)
+for the design, including group membership resolved at vote time from
+an external source (fail-closed: `503` when it can't answer).
 
 `approvers:` and `approver_groups:` union — anyone in either list
 counts toward the `required:` quorum.
