@@ -110,6 +110,8 @@ type Config struct {
 	// the wait-forever behaviour. A per-gate `timeout:` still applies —
 	// this knob is only the fallback for gates that set none.
 	ApprovalDefaultTimeout time.Duration
+	// ApproverGroups is the optional external approver-group source (ADR-0002).
+	ApproverGroups ApproverGroups
 	// LogMonthsAhead controls how many future months of partitions
 	// the sweeper keeps stocked. Default 3 — daily ticks refresh.
 	LogMonthsAhead int
@@ -427,6 +429,10 @@ func Load() (*Config, error) {
 			}
 			c.ApprovalDefaultTimeout = d
 		}
+	}
+
+	if c.ApproverGroups, err = loadApproverGroups(); err != nil {
+		return nil, err
 	}
 
 	logMonthsAhead, err := strconv.Atoi(env("GOCDNEXT_LOG_MONTHS_AHEAD", "3"))
