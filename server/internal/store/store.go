@@ -35,6 +35,9 @@ type Store struct {
 	// read path stays on log_lines exclusively.
 	logArchiveSrc   LogArchiveSource
 	logArchiveCache *logarchive.LineCache // optional; nil = always fetch
+	// approverGroups is the optional external membership source for approval
+	// gates (WithApproverGroupSource). nil = local group table only.
+	approverGroups ApproverGroupSource
 }
 
 // LogArchiveSource is the narrow byte-reader interface the read

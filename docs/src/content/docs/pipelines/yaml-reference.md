@@ -814,7 +814,7 @@ jobs:
 | Key | Type | Notes |
 |---|---|---|
 | `description` | string | shown in the approval modal |
-| `approvers` | `[]string` | explicit allow-list; each entry is matched against the deciding user's display **name** OR **email**; empty = "any authenticated user" |
+| `approvers` | `[]string` | explicit allow-list; each entry is matched against the deciding user's display **name** OR **email**, or — for `sub:<provider>:<subject>` entries — only against their stable IdP subject; empty = "any authenticated human" (service accounts never approve) |
 | `approver_groups` | `[]string` | gate on group membership (matched by user id — robust to name/email changes); union with `approvers` |
 | `required` | int | quorum (default `1`) — distinct allowed approvers needed before the gate passes |
 
