@@ -72,6 +72,14 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 	if in.GateID == uuid.Nil {
 		return RolloutGateResult{}, ErrGateStale // no token → can't match an armed gate
 	}
+	who := ApproverIdentity{
+		UserID: in.UserID, Label: in.User, Email: in.UserEmail, Provider: in.Provider, Subject: in.Subject,
+	}
+	// External group membership (I/O) resolves BEFORE the tx and the watch-row lock.
+	external, err := s.externalGroupsForRolloutGate(ctx, in.RevisionID, in.ProjectID, who)
+	if err != nil {
+		return RolloutGateResult{}, err
+	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -129,9 +137,7 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 	// Allow-list: the same authorizer as the job gate, so the two engines can't drift
 	// on who may decide. Approval authority stays independent of role — this route is
 	// viewer-level and the allow-list is the only gate on the vote.
-	if err := s.authorizeApprover(ctx, s.q.WithTx(tx), ApproverIdentity{
-		UserID: in.UserID, Label: in.User, Email: in.UserEmail, Provider: in.Provider, Subject: in.Subject,
-	}, approvers, groups); err != nil {
+	if err := s.authorizeApprover(ctx, s.q.WithTx(tx), who, approvers, groups, external); err != nil {
 		return RolloutGateResult{}, err
 	}
 
