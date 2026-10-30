@@ -47,6 +47,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/deploy"
 	"github.com/gocdnext/gocdnext/server/internal/deploysvc"
+	"github.com/gocdnext/gocdnext/server/internal/groupsource"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
@@ -153,6 +154,23 @@ func main() {
 	}
 
 	st := store.New(pool)
+
+	// External approver-group source (ADR-0002): membership resolved against the
+	// platform at vote time. Off unless configured; a bad URL aborts boot rather than
+	// refusing every vote that needs it.
+	if cfg.ApproverGroups.URL != "" {
+		src, err := groupsource.New(groupsource.Options{
+			URL:     cfg.ApproverGroups.URL,
+			Token:   cfg.ApproverGroups.Token,
+			Timeout: cfg.ApproverGroups.Timeout,
+		})
+		if err != nil {
+			logger.Error("approver group source", "err", err)
+			os.Exit(1)
+		}
+		st.WithApproverGroupSource(src)
+		logger.Info("approver group source enabled", "host", src.Host(), "timeout", cfg.ApproverGroups.Timeout)
+	}
 
 	// Seed runner profiles from a Helm-managed YAML when the operator
 	// pointed us at one. Failures abort startup — partial catalogue

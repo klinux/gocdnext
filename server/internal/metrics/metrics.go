@@ -301,6 +301,15 @@ var (
 		Help:    "PR-head config resolution duration by outcome (ok|fetch_error|invalid).",
 		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30},
 	}, []string{"outcome"})
+
+	// ApproverGroupLookup times each call to the external approver-group source
+	// (ADR-0002) by outcome: ok | not_found | error | circuit_open. _count doubles
+	// as the call counter; error + circuit_open are the votes refused with 503.
+	ApproverGroupLookup = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gocdnext_approver_group_lookup_seconds",
+		Help:    "External approver-group lookups by outcome (ok|not_found|error|circuit_open).",
+		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+	}, []string{"outcome"})
 )
 
 func init() {
@@ -330,6 +339,7 @@ func init() {
 		GRPCServerHandling,
 		PRHeadResolution,
 		GateFreezeAnnotationErrors,
+		ApproverGroupLookup,
 		// Standard Go runtime + process metrics for free.
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
