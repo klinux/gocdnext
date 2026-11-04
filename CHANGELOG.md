@@ -8,6 +8,36 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.123.0 — 2026-11-04
+
+### Added
+
+- **Human-only approval identity + stable subject refs (#172, #324).** Approval
+  gates (job and rollout) now refuse service-account tokens — a gate exists to
+  record which *human* authorised a change — and `approvers:` entries can name a
+  person by their stable IdP subject (`sub:<provider>:<subject>`), which survives
+  rename and email change. One shared authorizer backs both engines; a subject
+  ref matches only by subject (never by display name or email, closing a spoof),
+  and is validated both at parse and on the rollout governing gate.
+- **External approver-group source over HTTP (#172 phase 2, #326).** An optional
+  endpoint (`GOCDNEXT_APPROVER_GROUPS_URL` / `_TOKEN` / `_TIMEOUT`, or Helm
+  `approvals.groupSource.{url,timeout,tokenSecret}`) resolves a voter's group
+  membership against an external platform at vote time: https-only (plain http
+  only to loopback), bearer-authenticated, redirects refused so the token is
+  never replayed, with the request carrying only the stable subject and the body
+  bounded (≤ 64 KiB, ≤ 1024 groups). Fails closed — while the source is
+  unreachable the vote is refused (503), never resolved from a stale copy — with
+  a per-lookup timeout, a consecutive-failure circuit breaker, and a
+  `gocdnext_approver_group_lookup_seconds{outcome}` metric. Off unless
+  configured; local users and service accounts never trigger a lookup.
+
+### Fixed
+
+- **Docs CI builds with pnpm 10 (#325).** The Docs workflow pinned
+  `pnpm/action-setup` to v9, which rejected the `pnpm-workspace.yaml` overrides
+  introduced by the v0.122.0 security sweep; it now reads the version from
+  `docs/package.json` (`packageManager: pnpm@10.33.0`), matching the web build.
+
 ## v0.122.0 — 2026-10-22
 
 ### Security
