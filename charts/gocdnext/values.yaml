@@ -539,6 +539,23 @@ approvals:
   # is only the fallback for gates that declare none.
   defaultTimeout: "168h"
 
+  # External approver-group source (ADR-0002). When `url` is set, a vote on a
+  # gate that lists `approver_groups:` — by a user not named in `approvers:` and
+  # not granted by the local group table — resolves the user's groups against
+  # this endpoint at vote time:
+  #   GET <url>?provider=<provider>&subject=<sub>   (Authorization: Bearer <token>)
+  #   200 {"groups": [...]} | 404 = no groups | anything else = vote refused (503)
+  # Fails closed: while the endpoint is down those votes are refused, never
+  # resolved from a stale copy. https only (plain http just to loopback).
+  groupSource:
+    url: ""
+    # Per-lookup bound, Go duration within [100ms, 30s].
+    timeout: "2s"
+    # Bearer token, from an existing Secret. Required when `url` is set.
+    tokenSecret:
+      name: ""
+      key: "token"
+
 logs:
   # Retention window for the partitioned heap. Go duration string;
   # empty disables drops (partitions still get created ahead of
