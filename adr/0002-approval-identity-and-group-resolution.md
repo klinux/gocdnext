@@ -1,6 +1,6 @@
 # ADR 0002: Approval identity and group resolution behind an external platform / IdP
 
-- **Status:** Accepted — phase 1 implemented (#172)
+- **Status:** Accepted — phase 1 implemented (#172); external group source implemented (phase 2)
 - **Date:** 2026-10-29
 - **Scope:** who may decide an approval gate (job gates and ADR-0001 rollout gates),
   and where that identity and its group membership come from. Approver *policy*
@@ -117,10 +117,14 @@ platform's token could approve as anyone.
 
 ## Follow-ups (not in phase 1)
 
-- **An `ApproverGroupSource` implementation** (platform HTTP / SCIM / IdP admin API),
-  wired from config, with its own timeout, metrics, and no positive-answer caching
-  beyond the decision. It still adds latency to every vote that needs it, so it must
-  bound that latency (timeout, circuit breaker).
+- ~~**An `ApproverGroupSource` implementation**~~ — done: `internal/groupsource`, a
+  generic HTTP contract (`GET <url>?provider=&subject=` → `{"groups":[...]}`, 404 = no
+  groups) chosen over SCIM / IdP admin APIs so no vendor is baked in; a platform
+  fronting an IdP adapts on its side. Bearer token, https only (http to loopback),
+  redirects refused, bounded body/groups, per-lookup timeout (default 2s), a
+  consecutive-failure circuit breaker (5 failures → 30s open, then one probe), no
+  caching, `gocdnext_approver_group_lookup_seconds{outcome}`. Local and
+  service-account identities are never looked up.
 - **IdP-signed bearer tokens (RFC 8693 output)** accepted by the auth middleware,
   verified against the issuer + audience and mapped to users by `(provider, sub)`.
 - **UI rendering of `sub:` approvers** as the resolved user's name.

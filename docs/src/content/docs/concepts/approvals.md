@@ -204,6 +204,39 @@ Group memberships are versioned: removing someone takes effect
 immediately, but past approvals they cast remain valid (the audit
 trail is immutable).
 
+### Groups from an external platform
+
+When a platform in front of gocdnext owns the teams, point gocdnext at
+it instead of mirroring them into the table above (a mirror is a
+stale copy the gate would end up enforcing). Set
+`GOCDNEXT_APPROVER_GROUPS_URL` and `GOCDNEXT_APPROVER_GROUPS_TOKEN`
+(Helm: `approvals.groupSource`). Membership is then resolved **at vote
+time**, so someone removed from a team after logging in can't approve
+with a stale login.
+
+The endpoint is called only when it can change the answer: the gate
+lists `approver_groups:`, the voter isn't named in `approvers:`, and
+the local table doesn't already grant. The request carries the user's
+stable identity-provider subject, never a display name:
+
+```http
+GET <url>?provider=oidc&subject=3f2a9c1e-77b0-4c1d-9b1a-0d6c2f4e8a11
+Authorization: Bearer <token>
+```
+
+| Response | Meaning |
+|---|---|
+| `200 {"groups": ["release-approvers"]}` | the user's current groups |
+| `404` | user unknown to the platform: no groups |
+| anything else, a timeout, or a malformed body | vote refused with `503`, nothing recorded |
+
+It fails closed: while the platform is down, votes that need it are
+refused (retry later), never resolved from a cached copy. Votes
+satisfied by `approvers:` or the local table keep working. After 5
+consecutive failures gocdnext stops calling for 30s and refuses
+immediately. Local accounts and service accounts are never looked
+up. Watch `gocdnext_approver_group_lookup_seconds{outcome}`.
+
 ## Reject flow
 
 Either approver can also click *Reject*. On reject:
