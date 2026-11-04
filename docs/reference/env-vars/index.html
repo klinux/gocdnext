@@ -321,6 +321,21 @@ only, no redeploy) if your object store doesn’t support conditional writes.</p
 <td><code dir="auto">168h</code></td>
 <td>How long an approval gate may sit unanswered before its run is <strong>canceled</strong> (not failed). Applies to every gate that doesn’t set its own <code dir="auto">timeout:</code> in YAML. Go duration, no <code dir="auto">d</code> unit (<code dir="auto">168h</code> = 7 days); clamped to <code dir="auto">[1m, 2160h]</code>. <code dir="auto">never</code> / <code dir="auto">off</code> / <code dir="auto">0</code> disables the fleet-wide window — per-gate <code dir="auto">timeout:</code> still applies. A typo aborts boot.</td>
 </tr>
+<tr>
+<td><code dir="auto">GOCDNEXT_APPROVER_GROUPS_URL</code></td>
+<td>—</td>
+<td>External approver-group source (<a href="https://github.com/klinux/gocdnext/blob/main/adr/0002-approval-identity-and-group-resolution.md">ADR-0002</a>). When set, <code dir="auto">approver_groups:</code> membership is also resolved against this endpoint at vote time (<code dir="auto">GET &lt;url&gt;?provider=&amp;subject=</code>, answer <code dir="auto">{"groups":[...]}</code>, <code dir="auto">404</code> = none). Fails closed: an error refuses the vote with <code dir="auto">503</code>. https only (http to loopback). See <a href="/concepts/approvals/">Approvals</a>.</td>
+</tr>
+<tr>
+<td><code dir="auto">GOCDNEXT_APPROVER_GROUPS_TOKEN</code></td>
+<td>—</td>
+<td>Bearer token for the endpoint above. Required when the URL is set; boot aborts without it.</td>
+</tr>
+<tr>
+<td><code dir="auto">GOCDNEXT_APPROVER_GROUPS_TIMEOUT</code></td>
+<td><code dir="auto">2s</code></td>
+<td>Per-lookup bound, Go duration within <code dir="auto">[100ms, 30s]</code>. Out of range aborts boot.</td>
+</tr>
 </tbody>
 </table>
 <div class="sl-heading-wrapper level-h2"><h2 id="logs">Logs</h2><a class="sl-anchor-link" href="#logs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Logs”</span></a></div>
