@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.124.0 — 2026-11-05
+
 ### Changed
 
 - **golangci-lint plugin now bundles golangci-lint v2** (was v1.63). It is built
