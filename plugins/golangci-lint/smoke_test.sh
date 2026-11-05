@@ -17,8 +17,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-golangci-lint:smoke-$$"
 WORK="$(mktemp -d)"
 cleanup() {
+  # Fixtures run as the host user (see plug), so the caches golangci-lint wrote
+  # into the mounts are host-owned and a plain rm removes them. No `|| true`
+  # mask: if cleanup ever fails it's a real leak (e.g. root-owned files) and the
+  # smoke should fail loudly rather than hide 30+ MB of orphaned cache.
+  rm -rf "${WORK}"
   docker image rm -f "${IMG}" >/dev/null 2>&1 || true
-  rm -rf "${WORK}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -33,7 +37,11 @@ docker build -t "${IMG}" "${HERE}" >/dev/null
 plug() {
   local dir="$1"; shift
   set +e
-  PLUG_OUT="$(docker run --rm -v "${dir}:/workspace" -w /workspace "$@" "${IMG}" 2>&1)"
+  # --user + HOME under the mount: the plugin needs no root, and running as the
+  # host user keeps the caches it writes host-owned so cleanup can remove them
+  # (the image otherwise runs as root and leaves root-owned cache behind).
+  PLUG_OUT="$(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/workspace \
+    -v "${dir}:/workspace" -w /workspace "$@" "${IMG}" 2>&1)"
   PLUG_RC=$?
   set -e
 }
