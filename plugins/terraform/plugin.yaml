@@ -24,8 +24,10 @@ inputs:
     required: false
     default: latest
     description: >
-      Terraform version. "latest" uses the bundled 1.9.8; pin to
-      a specific version when the module demands determinism.
+      Terraform version. "latest" uses the bundled 1.17.1; pin to
+      an exact stable version when the module demands determinism.
+      Exact versions are downloaded by tfenv and verified against
+      HashiCorp's published SHA-256 list before execution.
   var-file:
     required: false
     description: >
