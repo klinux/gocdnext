@@ -3,8 +3,13 @@
 name: golangci-lint
 category: lint
 description: >
-  Run golangci-lint against a Go module. Bundles the upstream
-  v1.63 image; operators provide args + working-dir.
+  Run golangci-lint against a Go module. Bundles upstream golangci-lint
+  v2.9.0 (built with Go 1.26, so it lints modules up to Go 1.26); operators
+  provide args + working-dir. NOTE: golangci-lint v2 requires a
+  `.golangci.yml` with `version: "2"` — a v1 config is refused with
+  "unsupported version of the configuration". Migrate once with
+  `golangci-lint migrate` (https://golangci-lint.run/docs/product/migration-guide/).
+  A project with no config is unaffected (runs the v2 default linters).
 
 inputs:
   args:
