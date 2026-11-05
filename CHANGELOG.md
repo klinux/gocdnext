@@ -10,11 +10,13 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
-- **golangci-lint plugin now bundles golangci-lint v2** (was v1.63, on
-  `v2.15.0-alpine` + `apk upgrade` for a clean OS layer). The v1 line is EOL and
-  its newest build (Go 1.24) cannot lint Go 1.26+ modules — the upgrade is
-  required for current Go. The plugin tag stays `@v1` and its inputs
-  (`args` / `working-dir` / `timeout`) are unchanged.
+- **golangci-lint plugin now bundles golangci-lint v2** (was v1.63). It is built
+  from source (`go install @v2.15.0`) on `golang:1.27.3-alpine` so the Go stdlib
+  compiled into the linter carries current fixes — 0 HIGH/0 CRITICAL vs the
+  upstream pre-built image — and the Go version is a one-line, Dependabot-watched
+  bump. The v1 line is EOL and its newest build (Go 1.24) cannot lint Go 1.26+
+  modules, so the upgrade is required for current Go. The plugin tag stays `@v1`
+  and its inputs (`args` / `working-dir` / `timeout`) are unchanged.
   **Breaking for consumers with a `.golangci.yml`:** golangci-lint v2 requires
   `version: "2"` and refuses a v1 config (`unsupported version of the
   configuration`). Run `golangci-lint migrate` once

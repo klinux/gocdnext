@@ -5,7 +5,7 @@
 #   - the bundled golangci-lint is built with a Go >= the module's `go`
 #     directive, i.e. it actually lints a Go 1.26 module instead of refusing it
 #     ("lower than the targeted Go version" — the v1.63 / Go 1.23 regression
-#     this upgrade to v2.9.0 fixes);
+#     the upgrade to golangci-lint v2.15.0 on Go 1.27 fixes);
 #   - the entrypoint's absolute-cache fix lets the internal `go list` run
 #     end-to-end instead of dying on a relative GOMODCACHE/GOCACHE;
 #   - `golangci-lint run --timeout` is still a valid flag under v2;

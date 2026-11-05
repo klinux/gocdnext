@@ -35,3 +35,13 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 0
+
+  # Docker base images. Same security-only model (limit 0): Dependabot opens a
+  # PR when the pinned base has a fix available. The golangci-lint plugin builds
+  # the linter from source on `golang:`, so the Go stdlib CVEs that matter are
+  # fixed through a base-image bump watched here.
+  - package-ecosystem: "docker"
+    directory: "/plugins/golangci-lint"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
