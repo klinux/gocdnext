@@ -1,9 +1,9 @@
 name: coveralls
 category: quality
 description: >
-  Upload a coverage report to Coveralls. Accepts LCOV, JSON,
-  simplecov, or Cobertura XML — the common interchange formats
-  tools export to. Supports Coveralls' parallel-build flow:
+  Upload a coverage report with Coveralls' official Universal
+  Coverage Reporter. Accepts LCOV, Coveralls JSON, SimpleCov, or
+  Cobertura XML. Supports Coveralls' parallel-build flow:
   flag each slice with `parallel: "true"` and make the last
   step call `finalise: "true"` to close the build.
 
@@ -21,7 +21,9 @@ inputs:
   format:
     required: false
     default: lcov
-    description: "lcov | json | simplecov | cobertura"
+    description: >
+      lcov | json | simplecov | cobertura. `json` means the
+      Coveralls JSON interchange format.
   working-dir:
     required: false
     default: "."
@@ -36,8 +38,9 @@ inputs:
     required: false
     default: "false"
     description: >
-      Fire the "build done" webhook instead of an upload. Call
-      once AFTER every parallel slice has uploaded.
+      Run the official `coveralls done` command instead of an
+      upload. No coverage file is needed. Call once AFTER every
+      parallel slice has uploaded.
   base-url:
     required: false
     description: >
