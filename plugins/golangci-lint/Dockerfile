@@ -1,6 +1,5 @@
 # gocdnext/golangci-lint — run golangci-lint against a Go module.
-# Wraps the upstream alpine image so pipelines don't have to pin
-# the linter version per-job.
+# Wraps the linter so pipelines don't have to pin the version per-job.
 #
 # Contract (PLUGIN_* env, mapped from `with:`):
 #   PLUGIN_ARGS         (optional)  extra args appended after `run`.
@@ -12,7 +11,45 @@
 #                                   Default "5m" — generated sqlc +
 #                                   pgx types push past the 1m
 #                                   default in larger workspaces.
-FROM golangci/golangci-lint:v1.63
+#
+# golangci-lint is built FROM SOURCE on a patched Go base, NOT pulled as the
+# upstream pre-built image:
+#   - The linter's build-time Go must be >= the linted module's `go` directive
+#     (upstream compat rule). Go 1.27 lints modules up to go 1.27. The old
+#     v1.63 image (Go 1.23) hard-refused Go 1.26 modules, and the v1 line is EOL
+#     at Go 1.24 — there is no v1 build that can lint Go >= 1.26.
+#   - The Go STDLIB is compiled into the linter, so its CVEs are only fixed by a
+#     Go rebuild. Upstream's images lag Go patch releases and ship those stdlib
+#     CVEs until their next build; building here on golang:1.27.3-alpine gives
+#     0 HIGH/0 CRITICAL (Trivy --ignore-unfixed) today and makes the Go version
+#     OUR knob — a stdlib fix is a one-line FROM bump (Dependabot-watched),
+#     not a wait on upstream's release cadence.
+#   - `go install` (not the upstream install script) is deliberate: the script
+#     fetches upstream's PRE-BUILT binary, which is exactly the stale-stdlib
+#     artefact we're avoiding. Compiling the pinned tag with our Go is the
+#     point; it only costs the release commit/date stamp (cosmetic — `version`
+#     still reports v2.15.0).
+#
+# golangci-lint v2 also changes the `.golangci.yml` schema (needs
+# `version: "2"`) — see plugin.yaml.
+FROM golang:1.27.3-alpine
+
+# git: the entrypoint's dubious-ownership workaround + VCS-aware lint. ca-certs:
+# module fetches over TLS. gcc + musl-dev: the C toolchain golangci-lint needs to
+# analyze cgo (`import "C"`) packages — the golang:alpine base ships neither and
+# defaults CGO_ENABLED=0, so without this a cgo module fails with "no go files to
+# analyze"; the upstream golangci-lint image bundles a C compiler for the same
+# reason. apk upgrade pulls OS packages patched since the base was cut. The build
+# caches are dropped from the layer (the entrypoint points GOMODCACHE/GOCACHE at
+# the workspace at run time, so they're dead weight here).
+RUN apk add --no-cache git ca-certificates gcc musl-dev \
+ && apk upgrade --no-cache \
+ && go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 \
+ && rm -rf /go/pkg /root/.cache
+
+# golang:alpine defaults CGO_ENABLED=0; turn it back on so cgo packages typecheck
+# (harmless for pure-Go modules — cgo only engages on `import "C"`).
+ENV CGO_ENABLED=1
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-golangci-lint
 RUN chmod +x /usr/local/bin/gocdnext-golangci-lint
