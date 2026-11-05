@@ -6,9 +6,11 @@
 # auto-closes the non-critical ones (CVSS < 9.0) — only CRITICAL security PRs
 # stay open.
 #
-# This file does NOT enable weekly version-bump PRs (`open-pull-requests-limit: 0`);
-# it only tells Dependabot which manifests to watch. Raise the limit to opt into
-# scheduled version updates later.
+# The package-manager ecosystems below keep version-bump PRs off
+# (`open-pull-requests-limit: 0`) and rely on the security updates above. Docker
+# is the exception: base images aren't in the security-update dependency graph,
+# so that entry enables version updates — the only way a patched base is surfaced
+# (see its own comment). Raise a limit to opt another manifest in later.
 version: 2
 updates:
   - package-ecosystem: "gomod"
@@ -35,3 +37,19 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 0
+
+  # Docker base images. Unlike the ecosystems above, this one enables VERSION
+  # updates (limit > 0): Docker isn't in the dependency graph Dependabot uses for
+  # security updates, so limit 0 would never bump the base. Version updates are
+  # the only auto-path to a patched `golang:` — which, since the golangci-lint
+  # plugin builds the linter from source on that base, is how its Go stdlib CVEs
+  # get fixed. Scoped to the plugin; majors ignored (a Go minor/patch carries the
+  # fixes, a major is a deliberate migration).
+  - package-ecosystem: "docker"
+    directory: "/plugins/golangci-lint"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "golang"
+        update-types: ["version-update:semver-major"]
