@@ -56,7 +56,7 @@
 # the API call so a 500 KB monorepo PR doesn't surprise the team
 # with a $10 bill. Audit trail: full request + response saved to
 # .ai-review/ for `artifacts: optional: [.ai-review]`.
-FROM alpine:3.20
+FROM alpine:3.22
 
 RUN apk add --no-cache bash curl jq git ca-certificates
 

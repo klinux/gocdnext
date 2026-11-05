@@ -61,12 +61,13 @@ parse_float_0_to_1() {
         printf '%s' "$default"
         return 0
     fi
-    case "$val" in
-        ''|*[!0-9.]*|*..*|.|..*)
-            echo "gocdnext/ai-review: $name must be a decimal in [0, 1] (got '$val')" >&2
-            exit 2
-            ;;
-    esac
+    # One syntactically valid JSON number only. The previous character-class
+    # check accepted values such as 0.5.6; awk read that as 0.5 and the error
+    # surfaced later as an unrelated jq parse failure.
+    if [[ ! "$val" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]]; then
+        echo "gocdnext/ai-review: $name must be a decimal in [0, 1] (got '$val')" >&2
+        exit 2
+    fi
     # Range check via awk to avoid spawning python/bc.
     if ! awk -v v="$val" 'BEGIN { if (v + 0 < 0 || v + 0 > 1) exit 1 }'; then
         echo "gocdnext/ai-review: $name must be in [0, 1] (got '$val')" >&2
