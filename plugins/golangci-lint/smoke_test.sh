@@ -86,4 +86,20 @@ printf '%s\n' "$PLUG_OUT" | grep -qiE "govet|wrong type|Sprintf" || die "expecte
 plug "$clean" -e PLUGIN_TIMEOUT=3m
 [ "$PLUG_RC" -eq 0 ] || die "PLUGIN_TIMEOUT override should still lint green (rc=$PLUG_RC)"
 
+# 4. A cgo module lints green — the image must carry a C toolchain and
+#    CGO_ENABLED=1. The golang:alpine base ships neither (CGO off, no gcc), so a
+#    cgo file is dropped and golangci-lint errors with "no go files to analyze".
+#    Guards parity with the upstream image, which can analyze `import "C"`.
+cgo="$(mkmod cgo 'package smoke
+
+// #include <stdlib.h>
+import "C"
+
+// Caller exercises cgo so the analyzer needs a C compiler.
+func Caller() int { return int(C.abs(C.int(-3))) }
+')"
+plug "$cgo"
+[ "$PLUG_RC" -eq 0 ] || die "cgo module should lint green — needs gcc + CGO_ENABLED=1 (rc=$PLUG_RC)"
+printf '%s\n' "$PLUG_OUT" | grep -q "0 issues" || die "expected '0 issues' on the cgo module"
+
 echo "PASS: golangci-lint smoke"

@@ -36,12 +36,18 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 0
 
-  # Docker base images. Same security-only model (limit 0): Dependabot opens a
-  # PR when the pinned base has a fix available. The golangci-lint plugin builds
-  # the linter from source on `golang:`, so the Go stdlib CVEs that matter are
-  # fixed through a base-image bump watched here.
+  # Docker base images. Unlike the ecosystems above, this one enables VERSION
+  # updates (limit > 0): Docker isn't in the dependency graph Dependabot uses for
+  # security updates, so limit 0 would never bump the base. Version updates are
+  # the only auto-path to a patched `golang:` — which, since the golangci-lint
+  # plugin builds the linter from source on that base, is how its Go stdlib CVEs
+  # get fixed. Scoped to the plugin; majors ignored (a Go minor/patch carries the
+  # fixes, a major is a deliberate migration).
   - package-ecosystem: "docker"
     directory: "/plugins/golangci-lint"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "golang"
+        update-types: ["version-update:semver-major"]

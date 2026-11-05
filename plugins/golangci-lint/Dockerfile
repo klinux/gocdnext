@@ -35,13 +35,21 @@
 FROM golang:1.27.3-alpine
 
 # git: the entrypoint's dubious-ownership workaround + VCS-aware lint. ca-certs:
-# module fetches over TLS. apk upgrade pulls OS packages patched since the base
-# was cut. The build caches are dropped from the layer (the entrypoint points
-# GOMODCACHE/GOCACHE at the workspace at run time, so they're dead weight here).
-RUN apk add --no-cache git ca-certificates \
+# module fetches over TLS. gcc + musl-dev: the C toolchain golangci-lint needs to
+# analyze cgo (`import "C"`) packages — the golang:alpine base ships neither and
+# defaults CGO_ENABLED=0, so without this a cgo module fails with "no go files to
+# analyze"; the upstream golangci-lint image bundles a C compiler for the same
+# reason. apk upgrade pulls OS packages patched since the base was cut. The build
+# caches are dropped from the layer (the entrypoint points GOMODCACHE/GOCACHE at
+# the workspace at run time, so they're dead weight here).
+RUN apk add --no-cache git ca-certificates gcc musl-dev \
  && apk upgrade --no-cache \
  && go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 \
  && rm -rf /go/pkg /root/.cache
+
+# golang:alpine defaults CGO_ENABLED=0; turn it back on so cgo packages typecheck
+# (harmless for pure-Go modules — cgo only engages on `import "C"`).
+ENV CGO_ENABLED=1
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-golangci-lint
 RUN chmod +x /usr/local/bin/gocdnext-golangci-lint
