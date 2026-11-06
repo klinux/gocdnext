@@ -30,6 +30,9 @@ if [ -n "${PLUGIN_USERNAME:-}" ]; then
         esac
     fi
     mkdir -p /kaniko/.docker
+    # The config holds base64("user:password") — reversible — so lock it down to
+    # the owner before writing the credential into it.
+    chmod 700 /kaniko/.docker
     auth=$(printf '%s:%s' "${PLUGIN_USERNAME}" "${PLUGIN_PASSWORD:-}" | base64 -w0 2>/dev/null || \
            printf '%s:%s' "${PLUGIN_USERNAME}" "${PLUGIN_PASSWORD:-}" | base64)
     # Single-registry config; kaniko re-uses this entry for any
@@ -38,6 +41,7 @@ if [ -n "${PLUGIN_USERNAME:-}" ]; then
     cat >/kaniko/.docker/config.json <<EOF
 {"auths":{"${registry}":{"auth":"${auth}"}}}
 EOF
+    chmod 600 /kaniko/.docker/config.json
 fi
 
 set -- \
@@ -50,43 +54,34 @@ if [ "${PUSH}" != "true" ]; then
 fi
 
 if [ "${PLUGIN_CACHE:-false}" = "true" ]; then
-    set -- "$@" --cache=true --cache-repo="${PLUGIN_IMAGE}-cache"
+    # --cache-repo must be a bare repository — no tag or digest. Strip them from
+    # PLUGIN_IMAGE before appending -cache, or kaniko rejects the cache repo
+    # ("repository can only contain...") and SILENTLY skips caching at exit 0.
+    cache_image="${PLUGIN_IMAGE%%@*}"            # drop any @sha256:… digest
+    case "${cache_image##*/}" in
+        *:*) cache_image="${cache_image%:*}" ;;  # drop a :tag on the last path segment only
+    esac
+    set -- "$@" --cache=true --cache-repo="${cache_image}-cache"
 fi
 
-# Build args — comma- or newline-separated. Each entry becomes
-# one --build-arg KEY=VALUE. Malformed entries (no "=") are
-# skipped with a warn so a typo doesn't silently ship a missing
-# value.
+# Build args — comma- or newline-separated. Each KEY=VALUE becomes one
+# `--build-arg KEY=VALUE` positional. Built in the CURRENT shell via a here-doc
+# (NOT a pipe-into-while subshell), so `set --` survives AND a VALUE containing
+# spaces stays one argument — the old temp-file + word-split approach corrupted
+# `MSG=hello world` into two args. No temp file, so no /tmp dependency either.
+# Malformed entries (no "=") are skipped with a warn.
 if [ -n "${PLUGIN_BUILD_ARGS:-}" ]; then
-    # Normalise separators to newline, then iterate.
     normalised=$(printf '%s' "${PLUGIN_BUILD_ARGS}" | tr ',' '\n')
-    printf '%s\n' "${normalised}" | while IFS= read -r line; do
+    while IFS= read -r line; do
         line=$(printf '%s' "${line}" | sed 's/^ *//;s/ *$//')
         [ -z "${line}" ] && continue
         case "${line}" in
-            *=*) : ;;
-            *)
-                echo "gocdnext/kaniko: skipping malformed build-arg (no =): ${line}" >&2
-                continue
-                ;;
+            *=*) set -- "$@" --build-arg "${line}" ;;
+            *)   echo "gocdnext/kaniko: skipping malformed build-arg (no =): ${line}" >&2 ;;
         esac
-        # Trick: build-args must be passed to kaniko one-shot,
-        # but we're inside a subshell loop so `set --` here
-        # wouldn't survive. Instead, append to a temp file and
-        # re-exec from the parent scope.
-        printf -- '--build-arg\n%s\n' "${line}" >>/tmp/kaniko-build-args
-    done
-    if [ -s /tmp/kaniko-build-args ]; then
-        # Rebuild positional args with the collected build-args
-        # at the end. Can't use arrays (busybox) so re-construct
-        # a single command line.
-        extra_args=""
-        while IFS= read -r a; do
-            extra_args="${extra_args} ${a}"
-        done </tmp/kaniko-build-args
-        # shellcheck disable=SC2086
-        exec /kaniko/executor "$@" ${extra_args}
-    fi
+    done <<EOF
+${normalised}
+EOF
 fi
 
 exec /kaniko/executor "$@"
