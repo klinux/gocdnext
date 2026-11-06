@@ -141,6 +141,24 @@ if [ "${MODE}" = "pr-comment" ]; then
         echo "gocdnext/ai-review: mode=pr-comment requires pr-number: and repo:" >&2
         exit 2
     fi
+
+    # pr-number and repo are interpolated verbatim into the SCM endpoint URL,
+    # which is written into the SAME `curl --config` file that carries the SCM
+    # token. Validate their SHAPE here — BEFORE any config file is created — so a
+    # crafted value can't inject a curl directive (and exfiltrate the token).
+    # Reject CR/LF/double-quote outright (the curl-config break chars), same as
+    # the discord/teams webhook guard.
+    case "${PLUGIN_PR_NUMBER}${PLUGIN_REPO}" in
+        *$'\n'*|*$'\r'*|*'"'*)
+            echo "gocdnext/ai-review: pr-number/repo contain invalid characters (CR/LF/quote)" >&2
+            exit 2
+            ;;
+    esac
+    if [[ ! "${PLUGIN_PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "gocdnext/ai-review: pr-number must be a positive integer (got '${PLUGIN_PR_NUMBER}')" >&2
+        exit 2
+    fi
+
     SCM_PROVIDER="${PLUGIN_SCM_PROVIDER:-github}"
     case "${SCM_PROVIDER}" in
         github)
@@ -148,10 +166,21 @@ if [ "${MODE}" = "pr-comment" ]; then
                 echo "gocdnext/ai-review: GITHUB_TOKEN required for scm-provider=github + mode=pr-comment" >&2
                 exit 2
             fi
+            # GitHub repo is exactly owner/repo (one slash).
+            if [[ ! "${PLUGIN_REPO}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+                echo "gocdnext/ai-review: repo must be 'owner/repo' for GitHub (got '${PLUGIN_REPO}')" >&2
+                exit 2
+            fi
             ;;
         gitlab)
             if [ -z "${GITLAB_TOKEN:-}" ]; then
                 echo "gocdnext/ai-review: GITLAB_TOKEN required for scm-provider=gitlab + mode=pr-comment" >&2
+                exit 2
+            fi
+            # GitLab accepts a numeric project id OR a path with nested
+            # namespaces (group/[subgroup/...]/project — at least one slash).
+            if [[ ! "${PLUGIN_REPO}" =~ ^([0-9]+|[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+)$ ]]; then
+                echo "gocdnext/ai-review: repo must be a numeric id or 'group/[subgroup/]project' for GitLab (got '${PLUGIN_REPO}')" >&2
                 exit 2
             fi
             ;;
