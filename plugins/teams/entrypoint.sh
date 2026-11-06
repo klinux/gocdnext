@@ -10,6 +10,19 @@ if [ -z "${PLUGIN_WEBHOOK:-}" ]; then
     exit 2
 fi
 
+case "${PLUGIN_WEBHOOK}" in
+    *$'\n'*|*$'\r'*|*'"'*)
+        echo "gocdnext/teams: webhook contains invalid characters" >&2
+        exit 2
+        ;;
+esac
+
+work="$(mktemp -d)"
+chmod 700 "${work}"
+trap 'rm -rf "${work}"' EXIT
+printf 'url = "%s"\n' "${PLUGIN_WEBHOOK}" >"${work}/curl.conf"
+chmod 600 "${work}/curl.conf"
+
 if [ -n "${PLUGIN_PAYLOAD_FILE:-}" ]; then
     # Escape hatch: operator built their own Adaptive Card or
     # MessageCard JSON; we just forward it.
@@ -18,12 +31,12 @@ if [ -n "${PLUGIN_PAYLOAD_FILE:-}" ]; then
         echo "gocdnext/teams: payload-file ${PLUGIN_PAYLOAD_FILE} not found" >&2
         exit 2
     fi
-    echo "==> POST ${PLUGIN_WEBHOOK} <-- ${body}"
-    exec curl -fSsL \
+    echo "==> POST Teams webhook <-- ${body}"
+    curl --config "${work}/curl.conf" -fSsL \
         -H "Content-Type: application/json" \
         -X POST \
-        --data-binary "@${body}" \
-        "${PLUGIN_WEBHOOK}"
+        --data-binary "@${body}"
+    exit $?
 fi
 
 # Status-tinted default theme color. Teams renders this as the
@@ -59,9 +72,11 @@ payload=$(jq -nc \
         text: $text
     }')
 
-echo "==> POST ${PLUGIN_WEBHOOK} (${#title} + ${#message} chars)"
-curl -fSsL \
+printf '%s' "${payload}" >"${work}/payload.json"
+chmod 600 "${work}/payload.json"
+
+echo "==> POST Teams webhook (${#title} + ${#message} chars)"
+curl --config "${work}/curl.conf" -fSsL \
     -H "Content-Type: application/json" \
     -X POST \
-    -d "${payload}" \
-    "${PLUGIN_WEBHOOK}"
+    --data-binary "@${work}/payload.json"

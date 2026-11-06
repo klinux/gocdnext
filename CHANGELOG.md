@@ -8,6 +8,28 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Plugin catalog audit.** Coveralls now uses the checksum-pinned official
+  Universal Coverage Reporter instead of invoking a nonexistent binary with
+  unsupported flags; uploads support the documented formats and entry-less
+  parallel finalisation uses `coveralls done`. Terraform's documented
+  `version:` input now selects and checksum-verifies exact releases through a
+  pinned tfenv instead of silently running the bundled version. Its default
+  also moves from the vulnerable Terraform 1.9.8 image to 1.17.1; consumers
+  that require 1.9.8 can now request it explicitly. Deploy-marker
+  now honours `working-dir`, and ai-review rejects malformed decimal
+  temperatures before constructing its API request.
+
+### Security
+
+- Discord and Teams notification plugins no longer print credential-bearing
+  webhook URLs or expose them in process arguments; private curl config and
+  payload files carry the request instead. Coveralls likewise keeps its repo
+  token out of the finalisation URL and process arguments. Alpine bases touched
+  by the fixes move to the supported 3.22 line, and the Terraform runtime runs
+  package security upgrades during build.
+
 ## v0.124.0 — 2026-11-05
 
 ### Changed

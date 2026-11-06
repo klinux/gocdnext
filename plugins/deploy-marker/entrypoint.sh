@@ -5,6 +5,8 @@ set -eu
 
 fail() { echo "gocdnext/deploy-marker: $1" >&2; exit 2; }
 
+cd "${PLUGIN_WORKING_DIR:-.}" || fail "working-dir does not exist: ${PLUGIN_WORKING_DIR:-.}"
+
 PROVIDER="$(printf '%s' "${PLUGIN_PROVIDER:-}" | tr '[:upper:]' '[:lower:]')"
 [ -n "${PROVIDER}" ] || fail "provider: is required (datadog | grafana)"
 

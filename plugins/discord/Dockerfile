@@ -18,7 +18,7 @@
 #   PLUGIN_TTS       (optional)  "true" sends as text-to-speech
 #                                (rarely useful in CI — default
 #                                "false").
-FROM alpine:3.20
+FROM alpine:3.22
 
 RUN apk add --no-cache bash ca-certificates curl jq
 

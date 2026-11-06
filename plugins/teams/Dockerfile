@@ -32,7 +32,7 @@
 #                                    escape hatch for operators
 #                                    who want full control over
 #                                    Adaptive Card content.
-FROM alpine:3.20
+FROM alpine:3.22
 
 RUN apk add --no-cache bash ca-certificates curl jq
 

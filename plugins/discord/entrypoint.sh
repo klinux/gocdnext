@@ -10,6 +10,13 @@ if [ -z "${PLUGIN_WEBHOOK:-}" ]; then
     exit 2
 fi
 
+case "${PLUGIN_WEBHOOK}" in
+    *$'\n'*|*$'\r'*|*'"'*)
+        echo "gocdnext/discord: webhook contains invalid characters" >&2
+        exit 2
+        ;;
+esac
+
 # Default content: "pipeline #N → status (sha)" — mirrors the
 # slack plugin's default so a team running both receives the
 # same shape on both channels.
@@ -30,12 +37,19 @@ payload=$(jq -nc \
     } + (if $username == "" then {} else {username: $username} end)
       + (if $avatar == "" then {} else {avatar_url: $avatar} end)')
 
-# Discord returns 204 on success with no body; curl -f turns any
-# 4xx/5xx into a non-zero exit so the plugin fails the job
-# visibly.
-echo "==> POST ${PLUGIN_WEBHOOK} (${#PLUGIN_CONTENT} chars)"
-curl -fSsL \
+# Keep the credential-bearing webhook URL and the message body out of process
+# argv and logs. curl reads both from private files instead.
+work="$(mktemp -d)"
+chmod 700 "${work}"
+trap 'rm -rf "${work}"' EXIT
+printf 'url = "%s"\n' "${PLUGIN_WEBHOOK}" >"${work}/curl.conf"
+printf '%s' "${payload}" >"${work}/payload.json"
+chmod 600 "${work}/curl.conf" "${work}/payload.json"
+
+# Discord returns 204 on success with no body; curl -f turns any 4xx/5xx into
+# a non-zero exit so the plugin fails the job visibly.
+echo "==> POST Discord webhook (${#PLUGIN_CONTENT} chars)"
+curl --config "${work}/curl.conf" -fSsL \
     -H "Content-Type: application/json" \
     -X POST \
-    -d "${payload}" \
-    "${PLUGIN_WEBHOOK}"
+    --data-binary "@${work}/payload.json"
