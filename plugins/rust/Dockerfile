@@ -22,11 +22,14 @@
 #                                   command. Useful for "-D warnings"
 #                                   as a global, or "-C target-cpu=..."
 #                                   in a release pipeline.
-# Pinned to an EXACT version + digest (not the floating 1.83-slim tag) so a
-# rebuild is reproducible and a CVE bump is a reviewable one-line change. 1.99.1
-# (was 1.83): the stale slim base carried 10 fixable CRITICAL + 900+ HIGH OS
-# packages; the version bump + `apt-get upgrade` clears them (Trivy
-# --ignore-unfixed: 0 CRITICAL / 0 HIGH). Runs as root (unchanged).
+# The base is pinned to an EXACT version + digest (not the floating 1.83-slim
+# tag) so a CVE bump is a reviewable one-line change. 1.99.1 (was 1.83): the
+# stale slim base carried 10 fixable CRITICAL + 900+ HIGH OS packages; the
+# version bump + `apt-get upgrade` clears them (Trivy --ignore-unfixed: 0
+# CRITICAL / 0 HIGH). NOTE: `apt-get upgrade` pulls from Debian's mutable
+# security repos, so this is "pinned base + security patch at build time", not a
+# byte-identical reproducible rebuild — the OS-package set can differ between
+# builds. Runs as root (unchanged).
 #
 # NOTE: this is a large toolchain jump (1.83 → 1.99). clippy and rustfmt gain
 # lints and formatting rules across releases, so a pipeline on the default

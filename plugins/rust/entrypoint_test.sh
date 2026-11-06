@@ -11,7 +11,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 cat >"$TMP/cargo" <<'EOF'
 #!/usr/bin/env bash
-{ echo "ARGS=$*"; echo "CARGO_HOME=${CARGO_HOME:-<unset>}"; echo "RUSTFLAGS=${RUSTFLAGS:-<unset>}"; echo "PWD=$(pwd)"; } >> "$LOG"
+{ echo "ARGS=$*"; echo "CARGO_HOME=${CARGO_HOME:-<unset>}"; echo "RUSTFLAGS=${RUSTFLAGS:-<unset>}"; echo "PWD=$(pwd)"; echo "TOKEN_ENV=${CARGO_REGISTRY_TOKEN:-<unset>}"; } >> "$LOG"
 exit 0
 EOF
 cat >"$TMP/rustup" <<'EOF'
@@ -52,5 +52,18 @@ grep -q "^RUSTUP=" "$TMP/5.log" && { echo "FAIL: stable should not call rustup";
 mkdir -p "$TMP/proj"
 rc=$(run "$TMP/6.log" PLUGIN_COMMAND="build" PLUGIN_WORKING_DIR="$TMP/proj")
 grep -qx "PWD=$TMP/proj" "$TMP/6.log" || { echo "FAIL: working-dir not honored"; cat "$TMP/6.log"; fails=$((fails+1)); }
+
+# 7. a crates.io token is read from the ENV (never argv), and the full command
+#    is NOT logged — only the subcommand (log redaction protects a stray token).
+rc=$(run "$TMP/7.log" PLUGIN_COMMAND="publish" CARGO_REGISTRY_TOKEN="s3cr3t-tok")
+grep -qx "ARGS=publish" "$TMP/7.log" || { echo "FAIL: argv should be just the subcommand (token not on argv)"; cat "$TMP/7.log"; fails=$((fails+1)); }
+grep -qx "TOKEN_ENV=s3cr3t-tok" "$TMP/7.log" || { echo "FAIL: cargo should read the token from the env"; cat "$TMP/7.log"; fails=$((fails+1)); }
+grep -q "s3cr3t" "$TMP/7.log.out" && { echo "FAIL: token leaked into the plugin log"; cat "$TMP/7.log.out"; fails=$((fails+1)); }
+
+# 8. even if a token is wrongly placed in command:, the log shows only the
+#    subcommand (never the trailing value).
+rc=$(run "$TMP/8.log" PLUGIN_COMMAND="publish --token LEAKEDVALUE")
+grep -qx "==> cargo publish" "$TMP/8.log.out" || { echo "FAIL: log should show only the subcommand"; cat "$TMP/8.log.out"; fails=$((fails+1)); }
+grep -q "LEAKEDVALUE" "$TMP/8.log.out" && { echo "FAIL: a stray --token value leaked into the log"; cat "$TMP/8.log.out"; fails=$((fails+1)); }
 
 if [ "$fails" -eq 0 ]; then echo "PASS: rust entrypoint"; else echo "FAILED: $fails check(s)"; exit 1; fi

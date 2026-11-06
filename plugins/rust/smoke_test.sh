@@ -104,4 +104,15 @@ OUT="$(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
 set -e
 [ "$RC" -eq 0 ] || die "working-dir build should succeed (rc=$RC)" "$OUT"
 
+# 8. PLUGIN_TOOLCHAIN escape hatch (the official mitigation for new clippy/fmt
+#    findings after the 1.83→1.99 jump): the plugin installs the pinned toolchain
+#    on the REAL image via rustup and runs it. Root + no mount — rustup writes to
+#    the image's RUSTUP_HOME, and `--version` compiles nothing, so there's no
+#    host-owned target/ to clean up.
+set +e
+OUT="$(docker run --rm -w /tmp -e PLUGIN_TOOLCHAIN=1.83.0 -e PLUGIN_COMMAND="--version" "$IMG" 2>&1)"; RC=$?
+set -e
+[ "$RC" -eq 0 ] || die "pinned toolchain run should succeed (rc=$RC)" "$OUT"
+grep -qE "cargo 1\.83\.0" <<<"$OUT" || die "PLUGIN_TOOLCHAIN=1.83.0 did not pin cargo 1.83.0" "$OUT"
+
 echo "PASS: rust smoke"

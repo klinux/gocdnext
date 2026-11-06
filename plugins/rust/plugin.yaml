@@ -2,11 +2,13 @@ name: rust
 category: build
 description: >
   Run cargo subcommands — build, test, clippy, fmt, publish.
-  Ships with the stable 1.83 toolchain + rustfmt + clippy.
+  Ships with the stable 1.99.1 toolchain + rustfmt + clippy.
   Switch toolchains via `toolchain: nightly` or a pinned
-  `1.82.0` when a specific version is required. Pair the image
-  registry / crates.io token inputs with `secrets:` so they
-  don't end up in the log.
+  `1.83.0` when a specific version is required (e.g. to hold clippy
+  lints steady across image bumps). Expose a crates.io token via
+  `secrets:` as `CARGO_REGISTRY_TOKEN` — cargo reads it from the
+  environment, so it never reaches the log or the process argv; do
+  not put a token in `command:`.
 
 inputs:
   command:
@@ -51,14 +53,16 @@ examples:
 
   - name: publish crate with secret token
     description: >
-      `cargo publish` needs a crates.io token. Pipe it through
-      secrets so the plaintext never touches the log.
+      `cargo publish` needs a crates.io token. Expose it via secrets
+      as CARGO_REGISTRY_TOKEN — cargo reads it from the environment,
+      so it never touches the log or the process argv. Do NOT pass
+      `--token` in command:.
     yaml: |
       secrets:
         - CARGO_REGISTRY_TOKEN
       uses: ghcr.io/klinux/gocdnext-plugin-rust@v1
       with:
-        command: publish --token ${{ CARGO_REGISTRY_TOKEN }}
+        command: publish
 
   - name: cached build
     description: >
