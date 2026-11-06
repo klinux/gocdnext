@@ -4,6 +4,19 @@
 
 set -euo pipefail
 
+# --- Pinned supply-chain images ---------------------------------------------
+# Both run with elevated trust: binfmt installs kernel handlers under a
+# `docker run --privileged`, and the BuildKit image IS the builder that
+# resolves + pushes every layer. docker buildx's own defaults for both are
+# FLOATING tags (tonistiigi/binfmt:latest, moby/buildkit:buildx-stable-1) — a
+# cold run weeks apart can boot a different privileged image / builder with no
+# record in the job log. Pin both by digest so the privileged + build surface
+# is reproducible and auditable, and a future upstream regression can't
+# silently change every gocdnext build at once. Operators override the builder
+# via PLUGIN_BUILDKIT_IMAGE; binfmt is internal. Bump = new digest here.
+BINFMT_IMAGE="tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+DEFAULT_BUILDKIT_IMAGE="moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe"
+
 # trim removes leading + trailing whitespace (including the trailing
 # newline YAML's `|` block-scalar leaves on every value). Buildx
 # parses `--platform "linux/amd64\n"` as a single platform whose
@@ -110,8 +123,8 @@ for p in "${_platforms[@]}"; do
     fi
 done
 if [ "${need_qemu}" = "1" ]; then
-    echo "==> registering QEMU handlers (binfmt) — cross-arch target"
-    docker run --privileged --rm tonistiigi/binfmt --install all >/dev/null
+    echo "==> registering QEMU handlers (binfmt ${BINFMT_IMAGE##*@}) — cross-arch target"
+    docker run --privileged --rm "${BINFMT_IMAGE}" --install all >/dev/null
 else
     echo "==> native build (${host_platform}), skipping QEMU"
 fi
@@ -152,23 +165,25 @@ buildx_create_args=(--name "${BUILDER}" --use)
 # When the operator sets PLUGIN_BUILDKIT_IMAGE explicitly we honour
 # it as-is. Otherwise, the default fork below picks a sensible
 # image for the cache backend in play.
+# Operator override wins as-is; otherwise the pinned default (top of file).
+# buildkit_image is never empty after this, so `--driver-opt image=` is always
+# set below and buildx never falls back to its floating buildx-stable-1 builder.
 buildkit_image="$(trim "${PLUGIN_BUILDKIT_IMAGE:-}")"
+if [ -z "${buildkit_image}" ]; then
+    buildkit_image="${DEFAULT_BUILDKIT_IMAGE}"
+fi
 if [ "${needs_no_checksum}" = "1" ]; then
+    # Non-AWS S3 endpoint (GCS/MinIO/R2): recent aws-sdk-go-v2 sends
+    # x-amz-checksum-* headers on PutObject by default; those endpoints don't
+    # recognise them, fold them into the v4 signature, and reject the call as
+    # SignatureDoesNotMatch (surfaces as a generic 403). The SDK reads these
+    # env vars to opt out — we set them on the BuildKit container so the fix
+    # lands inside BuildKit itself. The pinned default buildkit above ships an
+    # SDK new enough to honour this (the old floating buildx-stable-1 did not,
+    # which is why this used to force its own pin here).
     echo "==> buildkit: disabling AWS SDK auto-checksum (non-AWS S3 endpoint detected)"
     buildx_create_args+=(--driver-opt "env.AWS_REQUEST_CHECKSUM_CALCULATION=when_required")
     buildx_create_args+=(--driver-opt "env.AWS_RESPONSE_CHECKSUM_VALIDATION=when_required")
-    if [ -z "${buildkit_image}" ]; then
-        # `moby/buildkit:buildx-stable-1` (v0.18.x) ships an
-        # aws-sdk-go-v2 < v1.30 that doesn't read
-        # AWS_REQUEST_CHECKSUM_CALCULATION — setting the env on the
-        # container is a no-op there. Pinning v0.20.2 (Feb 2025)
-        # gets a modern SDK that honours the opt-out. The version
-        # is intentionally explicit (not `latest`) so a future
-        # upstream regression can't silently break GCS/MinIO/R2
-        # cache for every gocdnext install at once.
-        buildkit_image="moby/buildkit:v0.20.2"
-        echo "==> buildkit: pinning ${buildkit_image} for a modern aws-sdk-go-v2"
-    fi
 fi
 
 # AWS credentials live in the PLUGIN container's env (injected by

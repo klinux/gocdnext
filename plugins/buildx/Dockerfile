@@ -26,14 +26,15 @@
 #   PLUGIN_PASSWORD   (optional)  piped from secrets:.
 #   PLUGIN_BUILDKIT_IMAGE (optional)  override the BuildKit container
 #                                 image used by `docker buildx
-#                                 create`. Defaults to the docker
-#                                 default (`moby/buildkit:buildx-stable-1`)
-#                                 EXCEPT when a non-AWS S3 cache
-#                                 backend is selected — in that case
-#                                 the plugin auto-pins moby/buildkit
-#                                 to a version whose aws-sdk-go-v2
-#                                 honours the auto-checksum opt-out
-#                                 env vars (see Layer cache below).
+#                                 create`. Defaults to a version+digest
+#                                 PINNED moby/buildkit in entrypoint.sh
+#                                 (NOT docker's floating
+#                                 `buildx-stable-1`) so the builder is
+#                                 reproducible and auditable. The pinned
+#                                 default is new enough to honour the
+#                                 aws-sdk-go-v2 auto-checksum opt-out the
+#                                 non-AWS S3 cache path needs (see Layer
+#                                 cache below).
 #
 # Layer cache (PLUGIN_CACHE shorthand + env from runner profile):
 #   PLUGIN_CACHE                  registry | inline | bucket | none
@@ -53,9 +54,20 @@
 # Requires `docker: true` on the job. The bundled image ships
 # buildx + binfmt setup so the job can `exec docker buildx`
 # against the daemon the agent wired in.
-FROM docker:24-cli
+# Base pinned by version+digest. docker:24-cli still shipped fixable OS
+# CRITICALs (Trivy --ignore-unfixed); 29.9.3-cli + `apk upgrade` clears them
+# (0 fixable CRITICAL; residual HIGH classified in CHANGELOG). The 29 CLI +
+# docker-cli-buildx drive the runtime's default docker:24-dind daemon fine
+# (proven: a real multi-arch amd64+arm64 build + registry cache round-trip in
+# smoke_test.sh). buildx spawns a standalone BuildKit builder, pinned by digest
+# in entrypoint.sh (not docker's floating buildx-stable-1).
+#
+# NOTE: `apk upgrade` pulls from Alpine's MUTABLE repos — the FROM digest pins
+# the base layer, not the upgraded package set. Reproducible base + current
+# OS security patches.
+FROM docker:29.9.3-cli@sha256:2357639ad1ea7d0194134bf3292622fd4e562483966ed674e5d7c945b5f3b28d
 
-RUN apk add --no-cache bash docker-cli-buildx
+RUN apk upgrade --no-cache && apk add --no-cache bash docker-cli-buildx
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-buildx
 RUN chmod +x /usr/local/bin/gocdnext-buildx
