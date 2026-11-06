@@ -57,6 +57,12 @@ plug -e NETLIFY_AUTH_TOKEN=x -e PLUGIN_SITE_ID=x
 plug -e PLUGIN_DIR=site -e PLUGIN_SITE_ID=nonexistent-smoke-site -e NETLIFY_AUTH_TOKEN=invalid-throwaway-token
 [ "$RC" -ne 0 ] || die "a deploy with throwaway creds should fail (auth), not succeed" "$OUT"
 grep -q "==> netlify deploy" <<<"$OUT" || die "the entrypoint banner did not run — validation failed before the CLI" "$OUT"
+# Anchor on the stable auth-failure signature, not just "any non-zero" — a
+# network/TLS/init regression must NOT pass as a reached-the-API success. The
+# CLI is version-pinned, so if this message ever changes the smoke should fail
+# and force a review.
+grep -qiE "Unauthorized: could not retrieve project" <<<"$OUT" \
+  || die "deploy did not reach the expected auth/API failure (pinned CLI signature changed?)" "$OUT"
 if grep -qiE "MODULE_NOT_FOUND|ENOENT|local-functions-proxy|cannot find module" <<<"$OUT"; then
   die "deploy path hit a broken-module/missing-binary error — the removal broke it" "$OUT"
 fi
