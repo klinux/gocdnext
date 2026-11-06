@@ -19,7 +19,13 @@
 #   PLUGIN_CREDENTIALS_JSON (optional)  raw JSON body of a SA key.
 #                                       Populate via secrets:.
 #   PLUGIN_WORKING_DIR      (optional)  cd here first. Default ".".
-FROM google/cloud-sdk:502.0.0-alpine
+#
+# Pinned to an EXACT version + digest (not a floating tag) so a rebuild is
+# reproducible and a CVE bump is a reviewable one-line change. 592.0.0 is the
+# current release; the previous 502.0.0 pin carried 2 fixable CRITICAL that the
+# bump clears (Trivy --ignore-unfixed: 0 CRITICAL). Runs as root (uid 0) — the
+# upstream image's default, unchanged. Refresh version + digest together.
+FROM google/cloud-sdk:592.0.0-alpine@sha256:3257dcd48e8a2489a48176a70d32d39e5e1deb6bb8bac3c8440b1f895634c0b7
 
 RUN apk add --no-cache bash
 
