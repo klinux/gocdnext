@@ -30,9 +30,9 @@
 #                                    in the log.
 #   PLUGIN_PUSH          (optional)  "true"/"false". Defaults to
 #                                    "true". When false, kaniko
-#                                    builds into an in-memory
-#                                    tarball and exits — useful
-#                                    on PR previews.
+#                                    builds the image WITHOUT
+#                                    publishing it — useful on PR
+#                                    previews.
 #
 # AUTHORITY CHANGE: GoogleContainerTools/kaniko was archived (2025-06) and its
 # last release ships Go stdlib + grpc CRITICALs with no future fix. We move to
@@ -42,11 +42,9 @@
 # whose only shell is /busybox/sh (no bash); the entrypoint targets it.
 FROM ghcr.io/osscontainertools/kaniko:v1.29.0-debug@sha256:350929376b8a69afb1d8b362086c809e4ef6799fa1bcb317c2806ae1447b3845
 
-# The fork image has NO /tmp, but the entrypoint writes /tmp/kaniko-build-args —
-# create it world-writable+sticky (1777, a normal tmpdir) so build-arg handling
-# works. /kaniko/executor and /busybox/sh are preserved by the fork.
-RUN ["/busybox/sh","-c","mkdir -p /tmp && chmod 1777 /tmp"]
-
+# /kaniko/executor and /busybox/sh are preserved by the fork. The entrypoint
+# builds its argv entirely in-shell (no temp file), so no writable /tmp is
+# needed.
 COPY entrypoint.sh /kaniko/gocdnext-kaniko
 RUN ["/busybox/sh","-c","chmod +x /kaniko/gocdnext-kaniko"]
 

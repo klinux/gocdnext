@@ -73,14 +73,16 @@ convention that minor bumps may carry breaking changes until 1.0).
   `entrypoint_test.sh`.
 - **kaniko plugin → community fork `osscontainertools/kaniko` v1.29.0** (was
   `GoogleContainerTools/kaniko` v1.23.2), pinned by version + digest. **Authority
-  change:** the original kaniko was archived (2025-06) and its last release
-  shipped Go stdlib + grpc CRITICALs with **no future fix**; the maintained fork
-  is active and ships public cosign-signed images. Trivy `--ignore-unfixed`:
-  **0 CRITICAL / 0 HIGH** (was 4 CRITICAL). The fork image has no `/tmp`, so the
-  Dockerfile creates it (`1777`) for the build-args path; `/kaniko/executor` and
-  `/busybox/sh` are preserved, wrapper inputs unchanged (`@v1`; image / dockerfile
-  / context / build-args / cache / push, with registry creds written to
-  `/kaniko/.docker/config.json`, off argv). **Breaking:** v1.29 **invalidates
+  change:** the original kaniko was archived (2025-06) and even its latest
+  release (v1.24.0) carries Go stdlib + grpc CRITICALs with **no future fix**;
+  the maintained fork is active and ships public cosign-signed images. Trivy
+  `--ignore-unfixed`: **0 CRITICAL / 0 HIGH** (was 4 CRITICAL). `/kaniko/executor`
+  and `/busybox/sh` are preserved, wrapper inputs unchanged (`@v1`; image /
+  dockerfile / context / build-args / cache / push, with registry creds written
+  to a `0600` `/kaniko/.docker/config.json`, off argv). Also fixed on the way:
+  the `cache-repo` now strips the image tag/digest (kaniko had been silently
+  skipping caching), build-arg values keep embedded spaces, and the config file
+  is locked to the owner. **Breaking:** v1.29 **invalidates
   pre-existing layer caches on the first build** and changes cache / auth / image-
   format semantics — review the [v1.29.0 release notes](https://github.com/osscontainertools/kaniko/releases/tag/v1.29.0)
   before upgrading a cache-heavy pipeline. New `smoke_test.sh` (real build against
