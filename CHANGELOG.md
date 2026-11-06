@@ -55,6 +55,22 @@ convention that minor bumps may carry breaking changes until 1.0).
   findings; pin `PLUGIN_TOOLCHAIN` to hold a version. New `smoke_test.sh` (real
   toolchain: build + clippy-clean + fmt-check on a crate, and clippy actually
   failing `-D warnings` on a lint) + `entrypoint_test.sh`.
+- **netlify plugin → netlify-cli 27.16.2 on Node 24** (was cli 17 / node 22),
+  pinned by exact patch + digest. CVE bump: the shipped `:v1` carried 9 fixable
+  CRITICAL; the bump plus **removing the bundled `@netlify/local-functions-proxy`
+  executable** brings Trivy `--ignore-unfixed` to **0 CRITICAL** (6 residual HIGH,
+  all netlify-cli npm transitive deps — upstream to bump). That binary is a
+  `netlify dev` local-emulation tool this **deploy-only** plugin never invokes; it
+  carried old Go-stdlib CVEs with no upstream fix (27.16.2 is the latest CLI). The
+  image runs `netlify deploy --no-build` exclusively — **`netlify dev` / local
+  function emulation are NOT supported**. The build fails if the proxy binary
+  isn't found (so a layout change can't silently skip the hardening) and verifies
+  none remain; the JS wrapper is kept. Wrapper inputs unchanged (`@v1`; dir /
+  site-id / prod / alias, with the token + site id on the env, off argv). **The
+  CLI jump 17 → 27 is a major-version change and may be breaking.** New
+  `smoke_test.sh` (real CLI: binary-removed, version, `deploy --help` flags, and a
+  throwaway-cred deploy reaching an auth failure with no missing-module error) +
+  `entrypoint_test.sh`.
 
 ### Fixed
 
