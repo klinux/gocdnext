@@ -56,18 +56,23 @@
 # against the daemon the agent wired in.
 # Base pinned by version+digest. docker:24-cli still shipped fixable OS
 # CRITICALs (Trivy --ignore-unfixed); 29.9.3-cli + `apk upgrade` clears them
-# (0 fixable CRITICAL; residual HIGH classified in CHANGELOG). The 29 CLI +
-# docker-cli-buildx drive the runtime's default docker:24-dind daemon fine
-# (proven: a real multi-arch amd64+arm64 build + registry cache round-trip in
-# smoke_test.sh). buildx spawns a standalone BuildKit builder, pinned by digest
-# in entrypoint.sh (not docker's floating buildx-stable-1).
+# (0 fixable CRITICAL; residual HIGH classified in CHANGELOG). The 29 CLI drives
+# the runtime's default docker:24-dind daemon fine (proven: a real multi-arch
+# amd64+arm64 build + registry cache round-trip in smoke_test.sh). buildx spawns
+# a standalone BuildKit builder, pinned by digest in entrypoint.sh (not docker's
+# floating buildx-stable-1).
+#
+# The buildx CLI plugin itself is already BUNDLED in this base
+# (/usr/local/libexec/docker/cli-plugins/docker-buildx, v0.38.2) — the one
+# `docker buildx` actually resolves to — so we do NOT `apk add docker-cli-buildx`
+# (an older, ~71 MiB, never-executed duplicate in /usr/libexec).
 #
 # NOTE: `apk upgrade` pulls from Alpine's MUTABLE repos — the FROM digest pins
 # the base layer, not the upgraded package set. Reproducible base + current
 # OS security patches.
 FROM docker:29.9.3-cli@sha256:2357639ad1ea7d0194134bf3292622fd4e562483966ed674e5d7c945b5f3b28d
 
-RUN apk upgrade --no-cache && apk add --no-cache bash docker-cli-buildx
+RUN apk upgrade --no-cache && apk add --no-cache bash
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-buildx
 RUN chmod +x /usr/local/bin/gocdnext-buildx
