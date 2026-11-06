@@ -71,6 +71,22 @@ convention that minor bumps may carry breaking changes until 1.0).
   `smoke_test.sh` (real CLI: binary-removed, version, `deploy --help` flags, and a
   throwaway-cred deploy reaching an auth failure with no missing-module error) +
   `entrypoint_test.sh`.
+- **kaniko plugin → community fork `osscontainertools/kaniko` v1.29.0** (was
+  `GoogleContainerTools/kaniko` v1.23.2), pinned by version + digest. **Authority
+  change:** the original kaniko was archived (2025-06) and its last release
+  shipped Go stdlib + grpc CRITICALs with **no future fix**; the maintained fork
+  is active and ships public cosign-signed images. Trivy `--ignore-unfixed`:
+  **0 CRITICAL / 0 HIGH** (was 4 CRITICAL). The fork image has no `/tmp`, so the
+  Dockerfile creates it (`1777`) for the build-args path; `/kaniko/executor` and
+  `/busybox/sh` are preserved, wrapper inputs unchanged (`@v1`; image / dockerfile
+  / context / build-args / cache / push, with registry creds written to
+  `/kaniko/.docker/config.json`, off argv). **Breaking:** v1.29 **invalidates
+  pre-existing layer caches on the first build** and changes cache / auth / image-
+  format semantics — review the [v1.29.0 release notes](https://github.com/osscontainertools/kaniko/releases/tag/v1.29.0)
+  before upgrading a cache-heavy pipeline. New `smoke_test.sh` (real build against
+  a throwaway TLS registry: `--no-push` with a build-arg, push + read-back,
+  `cache=true` push + second build, plus a mock-executor pass for argv + the
+  credential config.json with the password off argv/log).
 
 ### Fixed
 

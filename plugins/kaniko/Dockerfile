@@ -34,13 +34,20 @@
 #                                    tarball and exits — useful
 #                                    on PR previews.
 #
-# Kaniko runs in a distroless container without a shell; we layer
-# a BusyBox shell in so the entrypoint can do its env plumbing.
-FROM gcr.io/kaniko-project/executor:v1.23.2-debug
+# AUTHORITY CHANGE: GoogleContainerTools/kaniko was archived (2025-06) and its
+# last release ships Go stdlib + grpc CRITICALs with no future fix. We move to
+# the maintained community fork `osscontainertools/kaniko` — active, publishing
+# public cosign-signed images — pinned to v1.29.0-debug by digest. Trivy
+# --ignore-unfixed on this image: 0 CRITICAL / 0 HIGH. Still a distroless image
+# whose only shell is /busybox/sh (no bash); the entrypoint targets it.
+FROM ghcr.io/osscontainertools/kaniko:v1.29.0-debug@sha256:350929376b8a69afb1d8b362086c809e4ef6799fa1bcb317c2806ae1447b3845
 
-# The debug image has /busybox/sh but no `bash`; the entrypoint
-# targets /busybox/sh explicitly.
+# The fork image has NO /tmp, but the entrypoint writes /tmp/kaniko-build-args —
+# create it world-writable+sticky (1777, a normal tmpdir) so build-arg handling
+# works. /kaniko/executor and /busybox/sh are preserved by the fork.
+RUN ["/busybox/sh","-c","mkdir -p /tmp && chmod 1777 /tmp"]
+
 COPY entrypoint.sh /kaniko/gocdnext-kaniko
-RUN chmod +x /kaniko/gocdnext-kaniko
+RUN ["/busybox/sh","-c","chmod +x /kaniko/gocdnext-kaniko"]
 
 ENTRYPOINT ["/kaniko/gocdnext-kaniko"]
