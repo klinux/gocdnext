@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Changed
+
+- **flyway plugin → Flyway 13** (was 11), pinned by exact patch + digest
+  (`flyway/flyway:13.12.1-alpine@sha256:6af6ece…`). CVE-driven: the latest 11.x
+  (11.20.3) still shipped a fixable CRITICAL in its bundled
+  `io.netty:netty-handler` 4.2.9 (CVE-2026-75595) that no 11.x image clears;
+  13.12.1 bundles the patched netty 4.2.19 and scans **0 fixable CRITICAL**. The
+  major bump is contract-safe — Flyway 13 reads, validates and continues a
+  schema-history table written by Flyway 11 with no baseline reset (proven by an
+  upgrade spike + a new real-Postgres `smoke_test.sh`). Plugin tag stays `@v1`;
+  inputs, env-based credentials and the Postgres lock/statement-timeout behavior
+  are unchanged.
+
 ### Fixed
 
 - **Plugin catalog audit.** Coveralls now uses the checksum-pinned official
