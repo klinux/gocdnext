@@ -21,7 +21,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-docker:smoke-$$"
 NET="docker-smoke-$$"; DIND="docker-smoke-dind-$$"; REG="docker-smoke-reg-$$"
-# Same digest the gocdnext k8s runtime pins for the DinD sidecar.
+# A pinned representative of the default docker:24 daemon. The k8s runtime wires
+# the floating tag `docker:24-dind` (agent/internal/engine/kubernetes.go); we pin
+# a specific 24 patch by digest here so the smoke is reproducible.
 DIND_IMAGE="docker:24.0.9-dind@sha256:9b17a9f25adf17b88d0a013b4f00160754adf4b07ccbe9986664a49886c2c98e"
 W="$(mktemp -d)"
 cleanup() {

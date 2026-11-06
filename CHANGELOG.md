@@ -105,7 +105,10 @@ convention that minor bumps may carry breaking changes until 1.0).
   proven end to end (the smokes run the 29 CLI against a real `docker:24.0.9`
   DinD, negotiating API 1.43). `docker build` on the 29 CLI uses the daemon's
   integrated BuildKit, so the docker plugin needs no separate buildx binary for
-  single-arch builds. **Note:** `apk upgrade` pulls from Alpine's mutable repos,
+  single-arch builds. The buildx plugin's `docker buildx` CLI plugin is already
+  **bundled** in the 29.9.3-cli base (v0.38.2), so we drop the previously-added
+  `docker-cli-buildx` apk package — an older, ~71 MiB, never-executed duplicate.
+  **Note:** `apk upgrade` pulls from Alpine's mutable repos,
   so the OS-package set is security-patched at build time, not byte-identical
   build-to-build; the FROM digest pins only the base layer.
   **buildx supply-chain hardening:** the QEMU `binfmt` installer (run

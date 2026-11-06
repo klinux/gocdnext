@@ -23,6 +23,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-buildx:smoke-$$"
 NET="buildx-smoke-$$"; DIND="buildx-smoke-dind-$$"
+# A pinned representative of the default docker:24 daemon (the k8s runtime wires
+# the floating tag docker:24-dind in agent/internal/engine/kubernetes.go).
 DIND_IMAGE="docker:24.0.9-dind@sha256:9b17a9f25adf17b88d0a013b4f00160754adf4b07ccbe9986664a49886c2c98e"
 # Must match DEFAULT_BUILDKIT_IMAGE in entrypoint.sh — we FROM it so the real
 # builder runs the pinned BuildKit, only with our test CA appended.
