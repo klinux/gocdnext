@@ -14,6 +14,7 @@ trap 'rm -rf "$TMP"' EXIT
 cat >"$TMP/gcloud" <<'EOF'
 #!/usr/bin/env bash
 echo "ARGS=$*" >> "$LOG"
+echo "PWD=$(pwd)" >> "$LOG"
 case "$*" in *"private_key"*|*"BEGIN "*) echo "LEAK=yes" >> "$LOG";; esac
 exit 0
 EOF
@@ -48,9 +49,11 @@ grep -qE "^ARGS=auth activate-service-account --key-file=.+/gcp-sa\.json$" "$TMP
 grep -q "LEAK=yes" "$TMP/4.log" && { echo "FAIL: raw SA key material reached gcloud argv"; cat "$TMP/4.log"; fails=$((fails+1)); }
 grep -qx "ARGS=config list" "$TMP/4.log" || { echo "FAIL: command should still run after activation"; cat "$TMP/4.log"; fails=$((fails+1)); }
 
-# 5. PLUGIN_WORKING_DIR is honored (entrypoint cds there before running).
+# 5. PLUGIN_WORKING_DIR is honored — the entrypoint cds there, so gcloud runs
+#    with that exact working directory (assert the real PWD, not just exit 0).
 mkdir -p "$TMP/wd"
 rc=$(run "$TMP/5.log" PLUGIN_COMMAND="version" PLUGIN_WORKING_DIR="$TMP/wd")
 [ "$rc" = 0 ] || { echo "FAIL: working-dir should exit 0 (got $rc)"; cat "$TMP/5.log.out"; fails=$((fails+1)); }
+grep -qx "PWD=$TMP/wd" "$TMP/5.log" || { echo "FAIL: gcloud did not run in PLUGIN_WORKING_DIR ($TMP/wd)"; cat "$TMP/5.log"; fails=$((fails+1)); }
 
 if [ "$fails" -eq 0 ]; then echo "PASS: gcloud entrypoint"; else echo "FAILED: $fails check(s)"; exit 1; fi

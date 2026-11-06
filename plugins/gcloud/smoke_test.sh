@@ -32,20 +32,30 @@ plug() {
 # 1. binary present + version runs through the plugin.
 plug -e PLUGIN_COMMAND=version
 [ "$RC" -eq 0 ] || die "gcloud version should run (rc=$RC)" "$OUT"
-printf '%s' "$OUT" | grep -qiE "Google Cloud SDK [0-9]+" || die "no version banner" "$OUT"
+grep -qiE "Google Cloud SDK [0-9]+" <<<"$OUT" || die "no version banner" "$OUT"
 
 # 2. PLUGIN_COMMAND required.
 plug
 [ "$RC" -eq 2 ] || die "missing PLUGIN_COMMAND should exit 2 (rc=$RC)" "$OUT"
 
-# 3. an offline subcommand runs through the word-split exec path.
-plug -e PLUGIN_COMMAND="config list"
-[ "$RC" -eq 0 ] || die "offline 'config list' should succeed (rc=$RC)" "$OUT"
+# 3. the subcommands the plugin documents still exist and expose their flags in
+#    592 (offline `--help` through the word-split exec path). A removed command or
+#    renamed flag — the real risk of the 502→592 major jump — fails here.
+#    PAGER=cat so gcloud's full --help doesn't invoke a pager (non-zero without a TTY).
+help_has() { # <command words> <expected flag>
+  plug -e PAGER=cat -e PLUGIN_COMMAND="$1 --help"
+  [ "$RC" -eq 0 ] || die "'$1 --help' should run offline (rc=$RC)" "$OUT"
+  grep -q -- "$2" <<<"$OUT" || die "'$1 --help' no longer documents '$2'" "$OUT"
+}
+help_has "run deploy" "--image"
+help_has "builds submit" "--tag"
+help_has "container clusters get-credentials" "--region"
+help_has "storage cp" "--recursive"
 
-# 4. --project passthrough (global flag accepted by config list).
-plug -e PLUGIN_COMMAND="config list" -e PLUGIN_PROJECT=demo-project
-[ "$RC" -eq 0 ] || die "'config list' with --project should succeed (rc=$RC)" "$OUT"
-printf '%s' "$OUT" | grep -q -- "--project demo-project" || die "project not passed through on the banner" "$OUT"
+# 4. --project passthrough shows on the exec banner.
+plug -e PAGER=cat -e PLUGIN_COMMAND="run deploy --help" -e PLUGIN_PROJECT=demo-project
+[ "$RC" -eq 0 ] || die "command with --project should run (rc=$RC)" "$OUT"
+grep -q -- "--project demo-project" <<<"$OUT" || die "project not passed through on the banner" "$OUT"
 
 # 5. service-account auth path on the real binary. A throwaway key can't truly
 #    activate — gcloud refreshes the token against Google — so this asserts the
@@ -61,9 +71,9 @@ SA_JSON="$(jq -nc --arg k "$KEY" '{
 }')"
 plug -e PLUGIN_COMMAND="auth list" -e PLUGIN_CREDENTIALS_JSON="$SA_JSON"
 [ "$RC" -ne 0 ] || die "a throwaway SA key must not spuriously activate — expected fail-closed" "$OUT"
-printf '%s' "$OUT" | grep -q "activating service account from secrets" \
+grep -q "activating service account from secrets" <<<"$OUT" \
   || die "activation step did not run" "$OUT"
-if printf '%s' "$OUT" | grep -qE "BEGIN (RSA )?PRIVATE KEY|private_key"; then
+if grep -qE "BEGIN (RSA )?PRIVATE KEY|private_key" <<<"$OUT"; then
   die "SA key body leaked into output" "$OUT"
 fi
 
