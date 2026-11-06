@@ -1005,7 +1005,7 @@
 <p>Attach an SPDX SBOM as an attestation on the image.</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="yaml"><code><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">uses</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">ghcr.io/klinux/gocdnext-plugin-cosign@v1</span></div></div><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">with</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">image</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">ghcr.io/org/app@sha256:${IMAGE_SHA}</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">action</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">attest</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">predicate</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">sbom.spdx.json</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">predicate-type</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">spdxjson</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1with:  image: ghcr.io/org/app@sha256:${IMAGE_SHA}  action: attest  predicate: sbom.spdx.json  predicate-type: spdxjson"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h2"><h2 id="coveralls">coveralls</h2><a class="sl-anchor-link" href="#coveralls"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “coveralls”</span></a></div>
-<p><em>quality</em> — Upload a coverage report to Coveralls. Accepts LCOV, JSON, simplecov, or Cobertura XML — the common interchange formats tools export to. Supports Coveralls’ parallel-build flow: flag each slice with <code dir="auto">parallel: "true"</code> and make the last step call <code dir="auto">finalise: "true"</code> to close the build.</p>
+<p><em>quality</em> — Upload a coverage report with Coveralls’ official Universal Coverage Reporter. Accepts LCOV, Coveralls JSON, SimpleCov, or Cobertura XML. Supports Coveralls’ parallel-build flow: flag each slice with <code dir="auto">parallel: "true"</code> and make the last step call <code dir="auto">finalise: "true"</code> to close the build.</p>
 <p>Image: <code dir="auto">ghcr.io/klinux/gocdnext-plugin-coveralls:v1</code></p>
 <p><strong>Inputs</strong></p>
 <table>
@@ -1034,7 +1034,7 @@
 <td><code dir="auto">format</code></td>
 <td>no</td>
 <td><code dir="auto">lcov</code></td>
-<td>lcov | json | simplecov | cobertura</td>
+<td>lcov | json | simplecov | cobertura. <code dir="auto">json</code> means the Coveralls JSON interchange format.</td>
 </tr>
 <tr>
 <td><code dir="auto">working-dir</code></td>
@@ -1052,7 +1052,7 @@
 <td><code dir="auto">finalise</code></td>
 <td>no</td>
 <td><code dir="auto">false</code></td>
-<td>Fire the “build done” webhook instead of an upload. Call once AFTER every parallel slice has uploaded.</td>
+<td>Run the official <code dir="auto">coveralls done</code> command instead of an upload. No coverage file is needed. Call once AFTER every parallel slice has uploaded.</td>
 </tr>
 <tr>
 <td><code dir="auto">base-url</code></td>
@@ -4813,7 +4813,7 @@
 <td><code dir="auto">version</code></td>
 <td>no</td>
 <td><code dir="auto">latest</code></td>
-<td>Terraform version. “latest” uses the bundled 1.9.8; pin to a specific version when the module demands determinism.</td>
+<td>Terraform version. “latest” uses the bundled 1.17.1; pin to an exact stable version when the module demands determinism. Exact versions are downloaded by tfenv and verified against HashiCorp’s published SHA-256 list before execution.</td>
 </tr>
 <tr>
 <td><code dir="auto">var-file</code></td>
