@@ -36,6 +36,25 @@ convention that minor bumps may carry breaking changes until 1.0).
   exist and expose their documented flags on 592. New `smoke_test.sh` (real
   binary: version, those documented `--help` surfaces, `--project`, fail-closed
   SA activation with no key leak) + `entrypoint_test.sh`.
+- **rust plugin → Rust 1.99.1** (was 1.83), pinned by exact version + digest
+  (`rust:1.99.1-slim@sha256:7eab7ce…`) with an `apt-get upgrade`. CVE bump: the
+  stale slim base carried **10 fixable CRITICAL + 900+ HIGH** OS packages; the
+  bump + upgrade clears them (Trivy `--ignore-unfixed`: **0 CRITICAL / 0 HIGH**).
+  Wrapper inputs unchanged (tag `@v1`; `PLUGIN_COMMAND` word-split, `TOOLCHAIN`,
+  `RUSTFLAGS`, cacheable `CARGO_HOME`, `working-dir`); runs as root. Also hardened
+  the entrypoint: it now logs **only the cargo subcommand** and runs the args as a
+  quoted array (no shell glob expansion), and `cargo publish` takes the crates.io
+  token from `CARGO_REGISTRY_TOKEN` in the environment (the example no longer puts
+  `--token` in `command:`) — keeping the token off both the log and the process
+  argv. The pinned digest fixes the base, but `apt-get upgrade` applies Debian
+  security updates at build time, so the OS-package set is security-patched, not
+  byte-identical build-to-build. **Toolchain
+  caveat:** this is a large jump (1.83 → 1.99) — clippy and rustfmt gain lints and
+  formatting rules across releases, so a pipeline on the default `stable`
+  toolchain running `clippy -- -D warnings` or `fmt --check` may surface new
+  findings; pin `PLUGIN_TOOLCHAIN` to hold a version. New `smoke_test.sh` (real
+  toolchain: build + clippy-clean + fmt-check on a crate, and clippy actually
+  failing `-D warnings` on a lint) + `entrypoint_test.sh`.
 
 ### Fixed
 

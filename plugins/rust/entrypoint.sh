@@ -40,8 +40,12 @@ if [ -n "${PLUGIN_RUSTFLAGS:-}" ]; then
     echo "==> RUSTFLAGS=${RUSTFLAGS}"
 fi
 
-# shellcheck disable=SC2086
-# Intentional word-splitting: users write "test --workspace" and
-# expect cargo to see two args. Quoting would break that.
-echo "==> cargo ${PLUGIN_COMMAND}"
-exec cargo ${PLUGIN_COMMAND}
+# Split into an array (word-split on whitespace, but NO shell glob expansion)
+# and exec quoted. Log ONLY the subcommand: PLUGIN_COMMAND args can carry a
+# secret (e.g. a stray `cargo publish --token <TOKEN>`), so the full command must
+# never reach the log. Credentials belong in the environment — cargo reads
+# CARGO_REGISTRY_TOKEN natively, so the documented `command: publish` keeps the
+# token off both the log and the process argv.
+read -r -a cargo_args <<<"${PLUGIN_COMMAND}"
+echo "==> cargo ${cargo_args[0]:-}"
+exec cargo "${cargo_args[@]}"

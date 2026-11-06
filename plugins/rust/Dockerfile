@@ -22,9 +22,24 @@
 #                                   command. Useful for "-D warnings"
 #                                   as a global, or "-C target-cpu=..."
 #                                   in a release pipeline.
-FROM rust:1.83-slim
+# The base is pinned to an EXACT version + digest (not the floating 1.83-slim
+# tag) so a CVE bump is a reviewable one-line change. 1.99.1 (was 1.83): the
+# stale slim base carried 10 fixable CRITICAL + 900+ HIGH OS packages; the
+# version bump + `apt-get upgrade` clears them (Trivy --ignore-unfixed: 0
+# CRITICAL / 0 HIGH). NOTE: `apt-get upgrade` pulls from Debian's mutable
+# security repos, so this is "pinned base + security patch at build time", not a
+# byte-identical reproducible rebuild — the OS-package set can differ between
+# builds. Runs as root (unchanged).
+#
+# NOTE: this is a large toolchain jump (1.83 → 1.99). clippy and rustfmt gain
+# lints and formatting rules across releases, so a pipeline on the default
+# `stable` toolchain running `clippy -- -D warnings` or `fmt --check` may surface
+# new findings after this bump — pin `PLUGIN_TOOLCHAIN` (e.g. "1.83.0") to hold a
+# version. The wrapper inputs are unchanged.
+FROM rust:1.99.1-slim@sha256:7eab7ce19273ce785e0ca7578bdf7bc1fcbae621775a8197379a04c9f6e03cd5
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends bash git ca-certificates pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
