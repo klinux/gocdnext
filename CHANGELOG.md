@@ -20,6 +20,14 @@ convention that minor bumps may carry breaking changes until 1.0).
   upgrade spike + a new real-Postgres `smoke_test.sh`). Plugin tag stays `@v1`;
   inputs, env-based credentials and the Postgres lock/statement-timeout behavior
   are unchanged.
+- **gcloud plugin → Cloud SDK 592.0.0** (was 502.0.0), pinned by exact version +
+  digest (`google/cloud-sdk:592.0.0-alpine@sha256:3257dcd…`). CVE bump: clears
+  the 2 fixable CRITICAL the old pin carried (Trivy `--ignore-unfixed`:
+  **0 CRITICAL**). Low-risk — the gcloud command surface is stable; plugin tag
+  stays `@v1`, inputs, the service-account key-file auth (key never on argv) and
+  `--project`/working-dir behavior are unchanged, image still runs as root. New
+  `smoke_test.sh` (real binary: version, offline subcommand, `--project`,
+  fail-closed SA activation with no key leak) + `entrypoint_test.sh`.
 
 ### Fixed
 
