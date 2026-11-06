@@ -8,9 +8,10 @@
 #   DATADOG_API_KEY                via `secrets:` (datadog).
 #   GRAFANA_TOKEN + PLUGIN_GRAFANA_URL  via `secrets:` (grafana).
 #   PLUGIN_API_BASE    (optional)  override for proxies/testing.
-FROM alpine:3.21
+FROM alpine:3.22
 
-RUN apk add --no-cache curl jq
+RUN apk upgrade --no-cache \
+    && apk add --no-cache curl jq
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-deploy-marker
 RUN chmod +x /usr/local/bin/gocdnext-deploy-marker
