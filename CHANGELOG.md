@@ -89,6 +89,45 @@ convention that minor bumps may carry breaking changes until 1.0).
   a throwaway TLS registry: `--no-push` with a build-arg, push + read-back,
   `cache=true` push + second build, plus a mock-executor pass for argv + the
   credential config.json with the password off argv/log).
+- **docker / buildx / docker-push plugins → `docker:29.9.3-cli`** (was
+  `docker:24-cli`), all three pinned by version + digest
+  (`docker:29.9.3-cli@sha256:2357639…`) with an `apk upgrade`. CVE bump: the old
+  `24-cli` base carried **7 fixable OS CRITICAL**; the bump + upgrade clears them
+  (Trivy `--ignore-unfixed`: **0 CRITICAL**). **4 residual fixable HIGH remain on
+  each image, all `gobinary` class** — embedded in the upstream Docker CLI /
+  buildx Go binaries, not Alpine packages, so `apk upgrade` can't touch them:
+  `github.com/moby/go-archive` (CVE-2026-17106, fix 0.3.0) and `golang.org/x/net`
+  html+http2 (CVE-2026-78661 / CVE-2026-78669, fix 0.62.0). They clear only when
+  Docker rebuilds the CLI against the patched modules (29.9.3 is the latest CLI).
+  Wrapper inputs are unchanged (all `@v1`). **CLI jump 24 → 29 (five majors):**
+  Docker 29.0 dropped daemon API < 1.44, but 29.3 restored the minimum to 1.40,
+  so this 29 CLI still drives the runtime's default `docker:24-dind` daemon —
+  proven end to end (the smokes run the 29 CLI against a real `docker:24.0.9`
+  DinD, negotiating API 1.43). `docker build` on the 29 CLI uses the daemon's
+  integrated BuildKit, so the docker plugin needs no separate buildx binary for
+  single-arch builds. **Note:** `apk upgrade` pulls from Alpine's mutable repos,
+  so the OS-package set is security-patched at build time, not byte-identical
+  build-to-build; the FROM digest pins only the base layer.
+  **buildx supply-chain hardening:** the QEMU `binfmt` installer (run
+  `--privileged`) and the default BuildKit builder were docker's **floating**
+  tags (`tonistiigi/binfmt:latest`, `moby/buildkit:buildx-stable-1`) — a cold run
+  weeks apart could boot a different privileged image / builder with no record in
+  the job. Both are now pinned by digest
+  (`tonistiigi/binfmt@sha256:400a4873…`, `moby/buildkit:v0.34.2@sha256:c5f8862f…`);
+  operators still override the builder via `PLUGIN_BUILDKIT_IMAGE`. The pinned
+  buildkit is new enough to honour the aws-sdk-go-v2 auto-checksum opt-out the
+  non-AWS S3 cache path needs, so the old special-case `v0.20.2` pin is gone.
+  New real `smoke_test.sh` for all three against a throwaway `docker:24.0.9`
+  DinD + registry: **docker** proves a (spaced) build-arg reaches the image
+  LABEL, multiple tags build + push, and the registry holds every tag with a
+  config+layers manifest; **buildx** proves a real `linux/amd64,linux/arm64`
+  build pushes a manifest list containing **both** architectures and that
+  `cache: registry` makes the second build `CACHED`; **docker-push** proves a
+  pre-loaded image retags + pushes under every tag as a faithful copy (marker
+  round-trip) and that `PLUGIN_PULL=true` really pulls a registry-only source.
+  New `entrypoint_test.sh` for **docker-push** (required inputs, tag/push per
+  tag, pull gating, no credential leak) and extended **buildx** (binfmt + default
+  buildkit pinned by digest, override honoured).
 
 ### Fixed
 
