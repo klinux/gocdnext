@@ -20,6 +20,22 @@ convention that minor bumps may carry breaking changes until 1.0).
   upgrade spike + a new real-Postgres `smoke_test.sh`). Plugin tag stays `@v1`;
   inputs, env-based credentials and the Postgres lock/statement-timeout behavior
   are unchanged.
+- **gcloud plugin → Cloud SDK 592.0.0** (was 502.0.0), pinned by exact version +
+  digest (`google/cloud-sdk:592.0.0-alpine@sha256:3257dcd…`). CVE bump: clears
+  the 2 fixable CRITICAL the old pin carried (Trivy `--ignore-unfixed`:
+  **0 CRITICAL**). The plugin **wrapper contract is unchanged** (tag stays `@v1`;
+  `PLUGIN_COMMAND` word-split, `--project`, service-account key-file auth with the
+  key never on argv, and `working-dir`), and the image still runs as root — **but
+  the plugin runs arbitrary `gcloud` commands, and the SDK itself had breaking
+  changes across 502→592 that a pipeline may need to migrate**: removed
+  components/commands, changed `gcloud storage rsync` behavior, removal of the
+  Cloud SQL Auth Proxy v1, and (in 592) the Datastore/Firestore emulators now
+  require Java 25. See the [Cloud SDK release notes](https://docs.cloud.google.com/sdk/docs/release-notes).
+  The smoke asserts the subcommands this plugin documents (`run deploy`,
+  `builds submit`, `container clusters get-credentials`, `storage cp`) still
+  exist and expose their documented flags on 592. New `smoke_test.sh` (real
+  binary: version, those documented `--help` surfaces, `--project`, fail-closed
+  SA activation with no key leak) + `entrypoint_test.sh`.
 
 ### Fixed
 
