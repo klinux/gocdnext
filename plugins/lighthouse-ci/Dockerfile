@@ -40,20 +40,42 @@
 # stopped publishing the 0.14.x tag, so we build the runtime
 # ourselves on top of node + Debian Bookworm's chromium package.
 # Both packages ship for amd64 AND arm64, which is what makes
-# the multi-arch matrix land. LHCI is pinned by package version
-# so a CLI bump becomes a deliberate update commit.
-FROM node:20-bookworm-slim
+# the multi-arch matrix land.
+#
+# Base pinned by version+digest. This image bundles Chromium, which processes
+# potentially hostile web content, so a STALE build is a real exposure. The
+# previously published :v1 carried ~280 CRITICAL because the apt layer had been
+# cached at Chromium 149 and never refreshed. Two measures: (1) the base is
+# digest-pinned so the apt layer refreshes exactly when the digest is bumped,
+# and (2) `apt-get upgrade` applies Debian security backports at build time
+# (so OS packages, incl. Chromium, are current — Chromium 156+ now). The weekly
+# Trivy gate catches drift and forces the next bump.
+#
+# NOTE: `apt-get upgrade` pulls from Debian's MUTABLE security repos, so the
+# OS-package set is security-patched at build time, not byte-identical
+# build-to-build; the FROM digest pins only the base layer.
+FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
 
 ENV PUPPETEER_SKIP_DOWNLOAD=1 \
     CHROME_PATH=/usr/bin/chromium
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         bash ca-certificates chromium chromium-sandbox \
         fonts-liberation libnss3 \
     && rm -rf /var/lib/apt/lists/*
 
-ARG LHCI_VERSION=0.14.0
-RUN npm install -g "@lhci/cli@${LHCI_VERSION}" \
+# LHCI pinned by version. Installed into a project dir (not `-g`) so an
+# `overrides` can force the patched node-tar (>= 7.5.19, CVE-2026-59873) that
+# @lhci/cli otherwise pulls transitively at 6.2.1 — the smoke proves LHCI still
+# collects/asserts on the overridden tar. `lhci` is symlinked onto PATH.
+ARG LHCI_VERSION=0.16.0
+WORKDIR /opt/lhci
+RUN printf '{"name":"gocdnext-lhci","private":true,"dependencies":{"@lhci/cli":"%s"},"overrides":{"tar":">=7.5.19"}}' \
+        "${LHCI_VERSION}" > package.json \
+    && npm install --omit=dev --no-audit --no-fund \
+    && ln -sf /opt/lhci/node_modules/.bin/lhci /usr/local/bin/lhci \
     && lhci --version
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-lighthouse-ci
