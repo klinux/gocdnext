@@ -33,9 +33,9 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 
 def _exc(expires: str, cls: str = "upstream-bound", *, targets=None,
          cve="CVE-1", package="pkg", installed="v1", origin="gobinary",
-         trivy_target="bin", approved_at=None) -> dict:
+         trivy_target="bin", approved_at=None, result_class="lang-pkgs") -> dict:
     e = {
-        "targets": targets or ["docker"], "cve": cve,
+        "targets": targets or ["docker"], "cve": cve, "result_class": result_class,
         "package": package, "installed": installed, "origin": origin, "class": cls,
         "justification": "j", "mitigation": "m", "advisory": "https://a",
         "upstream_issue": "https://u", "approved_pr": 1, "owner": "o",
@@ -66,9 +66,10 @@ def _baseline(exceptions: list[dict], unpublished=None) -> list[dict]:
 
 
 def _find(cve: str, sev: str, package: str = "pkg", *, installed="v1",
-          origin="gobinary", trivy_target="bin") -> dict:
+          origin="gobinary", trivy_target="bin", result_class="lang-pkgs") -> dict:
     return {"cve": cve, "package": package, "severity": sev, "fixed": "",
-            "installed": installed, "origin": origin, "trivy_target": trivy_target}
+            "installed": installed, "origin": origin, "trivy_target": trivy_target,
+            "result_class": result_class}
 
 
 def ev(targets, exceptions, *, high_mode="observe", today=TODAY):
@@ -147,17 +148,19 @@ check("full identity match covers", not r["failures"], str(r))
 # 16. OS findings: an OS exception OMITS trivy_target and matches regardless of the
 #     finding's (volatile image+distro) trivy_target. (HIGH, enforce — so a match
 #     means no failure and a miss means a failure.)
-os_exc = _exc(FUTURE, "no-fix", origin="debian", trivy_target=None, cve="CVE-OS", package="zlib1g")
-r = ev({"docker": [_find("CVE-OS", "HIGH", package="zlib1g", origin="debian",
-                         trivy_target="img:v1 (debian 12.12)")]}, [os_exc], high_mode="enforce")
+os_exc = _exc(FUTURE, "no-fix", origin="debian", result_class="os-pkgs",
+              trivy_target=None, cve="CVE-OS", package="zlib1g")
+osf = dict(package="zlib1g", origin="debian", result_class="os-pkgs")
+r = ev({"docker": [_find("CVE-OS", "HIGH", trivy_target="img:v1 (debian 12.12)", **osf)]},
+       [os_exc], high_mode="enforce")
 check("OS exception matches despite volatile trivy_target", not r["failures"], str(r))
 # a DIFFERENT distro-patch string still matches the same OS exception
-r = ev({"docker": [_find("CVE-OS", "HIGH", package="zlib1g", origin="debian",
-                         trivy_target="img:v1 (debian 12.13)")]}, [os_exc], high_mode="enforce")
+r = ev({"docker": [_find("CVE-OS", "HIGH", trivy_target="img:v1 (debian 12.13)", **osf)]},
+       [os_exc], high_mode="enforce")
 check("OS exception matches across distro-patch strings", not r["failures"], str(r))
 # but a different installed version does NOT inherit it
-r = ev({"docker": [_find("CVE-OS", "HIGH", package="zlib1g", installed="v999",
-                         origin="debian", trivy_target="x")]}, [os_exc], high_mode="enforce")
+r = ev({"docker": [_find("CVE-OS", "HIGH", installed="v999", trivy_target="x", **osf)]},
+       [os_exc], high_mode="enforce")
 check("OS exception still version-pinned", any("HIGH not in baseline" in f for f in r["failures"]))
 
 # --- baseline validation (hard FAIL) ---
@@ -198,13 +201,24 @@ expect_invalid("expires before approved_at rejected",
 # approved_at in the FUTURE is rejected (can't park a short window ahead)
 expect_invalid("future approved_at rejected",
                [_exc(FUTURE, "emergency", approved_at="2099-01-01")])
-# trivy_target rules by origin class:
-expect_invalid("non-OS exception without trivy_target rejected",
-               [_exc(FUTURE, origin="gobinary", trivy_target=None)])
-expect_invalid("OS exception WITH trivy_target rejected",
-               [_exc(FUTURE, "no-fix", origin="debian", trivy_target="img (debian 12)")])
-# a valid OS exception (origin debian, no trivy_target) loads
-ok_os = _baseline([_exc(FUTURE, "no-fix", origin="alpine", trivy_target=None)])
+# trivy_target rules by result_class:
+expect_invalid("lang-pkgs exception without trivy_target rejected",
+               [_exc(FUTURE, trivy_target=None)])  # result_class defaults lang-pkgs
+expect_invalid("os-pkgs exception WITH trivy_target rejected",
+               [_exc(FUTURE, "no-fix", origin="debian", result_class="os-pkgs",
+                     trivy_target="img (debian 12)")])
+# presence (not truthiness): an explicit empty/null trivy_target on an OS entry is rejected
+expect_invalid("os-pkgs exception with empty trivy_target rejected",
+               [{**_exc(FUTURE, "no-fix", origin="debian", result_class="os-pkgs",
+                        trivy_target=None), "trivy_target": ""}])
+expect_invalid("os-pkgs exception with null trivy_target rejected",
+               [{**_exc(FUTURE, "no-fix", origin="debian", result_class="os-pkgs",
+                        trivy_target=None), "trivy_target": None}])
+expect_invalid("bad result_class rejected",
+               [_exc(FUTURE, result_class="whatever")])
+# a valid OS exception (os-pkgs, no trivy_target) loads
+ok_os = _baseline([_exc(FUTURE, "no-fix", origin="alpine", result_class="os-pkgs",
+                        trivy_target=None)])
 check("valid OS exception (no trivy_target) loads", len(ok_os) == 1)
 # a 7-day emergency is accepted
 ok7 = _baseline([_exc("2026-11-08", "emergency", approved_at="2026-11-07")])
