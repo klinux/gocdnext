@@ -21,6 +21,9 @@
 # Class windows (expires - approved_at), HARD-enforced by the gate:
 #   emergency (CRITICAL)  <= 7 days    upstream-bound (HIGH) <= 90 days
 #   high-fixable (HIGH)   <= 14 days   no-fix (HIGH)         <= 90 days
+#   os-no-fix (CRITICAL, OS package, NO upstream fix) <= 90 days — os-pkgs only,
+#     needs an explicit `fixed_version: ""` + a `risk_accepted_by` sign-off, and
+#     lapses the instant Trivy reports a fix.
 # Renew by a PR that bumps approved_at + expires with a fresh assessment.
 
 version: 1
