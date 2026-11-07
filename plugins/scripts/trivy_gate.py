@@ -61,15 +61,56 @@ def _parse_date(value: object, where: str) -> dt.date:
         raise BaselineError(f"{where}: bad `expires` {value!r}: {exc}") from None
 
 
-def load_baseline(path: pathlib.Path) -> list[dict]:
-    """Parse + validate the baseline. Returns the list of exception dicts, each
-    with `targets` normalised to a list and `expires` parsed to a date."""
+def _today_utc() -> dt.date:
+    return dt.datetime.now(dt.timezone.utc).date()
+
+
+def _read_raw(path: pathlib.Path) -> dict:
     try:
         raw = yaml.safe_load(path.read_text()) or {}
     except (OSError, yaml.YAMLError) as exc:
         raise BaselineError(f"cannot read/parse {path}: {exc}") from None
     if not isinstance(raw, dict) or raw.get("version") != 1:
         raise BaselineError("baseline must be a mapping with `version: 1`")
+    return raw
+
+
+def load_unpublished_targets(path: pathlib.Path, today: dt.date | None = None) -> set[str]:
+    """Validated set of plugin targets that intentionally have no :v1 yet. Each
+    entry needs target + reason + a non-expired `expires`, so a target can't be
+    silently and permanently dropped from the gate without a dated justification."""
+    today = today or _today_utc()
+    raw = _read_raw(path)
+    items = raw.get("unpublished") or []
+    if not isinstance(items, list):
+        raise BaselineError("`unpublished` must be a list")
+    targets: set[str] = set()
+    for i, item in enumerate(items):
+        where = f"unpublished[{i}]"
+        if not isinstance(item, dict):
+            raise BaselineError(f"{where}: must be a mapping")
+        for f in ("target", "reason", "expires"):
+            if not item.get(f):
+                raise BaselineError(f"{where}: missing required field {f!r}")
+        exp = _parse_date(item["expires"], where)
+        if exp < today:
+            raise BaselineError(
+                f"{where}: unpublished entry for {item['target']!r} expired "
+                f"{item['expires']} — publish it or re-justify")
+        if item["target"] in targets:
+            raise BaselineError(f"{where}: duplicate unpublished target {item['target']!r}")
+        targets.add(item["target"])
+    return targets
+
+
+def load_baseline(path: pathlib.Path, today: dt.date | None = None) -> list[dict]:
+    """Parse + validate the baseline. Returns the list of exception dicts, each
+    with `targets` normalised to a list and `expires`/`approved_at` parsed to
+    dates. Also validates the `unpublished` block. `today` (UTC by default) gates
+    the approved_at-not-in-the-future check and unpublished expiry."""
+    today = today or _today_utc()
+    raw = _read_raw(path)
+    load_unpublished_targets(path, today)  # validate the unpublished block too
     items = raw.get("exceptions") or []
     if not isinstance(items, list):
         raise BaselineError("`exceptions` must be a list")
@@ -92,6 +133,11 @@ def load_baseline(path: pathlib.Path) -> list[dict]:
         item = dict(item)
         item["expires_date"] = _parse_date(item["expires"], where)
         item["approved_at_date"] = _parse_date(item["approved_at"], where)
+        # approved_at in the FUTURE would let a short window (e.g. 7-day
+        # emergency) sit far ahead and hold a CRITICAL open today — reject it.
+        if item["approved_at_date"] > today:
+            raise BaselineError(
+                f"{where}: approved_at {item['approved_at']} is in the future")
         # Enforce the per-class lifetime: a CRITICAL `emergency` can't be parked
         # until 2030, and an `upstream-bound` can't exceed 90 days without a
         # fresh PR that bumps approved_at.
@@ -157,6 +203,11 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
     warnings: list[str] = []
     matched: list[str] = []
 
+    by_target: dict[str, dict[str, int]] = {}
+
+    def bump(t: str, kind: str) -> None:
+        by_target.setdefault(t, {"failures": 0, "warnings": 0, "matched": 0})[kind] += 1
+
     for target in sorted(targets):
         for f in targets[target]:
             sev = f["severity"]
@@ -169,22 +220,22 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
 
             if exc is None:
                 if sev == "CRITICAL":
-                    failures.append(f"CRITICAL with no exception: {tag}")
+                    failures.append(f"CRITICAL with no exception: {tag}"); bump(target, "failures")
                 elif high_mode == "enforce":
-                    failures.append(f"HIGH not in baseline: {tag}")
+                    failures.append(f"HIGH not in baseline: {tag}"); bump(target, "failures")
                 else:
-                    warnings.append(f"HIGH not in baseline (observe): {tag}")
+                    warnings.append(f"HIGH not in baseline (observe): {tag}"); bump(target, "warnings")
                 continue
 
             used_keys.add(key)
             if exc["expires_date"] < today:
                 failures.append(
-                    f"exception EXPIRED {exc['expires']} (renew or remove): {tag}")
+                    f"exception EXPIRED {exc['expires']} (renew or remove): {tag}"); bump(target, "failures")
             elif sev == "CRITICAL" and exc["class"] not in CRITICAL_CLASSES:
                 failures.append(
-                    f"CRITICAL needs an `emergency` exception, got {exc['class']!r}: {tag}")
+                    f"CRITICAL needs an `emergency` exception, got {exc['class']!r}: {tag}"); bump(target, "failures")
             else:
-                matched.append(f"{tag} -> {exc['class']} until {exc['expires']}")
+                matched.append(f"{tag} -> {exc['class']} until {exc['expires']}"); bump(target, "matched")
 
     # Expired entries are a hard fail even if the finding has since vanished —
     # they must be cleaned up. Non-expired entries that matched nothing are
@@ -197,38 +248,61 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
             if item["expires_date"] < today:
                 failures.append(
                     f"exception EXPIRED {item['expires']} (remove): "
-                    f"{t} {item['cve']} {item['package']}")
+                    f"{t} {item['cve']} {item['package']}"); bump(t, "failures")
             elif t in targets:
                 # Only judge a non-expired entry obsolete when its target was
                 # actually scanned this run — a missing scan is a separate FAIL.
                 warnings.append(
                     f"obsolete exception — no matching finding, remove: "
-                    f"{t} {item['cve']} {item['package']}")
+                    f"{t} {item['cve']} {item['package']}"); bump(t, "warnings")
 
     return {
         "failures": sorted(set(failures)),
         "warnings": sorted(set(warnings)),
         "matched": sorted(set(matched)),
+        "by_target": by_target,
     }
+
+
+# Cap how many individual lines go into the Markdown summary. GitHub's step
+# summary is capped at 1 MiB; thousands of observe-mode HIGH warnings blew past
+# it and aborted the upload. The full, unabridged lists always live in the JSON
+# report artifact; the summary shows per-target aggregates + the first N lines.
+SUMMARY_MAX = {"failures": 200, "warnings": 50, "matched": 20}
 
 
 def render(report: dict, *, high_mode: str) -> str:
     lines = ["# Plugin Trivy gate", ""]
     lines.append(f"- mode: HIGH **{high_mode}**, CRITICAL **enforce**")
-    lines.append(f"- matched exceptions: {len(report['matched'])}")
-    lines.append(f"- warnings: {len(report['warnings'])}")
-    lines.append(f"- failures: {len(report['failures'])}")
+    for key in ("failures", "warnings", "matched"):
+        lines.append(f"- {key}: {len(report[key])}")
     lines.append("")
+
+    bt = report.get("by_target") or {}
+    if bt:
+        lines.append("## Per target (failures / warnings / matched)")
+        lines.append("")
+        lines.append("| target | failures | warnings | matched |")
+        lines.append("| --- | ---: | ---: | ---: |")
+        for t in sorted(bt):
+            c = bt[t]
+            lines.append(f"| {t} | {c['failures']} | {c['warnings']} | {c['matched']} |")
+        lines.append("")
+
     for head, key in (("## Failures", "failures"), ("## Warnings", "warnings"),
                       ("## Matched exceptions", "matched")):
-        if report[key]:
-            lines.append(head)
-            lines.extend(f"- {line}" for line in report[key])
-            lines.append("")
-    if not report["failures"]:
-        lines.append("**PASS** — no policy violations.")
-    else:
-        lines.append("**FAIL** — see failures above.")
+        items = report[key]
+        if not items:
+            continue
+        cap = SUMMARY_MAX[key]
+        lines.append(head)
+        lines.extend(f"- {line}" for line in items[:cap])
+        if len(items) > cap:
+            lines.append(f"- … and {len(items) - cap} more (see the gate-report artifact)")
+        lines.append("")
+
+    lines.append("**PASS** — no policy violations." if not report["failures"]
+                 else "**FAIL** — see failures above (full detail in the artifact).")
     return "\n".join(lines) + "\n"
 
 
@@ -241,16 +315,17 @@ def main(argv: list[str] | None = None) -> int:
                     help="comma-separated targets that MUST have a results file; "
                          "a missing one is a hard FAIL (so a dropped scan can't "
                          "silently hide a CRITICAL)")
-    ap.add_argument("--today", default=dt.date.today().isoformat(),
-                    help="override today's date (YYYY-MM-DD) — tests only")
+    ap.add_argument("--today", default=_today_utc().isoformat(),
+                    help="override today's date (YYYY-MM-DD, UTC) — tests only")
     ap.add_argument("--summary-file", type=pathlib.Path,
                     help="append a Markdown summary here (e.g. $GITHUB_STEP_SUMMARY)")
     ap.add_argument("--report-file", type=pathlib.Path,
                     help="write the full JSON report here (CI artifact)")
     args = ap.parse_args(argv)
 
+    today = dt.date.fromisoformat(args.today)
     try:
-        baseline = load_baseline(args.baseline)
+        baseline = load_baseline(args.baseline, today=today)
     except BaselineError as exc:
         msg = f"FAIL: invalid baseline: {exc}"
         print(msg, file=sys.stderr)
@@ -258,7 +333,6 @@ def main(argv: list[str] | None = None) -> int:
             args.summary_file.write_text(f"# Plugin Trivy gate\n\n**FAIL** — {exc}\n")
         return 1
 
-    today = dt.date.fromisoformat(args.today)
     targets: dict[str, list[dict]] = {}
     for jf in sorted(args.results_dir.glob("*.json")):
         targets[jf.stem] = load_findings(jf)
