@@ -4,6 +4,12 @@
 
 set -euo pipefail
 
+# A config scan allocates a throwaway cache dir (see below); remove it on exit so
+# direct/host invocations don't leak temp dirs. Empty for non-config scans → no-op.
+CONFIG_CACHE=""
+cleanup() { [ -z "${CONFIG_CACHE}" ] || rm -rf -- "${CONFIG_CACHE}"; }
+trap cleanup EXIT
+
 SCAN_TYPE="${PLUGIN_SCAN_TYPE:-fs}"
 SEVERITY="${PLUGIN_SEVERITY:-HIGH,CRITICAL}"
 EXIT_CODE="${PLUGIN_EXIT_CODE:-1}"
@@ -87,12 +93,22 @@ fi
 # pinned trivy binary, so a newer bundle can reference a schema the binary
 # doesn't know and fail to compile — the `[rego] undefined ref … requestedamis`
 # / "Failed to find embedded check, skipping" noise, with silent coverage loss.
-# Use the checks EMBEDDED in the binary instead: --skip-check-update makes the
-# scan deterministic (same plugin version => same checks), offline, and
-# skew-free. Move the check set by bumping the trivy binary in the Dockerfile,
-# not by whatever the registry served today.
+# We want the checks EMBEDDED in the binary: deterministic (same plugin version
+# => same checks) and skew-free. Move the check set by bumping the trivy binary
+# in the Dockerfile, not by whatever the registry served.
+#
+# --skip-check-update alone is NOT enough: if a check bundle already sits in the
+# cache (and the plugin RECOMMENDS persisting TRIVY_CACHE_DIR for the CVE DB),
+# trivy reuses that on-disk bundle ("Checks from disk are loaded") instead of the
+# embedded set. So point config at a FRESH, isolated, empty cache dir — then
+# --skip-check-update truly falls back to embedded, without disturbing the shared
+# (possibly node-level) TRIVY_CACHE_DIR. Config scans don't use the CVE DB, so the
+# throwaway cache costs nothing. Also make it genuinely offline + quiet: config
+# needs no network, so skip the version check and anonymous telemetry too.
 if [ "${SCAN_TYPE}" = "config" ]; then
-  args+=("--skip-check-update")
+  CONFIG_CACHE="$(mktemp -d)"
+  args+=("--skip-check-update" "--cache-dir" "${CONFIG_CACHE}" \
+         "--skip-version-check" "--disable-telemetry")
 fi
 
 # --ignore-unfixed applies only to CVE scans (image/fs/repo). `trivy config`
@@ -144,7 +160,8 @@ if [ "${rc}" -ne 0 ] && [ -n "${PLUGIN_OUTPUT:-}" ] && [ "${FORMAT}" != "table" 
     summary+=("--skip-db-update")
   fi
   if [ "${SCAN_TYPE}" = "config" ]; then
-    summary+=("--skip-check-update")
+    summary+=("--skip-check-update" "--cache-dir" "${CONFIG_CACHE}" \
+              "--skip-version-check" "--disable-telemetry")
   fi
   if [ "${IGNORE_UNFIXED}" = "true" ] && [ "${SCAN_TYPE}" != "config" ]; then
     summary+=("--ignore-unfixed")
