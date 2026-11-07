@@ -49,16 +49,23 @@ flips `HIGH_MODE` to `enforce` (`HIGH not in baseline` then fails).
 exceptions — not a blanket `.trivyignore`.
 
 **Identity** — an exception applies only when ALL of these match a finding, so a
-different version never inherits it. For **binary/library** findings (gobinary,
-npm, jar, …) the identity is
-`(target, trivy_target, cve, package, installed, origin)` — `trivy_target` pins
-WHICH binary, so a different binary can't inherit. For **OS-package** findings
-(origin ∈ alpine/debian/ubuntu/…) `trivy_target` is **omitted**: Trivy's target
-there is a volatile `"<image> (debian 12.12)"` string that changes with the ref
-and every distro point-release and is identical for every OS finding, while the
-installed version already pins the CVE — so the identity is
-`(target, cve, package, installed, origin)`. One entry per distinct identity;
-`targets:` lists every logical target that shares it.
+different version, package type or report class never inherits it. OS-vs-binary is
+decided **solely by Trivy's report `Class`** (`result_class`), never by guessing
+from the distro name:
+
+- **`lang-pkgs`** (binary/library: gobinary, npm, jar, …) →
+  `(target, trivy_target, cve, package, installed, origin, result_class)`.
+  `trivy_target` pins WHICH binary, so a different binary can't inherit.
+- **`os-pkgs`** (distro packages) →
+  `(target, cve, package, installed, origin, result_class)`. `trivy_target` is
+  **omitted**: Trivy's target there is a volatile `"<image> (debian 12.12)"`
+  string that changes with the ref and every distro point-release and is identical
+  for every OS finding, while the installed version already pins the CVE.
+
+`result_class` is always part of the identity, so a finding never matches an
+exception of the other class, and a finding whose `Class` is missing/unknown (not
+`os-pkgs`/`lang-pkgs`) **fails the gate** rather than falling through. One entry
+per distinct identity; `targets:` lists every logical target that shares it.
 
 ```yaml
 version: 1
