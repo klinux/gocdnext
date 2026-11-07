@@ -72,6 +72,8 @@ exceptions:
     installed: v0.2.0            # EXACT installed version (part of identity)
     fixed_version: "0.3.0"       # "" when no fix exists (record only)
     origin: gobinary            # Trivy `Type`: gobinary | alpine | node-pkg | ...
+    result_class: lang-pkgs     # Trivy `Class`: lang-pkgs (keep trivy_target) |
+                                #   os-pkgs (OMIT trivy_target)
     class: upstream-bound       # emergency | high-fixable | upstream-bound | no-fix
     justification: >-           # why it is acceptable right now
       moby/go-archive compiled into the bundled docker-buildx binary.
