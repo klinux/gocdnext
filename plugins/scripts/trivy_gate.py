@@ -37,12 +37,15 @@ REQUIRED_FIELDS = (
     "justification", "mitigation", "advisory", "upstream_issue", "approved_pr",
     "owner", "approved_at", "expires",
 )
-VALID_CLASSES = {"emergency", "high-fixable", "upstream-bound", "no-fix"}
-# A CRITICAL finding may only be held open by one of these classes.
-CRITICAL_CLASSES = {"emergency"}
+VALID_CLASSES = {"emergency", "high-fixable", "upstream-bound", "no-fix", "os-no-fix"}
+# Classes that may hold a CRITICAL open. `emergency` is the only cover for a
+# CRITICAL that HAS a fix or is non-OS; `os-no-fix` is a narrow, signed-off cover
+# for an OS-package CRITICAL with NO upstream fix (see the os-no-fix checks).
+CRITICAL_CLASSES = {"emergency", "os-no-fix"}
 # Maximum exception lifetime (days) per class, enforced as expires - approved_at.
 # This makes the 7/14/90-day policy a HARD check, not just a review convention.
-MAX_WINDOW_DAYS = {"emergency": 7, "high-fixable": 14, "upstream-bound": 90, "no-fix": 90}
+MAX_WINDOW_DAYS = {"emergency": 7, "high-fixable": 14, "upstream-bound": 90,
+                   "no-fix": 90, "os-no-fix": 90}
 # An `unpublished` entry removes a whole plugin from the expected inventory, so
 # it gets a SHORT window — it must be revisited (publish or re-justify) soon.
 UNPUBLISHED_MAX_DAYS = 30
@@ -191,6 +194,22 @@ def load_baseline(path: pathlib.Path, today: dt.date | None = None) -> list[dict
         elif not item.get("trivy_target"):
             raise BaselineError(
                 f"{where}: lang-pkgs exception requires a non-empty trivy_target")
+        # os-no-fix: a signed-off cover for an OS-package CRITICAL with NO upstream
+        # fix. Narrow by construction — OS-only, the fix field must be an explicit
+        # empty string (the premise is "no fix"; the gate lapses it the moment
+        # Trivy reports one), and a named risk acceptance is mandatory.
+        if item["class"] == "os-no-fix":
+            if not _is_os(item):
+                raise BaselineError(
+                    f"{where}: class os-no-fix is only for os-pkgs findings "
+                    f"(result_class={item['result_class']!r})")
+            if item.get("fixed_version", "__MISSING__") != "":
+                raise BaselineError(
+                    f"{where}: class os-no-fix requires an explicit `fixed_version: \"\"` "
+                    f"(the premise is no upstream fix)")
+            if not item.get("risk_accepted_by"):
+                raise BaselineError(
+                    f"{where}: class os-no-fix requires `risk_accepted_by` (sign-off)")
         item = dict(item)
         item["expires_date"] = _parse_date(item["expires"], where)
         item["approved_at_date"] = _parse_date(item["approved_at"], where)
@@ -327,9 +346,16 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
             if exc["expires_date"] < today:
                 failures.append(
                     f"exception EXPIRED {exc['expires']} (renew or remove): {tag}"); bump(target, "failures")
+            elif exc["class"] == "os-no-fix" and f.get("fixed"):
+                # The os-no-fix premise is "no upstream fix". Trivy now reports one
+                # ({fixed}), so the exception lapses immediately — patch it.
+                failures.append(
+                    f"os-no-fix exception but a fix is now available ({f['fixed']}) — "
+                    f"patch it: {tag}"); bump(target, "failures")
             elif sev == "CRITICAL" and exc["class"] not in CRITICAL_CLASSES:
                 failures.append(
-                    f"CRITICAL needs an `emergency` exception, got {exc['class']!r}: {tag}"); bump(target, "failures")
+                    f"CRITICAL needs an `emergency`/`os-no-fix` exception, got "
+                    f"{exc['class']!r}: {tag}"); bump(target, "failures")
             else:
                 matched.append(f"{tag} -> {exc['class']} until {exc['expires']}"); bump(target, "matched")
 

@@ -23,17 +23,20 @@ failure.
 
 | Severity | Rule |
 |---|---|
-| **CRITICAL** | Fails immediately. Allowed only with a **non-expired `emergency` exception** — explicit, emergency-only, window **≤ 7 days**. |
+| **CRITICAL (has a fix, or non-OS)** | Fails immediately. Allowed only with a **non-expired `emergency` exception** — explicit, emergency-only, window **≤ 7 days**. |
+| **CRITICAL (OS package, NO upstream fix)** | A narrow **`os-no-fix`** exception, **≤ 90 days**: only for `result_class: os-pkgs`, requires an explicit `fixed_version: ""` and a named `risk_accepted_by` sign-off, and **lapses the instant Trivy reports a fix** (gate fails → you must patch). |
 | **HIGH, fixable by us** | Does **not** normally go in the baseline — fix it (bump base, `apk upgrade`, patch). A temporary `high-fixable` exception is **≤ 14 days** cover only. |
 | **HIGH, no fix / upstream-bound** | `upstream-bound` or `no-fix` exception, **≤ 90 days**, renewed by a PR with a fresh assessment. |
 | **Expired / over-window exception** | Hard fail — the comparator enforces `expires - approved_at ≤` the class window; renew (new PR) or remove. |
 | **Invalid baseline** | Hard fail (schema/parse error, missing field, duplicate, bad/invalid date). |
 | **Exception matching no finding** | Reported as **obsolete** (warning) — remove it to avoid silent accumulation. |
+| **Unknown/missing Trivy `Class`** | Hard fail — a vuln finding is `os-pkgs` or `lang-pkgs`; anything else fails closed. |
 | **Missing scan for an expected target** | Hard fail — a dropped scan must never silently hide a CRITICAL. |
 
-The class **windows (7 / 14 / 90 days) are HARD-enforced**: the comparator checks
-`expires - approved_at` against the class limit, that the exception is not
-expired, and that a CRITICAL is held only by an `emergency`-class entry.
+The class **windows (7 / 14 / 90 / 90 days) are HARD-enforced**: the comparator
+checks `expires - approved_at` against the class limit, that the exception is not
+expired, and that a CRITICAL is held only by an `emergency` **or** `os-no-fix`
+entry (the latter only for an OS package with no upstream fix).
 
 ### HIGH rollout (calibration)
 
@@ -81,7 +84,9 @@ exceptions:
     origin: gobinary            # Trivy `Type`: gobinary | alpine | node-pkg | ...
     result_class: lang-pkgs     # Trivy `Class`: lang-pkgs (keep trivy_target) |
                                 #   os-pkgs (OMIT trivy_target)
-    class: upstream-bound       # emergency | high-fixable | upstream-bound | no-fix
+    class: upstream-bound       # emergency | high-fixable | upstream-bound | no-fix | os-no-fix
+    # os-no-fix only: required alongside fixed_version: "" —
+    #   risk_accepted_by: secteam  # who accepts the residual CRITICAL risk
     justification: >-           # why it is acceptable right now
       moby/go-archive compiled into the bundled docker-buildx binary.
     mitigation: >-              # what reduces the risk / the exit plan
