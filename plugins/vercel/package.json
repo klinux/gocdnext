@@ -1,0 +1,7 @@
+{
+  "name": "gocdnext-vercel",
+  "private": true,
+  "description": "Pinned Vercel CLI runtime for the gocdnext vercel plugin. Regenerate the lock with `npm install` after bumping vercel.",
+  "dependencies": { "vercel": "65.12.1" },
+  "overrides": { "tar": "7.5.22" }
+}
