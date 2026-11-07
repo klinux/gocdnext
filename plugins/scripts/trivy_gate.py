@@ -200,8 +200,13 @@ def load_findings(path: pathlib.Path) -> list[dict]:
                 "fixed": v.get("FixedVersion", ""),
                 "severity": (v.get("Severity") or "").upper(),
             }
+            # Dedupe on exactly the fields that drive the canonical tag + the
+            # per-target counters (NOT `fixed`): `fixed` is metadata, absent from
+            # the canonical string, so including it here would let two findings
+            # differing only in FixedVersion survive as two by_target bumps while
+            # the canonical list (set() of the tag) collapses them to one.
             fkey = (f["trivy_target"], f["origin"], f["cve"], f["package"],
-                    f["installed"], f["fixed"], f["severity"])
+                    f["installed"], f["severity"])
             if fkey in seen:
                 continue
             seen.add(fkey)

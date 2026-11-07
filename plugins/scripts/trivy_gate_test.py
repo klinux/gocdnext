@@ -309,6 +309,24 @@ rr = g.evaluate({"pw": finds}, _baseline([]), today=TD, high_mode="observe")
 check("by_target matches canonical after dedupe",
       rr["by_target"]["pw"]["failures"] == len(rr["failures"]) == 1, str(rr["by_target"]))
 
+# two findings differing ONLY in FixedVersion must still collapse to one
+# (`fixed` is metadata, not identity) so by_target stays == canonical.
+v_a = {"VulnerabilityID": "CVE-FIX", "PkgName": "libz", "InstalledVersion": "1.0",
+       "FixedVersion": "1.1", "Severity": "CRITICAL"}
+v_b = dict(v_a, FixedVersion="1.2")  # same vuln, different reported fix
+fv_json = {"Results": [{"Target": "img (debian 12)", "Type": "debian",
+                        "Vulnerabilities": [v_a, v_b]}]}
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+    fh.write(json.dumps(fv_json)); fpath = pathlib.Path(fh.name)
+try:
+    fvf = g.load_findings(fpath)
+finally:
+    fpath.unlink()
+check("dedupe ignores FixedVersion", len(fvf) == 1, f"got {len(fvf)}")
+rf = g.evaluate({"os": fvf}, _baseline([]), today=TD, high_mode="observe")
+check("by_target == canonical across differing FixedVersion",
+      rf["by_target"]["os"]["failures"] == len(rf["failures"]) == 1, str(rf["by_target"]))
+
 if _fails:
     print("SOME FAILED")
     sys.exit(1)
