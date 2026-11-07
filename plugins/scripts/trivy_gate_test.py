@@ -29,12 +29,16 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 
 
 def _exc(expires: str, cls: str = "upstream-bound", *, targets=None,
-         cve="CVE-1", package="pkg") -> dict:
+         cve="CVE-1", package="pkg", installed="v1", origin="gobinary",
+         trivy_target="bin", approved_at=None) -> dict:
     return {
-        "targets": targets or ["docker"], "cve": cve, "package": package,
-        "origin": "gobinary", "class": cls, "justification": "j", "mitigation": "m",
-        "advisory": "https://a", "upstream_issue": "https://u", "approved_pr": 1,
-        "owner": "o", "expires": expires,
+        "targets": targets or ["docker"], "trivy_target": trivy_target, "cve": cve,
+        "package": package, "installed": installed, "origin": origin, "class": cls,
+        "justification": "j", "mitigation": "m", "advisory": "https://a",
+        "upstream_issue": "https://u", "approved_pr": 1, "owner": "o",
+        # span 0 by default so the class window is always satisfied; tests that
+        # exercise the window pass approved_at explicitly.
+        "approved_at": approved_at or expires, "expires": expires,
     }
 
 
@@ -50,8 +54,10 @@ def _baseline(exceptions: list[dict]) -> list[dict]:
         path.unlink()
 
 
-def _find(cve: str, sev: str, package: str = "pkg") -> dict:
-    return {"cve": cve, "package": package, "severity": sev, "fixed": "", "installed": "x"}
+def _find(cve: str, sev: str, package: str = "pkg", *, installed="v1",
+          origin="gobinary", trivy_target="bin") -> dict:
+    return {"cve": cve, "package": package, "severity": sev, "fixed": "",
+            "installed": installed, "origin": origin, "trivy_target": trivy_target}
 
 
 def ev(targets, exceptions, *, high_mode="observe", today=TODAY):
@@ -106,6 +112,26 @@ check("multi-target exception covers all", not r["failures"] and len(r["matched"
 r = ev({"docker": [_find("CVE-1", "CRITICAL")]}, [_exc(PAST, "emergency")])
 check("expired emergency still fails critical", any("EXPIRED" in f for f in r["failures"]))
 
+# 12. installed-version mismatch: exception for v1 must NOT cover v999
+r = ev({"docker": [_find("CVE-1", "HIGH", installed="v999")]},
+       [_exc(FUTURE, installed="v1")], high_mode="enforce")
+check("installed mismatch not covered", any("HIGH not in baseline" in f for f in r["failures"]), str(r))
+
+# 13. origin/type mismatch: gobinary exception must NOT cover an npm finding
+r = ev({"docker": [_find("CVE-1", "HIGH", origin="node-pkg")]},
+       [_exc(FUTURE, origin="gobinary")], high_mode="enforce")
+check("origin mismatch not covered", any("HIGH not in baseline" in f for f in r["failures"]))
+
+# 14. internal-target mismatch: exception for binA must NOT cover binB
+r = ev({"docker": [_find("CVE-1", "HIGH", trivy_target="binB")]},
+       [_exc(FUTURE, trivy_target="binA")], high_mode="enforce")
+check("trivy_target mismatch not covered", any("HIGH not in baseline" in f for f in r["failures"]))
+
+# 15. full identity match covers it
+r = ev({"docker": [_find("CVE-1", "HIGH", installed="v2", origin="gobinary", trivy_target="b")]},
+       [_exc(FUTURE, installed="v2", origin="gobinary", trivy_target="b")], high_mode="enforce")
+check("full identity match covers", not r["failures"], str(r))
+
 # --- baseline validation (hard FAIL) ---
 def expect_invalid(name: str, exceptions, mutate=None):
     import yaml
@@ -130,6 +156,18 @@ expect_invalid("wrong version rejected", [_exc(FUTURE)], mutate=lambda d: d.upda
 expect_invalid("bad class rejected", [_exc(FUTURE, "whatever")])
 expect_invalid("bad date rejected", [{**_exc(FUTURE), "expires": "not-a-date"}])
 expect_invalid("duplicate key rejected", [_exc(FUTURE), _exc(FUTURE)])
+# window enforcement: emergency allows <= 7 days
+expect_invalid("emergency over 7 days rejected",
+               [_exc("2030-01-01", "emergency", approved_at="2026-01-01")])
+# upstream-bound allows <= 90 days
+expect_invalid("upstream-bound over 90 days rejected",
+               [_exc("2027-06-01", "upstream-bound", approved_at="2026-11-07")])
+# expires before approved_at
+expect_invalid("expires before approved_at rejected",
+               [_exc("2026-01-01", "upstream-bound", approved_at="2026-11-07")])
+# a 7-day emergency is accepted
+ok7 = _baseline([_exc("2026-11-08", "emergency", approved_at="2026-11-07")])
+check("7-day emergency accepted", len(ok7) == 1)
 
 # a well-formed baseline loads and carries expires_date
 ok = _baseline([_exc(FUTURE)])
@@ -144,10 +182,12 @@ def run_main(findings_by_target, exceptions, high_mode="observe"):
     res.mkdir()
     for tgt, finds in findings_by_target.items():
         (res / f"{tgt}.json").write_text(json.dumps(
-            {"Results": [{"Target": tgt, "Vulnerabilities": [
+            {"Results": [{"Target": f["trivy_target"], "Type": f["origin"],
+                          "Vulnerabilities": [
                 {"VulnerabilityID": f["cve"], "PkgName": f["package"],
-                 "Severity": f["severity"], "FixedVersion": "", "InstalledVersion": "x"}
-                for f in finds]}]}))
+                 "Severity": f["severity"], "FixedVersion": "",
+                 "InstalledVersion": f["installed"]}]}
+                for f in finds]}))
     summary = d / "summary.md"
     rc = g.main(["--baseline", str(d / "baseline.yaml"), "--results-dir", str(res),
                  "--high-mode", high_mode, "--today", TODAY,
