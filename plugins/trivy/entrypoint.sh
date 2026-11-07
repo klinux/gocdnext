@@ -4,6 +4,12 @@
 
 set -euo pipefail
 
+# A config scan allocates a throwaway cache dir (see below); remove it on exit so
+# direct/host invocations don't leak temp dirs. Empty for non-config scans → no-op.
+CONFIG_CACHE=""
+cleanup() { [ -z "${CONFIG_CACHE}" ] || rm -rf -- "${CONFIG_CACHE}"; }
+trap cleanup EXIT
+
 SCAN_TYPE="${PLUGIN_SCAN_TYPE:-fs}"
 SEVERITY="${PLUGIN_SEVERITY:-HIGH,CRITICAL}"
 EXIT_CODE="${PLUGIN_EXIT_CODE:-1}"
