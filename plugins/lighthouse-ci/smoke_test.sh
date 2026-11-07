@@ -18,16 +18,25 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-lighthouse-ci:smoke-$$"
 W="$(mktemp -d)"
 cleanup() {
+  # LHCI runs as root in the container and leaves root-owned files (incl.
+  # dotdirs like .lighthouseci) under $W. Remove them from INSIDE the image —
+  # with --entrypoint sh so the command actually runs, and before deleting the
+  # image — then drop the dir.
+  if docker image inspect "$IMG" >/dev/null 2>&1; then
+    docker run --rm --entrypoint sh -v "$W:/w" "$IMG" \
+      -c 'rm -rf /w/* /w/.[!.]* /w/..?* 2>/dev/null || true' >/dev/null 2>&1 || true
+  fi
   docker image rm -f "$IMG" >/dev/null 2>&1 || true
-  # files under $W are written by the container as root; best-effort removal.
-  docker run --rm -v "$W:/w" "$IMG" sh -c 'rm -rf /w/*' >/dev/null 2>&1 || true
   rm -rf "$W" 2>/dev/null || true
 }
 trap cleanup EXIT
 die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2" | tail -40; }; exit 1; }
 
-echo "==> build plugin image (same Dockerfile/context as the official build)"
-docker build -t "$IMG" "$HERE" >/dev/null
+# Build from scratch: this image refreshes Chromium via apt at build time, and
+# the smoke must validate exactly what the publish build ships (which also uses
+# no_cache). Mirrors plugins.yml for this plugin.
+echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
+docker build --no-cache -t "$IMG" "$HERE" >/dev/null
 
 CHROME_FLAGS="--no-sandbox --headless=new --disable-dev-shm-usage --disable-gpu"
 
@@ -74,6 +83,11 @@ ls "$W"/pass/.lighthouseci/lhr-*.json >/dev/null 2>&1 \
 make_case fail '{ "first-contentful-paint": ["error", { "maxNumericValue": 0 }] }'
 run fail
 [ "$RC" -ne 0 ] || die "a breached assertion must fail the job, but it exited 0" "$OUT"
-grep -qi "assert" <<<"$OUT" || die "expected an assertion failure in the output" "$OUT"
+# Require the SPECIFIC assertion to appear in LHCI's assert output — a bare
+# "assert" match would also catch the wrapper's own "==> lhci assert" log, so a
+# mere crash of `lhci assert` would pass. The assertion name only appears when
+# LHCI actually evaluated (and failed) it.
+grep -q "first-contentful-paint" <<<"$OUT" \
+  || die "expected lhci assert to report the breached first-contentful-paint assertion" "$OUT"
 
 echo "PASS: lighthouse-ci smoke"

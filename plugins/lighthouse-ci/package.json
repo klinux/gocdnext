@@ -1,0 +1,8 @@
+{
+  "name": "gocdnext-lhci",
+  "private": true,
+  "description": "Pinned LHCI runtime for the gocdnext lighthouse-ci plugin. Regenerate the lock with `npm install` after bumping @lhci/cli.",
+  "dependencies": {
+    "@lhci/cli": "0.16.0"
+  }
+}
