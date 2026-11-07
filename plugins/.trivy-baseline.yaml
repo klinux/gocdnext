@@ -21,9 +21,15 @@
 version: 1
 
 # Plugin dirs that intentionally have NO published :v1 yet (don't expect a scan).
-# Empty today — all 68 plugins publish :v1. The gate's `expect` set is derived
-# from (all plugin dirs - this list), NOT from what the registry happens to
-# resolve, so a registry outage cannot shrink the scanned set to green.
+# The gate's `expect` set is (all plugin dirs - this list), NOT what the registry
+# resolves, so an outage cannot shrink the scanned set to green. Dropping a whole
+# plugin is high-impact, so each entry is SHORT-LIVED and justified:
+#   - target: <plugin dir>
+#     reason: <why it has no :v1 yet>
+#     approved_pr: <PR number>
+#     approved_at: "YYYY-MM-DD"   # not in the future
+#     expires: "YYYY-MM-DD"       # <= 30 days after approved_at; gate fails once past
+# Empty today — all 68 plugins publish :v1.
 unpublished: []
 
 exceptions:
