@@ -43,9 +43,11 @@ examples:
   - name: build once, deploy prebuilt
     yaml: |
       jobs:
-        # The Vercel CLI has no env-var auth and --token would put
-        # the secret on argv — write its auth.json instead (the
-        # vercel plugin below does this internally).
+        # Keep the token off argv AND the build process env: write the
+        # CLI's auth.json, point --global-config at it, and unset
+        # VERCEL_TOKEN so the CLI (v65 reads the env) authenticates from
+        # the file. Same version as the plugin below so the prebuilt
+        # output matches the deployer.
         build:
           stage: build
           secrets: [VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID]
@@ -55,8 +57,9 @@ examples:
               VCONF="$(mktemp -d)"
               trap 'rm -rf "$VCONF"' EXIT
               node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({token:process.env.VERCEL_TOKEN}),{mode:0o600})' "$VCONF/auth.json"
-              npx vercel@37 pull --yes --environment=production --global-config "$VCONF"
-              npx vercel@37 build --prod --yes --global-config "$VCONF"
+              unset VERCEL_TOKEN
+              npx vercel@65.12.1 pull --yes --environment=production --global-config "$VCONF"
+              npx vercel@65.12.1 build --prod --yes --global-config "$VCONF"
           artifacts: [.vercel/output/]
 
         deploy:
