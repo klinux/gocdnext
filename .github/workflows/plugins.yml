@@ -74,6 +74,12 @@ jobs:
             fi
             changed=$(git diff --name-only "$base" HEAD -- plugins/ \
                       | awk -F/ '{print $2}' | sort -u)
+            # Keep only REAL plugin dirs (those with a Dockerfile, i.e. in
+            # $all). Non-plugin files under plugins/ — shared tooling like
+            # plugins/scripts/**, plugins/.trivy-baseline.yaml,
+            # plugins/SECURITY-SCANNING.md — must NOT become matrix entries
+            # that then try to build a plugins/<x>/Dockerfile that doesn't exist.
+            changed=$(comm -12 <(printf '%s\n' "$changed") <(printf '%s\n' "$all"))
             # Workflow file changed → rebuild everything (operators
             # often tweak the matrix and expect a full rebuild).
             if git diff --name-only "$base" HEAD -- .github/workflows/plugins.yml | grep -q .; then
