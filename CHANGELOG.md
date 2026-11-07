@@ -10,6 +10,23 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **slack plugin → Go 1.27 toolchain + alpine 3.24.4, stdlib CRITICAL cleared;
+  webhook no longer logged on error.** The published `:v1` built the reference
+  Go binary with `golang:1.23-alpine` (stdlib carrying Go CVE-2025-68121) on the
+  now-EOL `alpine:3.20` runtime. Bumped the build stage to **golang:1.27**
+  (pinned by digest, go1.27.3 — patched stdlib) and the runtime to
+  **alpine:3.24.4** (pinned) + `apk upgrade`. Trivy `--pkg-types os,library`:
+  **0 CRITICAL, 0 HIGH**. **Security:** on a failed POST the plugin used to print
+  the `net/http` error, which echoes the full webhook URL — whose path carries
+  the secret token; it now scrubs the error (operation + host-level cause only,
+  with a belt-and-suspenders exact-string redaction), so the token stays out of
+  the log even if the job didn't route the webhook through `secrets:`. New Go unit
+  tests (`main_test.go`, run via `entrypoint_test.sh`) cover the scrub across
+  `url.Error`/wrapped/plain shapes, and a real `smoke_test.sh` posts to an
+  `example.invalid` webhook with a token in the path, asserting the binary
+  reaches the network (not a panic), the token never appears in the log, and a
+  missing webhook exits 2. Opts into `no_cache: true`; build adds `-trimpath`.
+  (#351)
 - **cloudflare-pages plugin → wrangler 4.158.0, Go/esbuild CRITICALs cleared.**
   The published `:v1` was built on a floating `node:22-alpine` with
   `wrangler@3`, whose bundled `esbuild` (built on Go 1.20.4) carried the
