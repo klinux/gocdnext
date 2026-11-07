@@ -65,13 +65,22 @@ assert_reached() { # assert_reached <label> <secret-that-must-not-leak>
   if grep -qiE 'unknown (flag|command|shorthand)|Error: accepts|requires at least|invalid argument|unknown sub' <<<"$OUT"; then
     die "$1: PARSE error — the helm/curl surface changed" "$OUT"
   fi
-  grep -q "$2" <<<"$OUT" && die "$1: secret leaked into the log/argv" "$OUT" || true
+  # output-level leak check only (argv-level no-leak is proven by entrypoint_test.sh).
+  [ -n "$2" ] && grep -q "$2" <<<"$OUT" && die "$1: secret leaked into the log" "$OUT" || true
 }
 
-echo "==> oci backend (login + push) reaches the registry; password not leaked"
+# OCI is two distinct paths — login fails fast under set -e, so push would never
+# run in a single creds case. Exercise them separately.
+echo "==> oci LOGIN (with creds) reaches the registry; password not leaked"
 run -e PLUGIN_BACKEND=oci -e PLUGIN_OCI_REPO="oci://${HOST}/charts" \
     -e PLUGIN_USERNAME=robot -e PLUGIN_PASSWORD="$PW_OCI"
-assert_reached "oci" "$PW_OCI"
+assert_reached "oci-login" "$PW_OCI"
+grep -q "helm registry login ${HOST}" <<<"$OUT" || die "oci-login: did not reach registry login" "$OUT"
+
+echo "==> oci PUSH (no creds) reaches the registry"
+run -e PLUGIN_BACKEND=oci -e PLUGIN_OCI_REPO="oci://${HOST}/charts"
+assert_reached "oci-push" ""
+grep -q "helm push " <<<"$OUT" || die "oci-push: did not reach helm push" "$OUT"
 
 echo "==> chartmuseum backend (curl POST) reaches the repo; password not leaked"
 run -e PLUGIN_BACKEND=chartmuseum -e PLUGIN_REPO_URL="https://${HOST}/cm" \
