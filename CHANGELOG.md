@@ -8,6 +8,33 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Changed
+
+- **lighthouse-ci plugin → Node 22 + current Chromium, 280 → 0 fixable CRITICAL.**
+  The published `:v1` carried ~280 CRITICAL because its apt layer had been cached
+  at Chromium 149 and never refreshed (a browser image is real exposure). Base
+  bumped `node:20-bookworm-slim` → `node:22-bookworm-slim` **pinned by digest**,
+  with `apt-get upgrade` applying Debian security backports at build time (Chromium
+  **156** now, OS packages current). LHCI bumped 0.14.0 → 0.16.0, which clears the
+  node-tar DoS (CVE-2026-59873): 0.14.x pulled vulnerable node-tar 6.2.1
+  transitively, while 0.16.0 switched to the maintained `modern-tar`. LHCI is
+  installed from a **committed `package.json` + `package-lock.json` via `npm ci`**,
+  so the entire transitive tree is pinned and reproducible (a plain `npm install`
+  would let it float on any cache miss). Trivy `--ignore-unfixed`: **0 CRITICAL**
+  (was 280). The **4 residual CRITICAL are all unfixed Debian OS CVEs**
+  (`libglib2.0-0`, `libsqlite3-0`, `libxml2`, `zlib1g` — fix-deferred/won't-fix,
+  fleet-wide), handled in the fleet-wide no-fix baseline triage, not here.
+  **Durable freshness:** the plugin opts into `no_cache: true` (new `nocache` step
+  in `plugins.yml`), so the publish build rebuilds it from scratch and the registry
+  build cache can't re-import a stale Chromium/apt layer on a release that didn't
+  touch the Dockerfile; the `smoke_test.sh` build is `--no-cache` for the same
+  reason. Wrapper inputs unchanged (`@v1`). New real `smoke_test.sh`: bundled
+  Chromium runs headless against a local static page, `lhci collect` writes a report
+  and `lhci assert` gates (passes a satisfiable budget, fails a breached
+  `first-contentful-paint`). **Note:** `apt-get upgrade` pulls Debian's mutable
+  security repos, so the OS set is patched at build time, not byte-identical; the
+  FROM digest pins the base layer and the weekly Trivy gate catches drift.
+
 ## v0.125.0 — 2026-11-07
 
 ### Added
