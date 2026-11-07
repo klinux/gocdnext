@@ -8,6 +8,24 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.125.0 — 2026-11-07
+
+### Added
+
+- **Scheduled Trivy gate for plugin images** (`.github/workflows/trivy-plugins.yml`
+  + `plugins/scripts/trivy_gate.py` + `plugins/.trivy-baseline.yaml` +
+  `plugins/SECURITY-SCANNING.md`). Weekly + on-demand (not a per-PR blocker): scans
+  every published `:v1` plugin image **and** the external images buildx pins
+  (binfmt + buildkit, read digest-pinned from `entrypoint.sh`) against a versioned
+  baseline of **specific, dated** exceptions. CRITICAL, expired/over-window
+  exceptions, invalid baseline and missing scans fail from day one; HIGH runs in
+  `observe` during calibration, flipped to `enforce` later by a one-line change.
+  Fail-closed (expected targets come from the versioned inventory, not the
+  registry), strict exception identity (target + internal binary + CVE + package +
+  installed version + origin), socketless digest-pinned scanner, sharded scans with
+  a shared DB snapshot, and a byte-capped job summary. Comparator covered by
+  `trivy_gate_test.py`.
+
 ### Changed
 
 - **flyway plugin → Flyway 13** (was 11), pinned by exact patch + digest
