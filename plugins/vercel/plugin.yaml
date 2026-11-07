@@ -1,5 +1,10 @@
 name: vercel
 category: deploy
+# Refreshes OS packages via `apk upgrade` at build time, so it MUST build from
+# scratch — otherwise the registry build cache re-imports a stale OS layer on a
+# release that didn't touch the Dockerfile. Consumed by the `nocache` step in
+# plugins.yml.
+no_cache: true
 description: >
   Deploy to Vercel. Headless linkage via VERCEL_ORG_ID +
   VERCEL_PROJECT_ID (+ VERCEL_TOKEN through `secrets:`). prebuilt:
