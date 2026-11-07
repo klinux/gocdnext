@@ -163,6 +163,19 @@ r = ev({"docker": [_find("CVE-OS", "HIGH", installed="v999", trivy_target="x", *
        [os_exc], high_mode="enforce")
 check("OS exception still version-pinned", any("HIGH not in baseline" in f for f in r["failures"]))
 
+# 17. a missing/unknown Trivy Class fails CLOSED (even in observe) — never falls
+#     through to lang-pkgs where it could inherit an exception.
+r = ev({"docker": [_find("CVE-1", "HIGH", result_class="")]}, [_exc(FUTURE)], high_mode="observe")
+check("missing Class fails closed", any("unknown Trivy Class" in f for f in r["failures"]), str(r))
+r = ev({"docker": [_find("CVE-1", "CRITICAL", result_class="config")]}, [], high_mode="observe")
+check("unknown Class fails closed", any("unknown Trivy Class" in f for f in r["failures"]))
+
+# 18. class MISMATCH: a lang-pkgs exception does NOT cover an os-pkgs finding of
+#     the same cve/package/version (result_class is part of the identity).
+r = ev({"docker": [_find("CVE-1", "HIGH", result_class="os-pkgs", trivy_target="t")]},
+       [_exc(FUTURE, result_class="lang-pkgs")], high_mode="enforce")
+check("class mismatch not covered", any("HIGH not in baseline" in f for f in r["failures"]), str(r))
+
 # --- baseline validation (hard FAIL) ---
 def expect_invalid(name: str, exceptions, mutate=None, unpublished=None):
     import yaml
@@ -279,7 +292,7 @@ def run_main(findings_by_target, exceptions, high_mode="observe"):
     for tgt, finds in findings_by_target.items():
         (res / f"{tgt}.json").write_text(json.dumps(
             {"Results": [{"Target": f["trivy_target"], "Type": f["origin"],
-                          "Vulnerabilities": [
+                          "Class": f["result_class"], "Vulnerabilities": [
                 {"VulnerabilityID": f["cve"], "PkgName": f["package"],
                  "Severity": f["severity"], "FixedVersion": "",
                  "InstalledVersion": f["installed"]}]}
@@ -303,9 +316,11 @@ def run_main_expect(findings_by_target, exceptions, expect):
     res = d / "results"; res.mkdir()
     for tgt, finds in findings_by_target.items():
         (res / f"{tgt}.json").write_text(json.dumps(
-            {"Results": [{"Vulnerabilities": [
+            {"Results": [{"Target": f["trivy_target"], "Type": f["origin"],
+                          "Class": f["result_class"], "Vulnerabilities": [
                 {"VulnerabilityID": f["cve"], "PkgName": f["package"],
-                 "Severity": f["severity"]} for f in finds]}]}))
+                 "Severity": f["severity"], "InstalledVersion": f["installed"]}]}
+                for f in finds]}))
     return g.main(["--baseline", str(d / "baseline.yaml"), "--results-dir", str(res),
                    "--today", TODAY, "--expect-targets", expect])
 

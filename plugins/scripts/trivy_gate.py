@@ -67,11 +67,13 @@ def _is_os(item: dict) -> bool:
 
 
 # An exception's identity — everything that must match a Trivy finding. Narrow on
-# purpose: a different installed version or package type never inherits one.
-# `trivy_target` is part of it for binary/library findings (so a different binary
-# can't inherit) and dropped for OS findings (see above).
-IDENTITY_BIN = ("target", "trivy_target", "cve", "package", "installed", "origin")
-IDENTITY_OS = ("target", "cve", "package", "installed", "origin")
+# purpose: a different installed version, package type, or report class never
+# inherits one. `result_class` is ALWAYS in the identity (so a finding can't match
+# an exception of the other class, and an unknown-class finding matches nothing);
+# `trivy_target` is in it for binary/library findings (so a different binary can't
+# inherit) and dropped for OS findings (see above).
+IDENTITY_BIN = ("target", "trivy_target", "cve", "package", "installed", "origin", "result_class")
+IDENTITY_OS = ("target", "cve", "package", "installed", "origin", "result_class")
 
 
 def _identity_fields(item: dict) -> tuple:
@@ -246,13 +248,14 @@ def load_findings(path: pathlib.Path) -> list[dict]:
                 "fixed": v.get("FixedVersion", ""),
                 "severity": (v.get("Severity") or "").upper(),
             }
-            # Dedupe on exactly the fields that drive the canonical tag + the
-            # per-target counters (NOT `fixed`): `fixed` is metadata, absent from
-            # the canonical string, so including it here would let two findings
-            # differing only in FixedVersion survive as two by_target bumps while
-            # the canonical list (set() of the tag) collapses them to one.
-            fkey = (f["trivy_target"], f["origin"], f["cve"], f["package"],
-                    f["installed"], f["severity"])
+            # Dedupe on the finding's full identity + severity (NOT `fixed`, which
+            # is metadata absent from the canonical string — including it would let
+            # two findings differing only in FixedVersion survive as two by_target
+            # bumps while the canonical list collapses them to one). `result_class`
+            # is included so two otherwise-identical rows of different class don't
+            # collapse.
+            fkey = (f["trivy_target"], f["origin"], f["result_class"], f["cve"],
+                    f["package"], f["installed"], f["severity"])
             if fkey in seen:
                 continue
             seen.add(fkey)
@@ -295,10 +298,21 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
             sev = f["severity"]
             if sev not in ("CRITICAL", "HIGH"):
                 continue
-            key = _finding_key(target, f)
-            exc = index.get(key)
             tag = (f"{target} {f['cve']} {f['package']} {f['installed']} "
                    f"[{f['origin']}@{f['trivy_target'].split('/')[-1]}] ({sev})")
+
+            # Fail closed on an unrecognised report Class: a vuln finding is
+            # os-pkgs or lang-pkgs, so a missing/unknown Class is an anomaly, not a
+            # free pass. Never let it fall through to the lang-pkgs branch where it
+            # could inherit an exception.
+            if f.get("result_class") not in VALID_CLASSES_RESULT:
+                failures.append(
+                    f"unknown Trivy Class {f.get('result_class')!r}: {tag}")
+                bump(target, "failures")
+                continue
+
+            key = _finding_key(target, f)
+            exc = index.get(key)
 
             if exc is None:
                 if sev == "CRITICAL":
