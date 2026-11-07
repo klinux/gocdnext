@@ -1,0 +1,83 @@
+# gocdnext plugin-image vulnerability baseline.
+#
+# This file records SPECIFIC, JUSTIFIED exceptions to the plugin Trivy gate —
+# it is NOT a blanket `.trivyignore`. Every entry names what is excepted, why,
+# who approved it, and WHEN it expires. The gate (plugins/scripts/trivy_gate.py,
+# run by .github/workflows/trivy-plugins.yml) fails when an exception is expired,
+# when the file is invalid, or on any CRITICAL not covered by a valid
+# `emergency` exception. See plugins/SECURITY-SCANNING.md for the full policy.
+#
+# Exception windows (authoring rule, enforced by review):
+#   emergency (CRITICAL)      <= 7 days   — explicit, emergency-only
+#   high-fixable (HIGH)       <= 14 days  — we CAN fix it; temporary cover only
+#   upstream-bound (HIGH)     <= 90 days  — fix exists but only upstream can apply
+#   no-fix (HIGH)             <= 90 days  — no fix published yet
+# Renew by a PR with a fresh assessment; the gate hard-fails once `expires` < today.
+#
+# Match key = (target, cve, package). `targets` lists every logical target the
+# entry covers (plugin dir name, or `external:<name>` for a pinned external
+# image). Keep one entry per CVE+package; list the targets it applies to.
+
+version: 1
+
+exceptions:
+  # --- docker family: Go-stdlib/dep CVEs compiled into the upstream Docker CLI
+  # and buildx binaries. Not Alpine packages, so `apk upgrade` cannot reach them;
+  # they clear only when Docker publishes a CLI rebuilt against the patched
+  # modules. Approved in PR #334 (docker:24-cli -> docker:29.9.3-cli, 0 CRITICAL).
+  - targets: [docker, buildx, docker-push]
+    cve: CVE-2026-17106
+    package: github.com/moby/go-archive
+    installed: v0.2.0
+    fixed_version: "0.3.0"
+    origin: gobinary
+    class: upstream-bound
+    justification: >-
+      Embedded in the upstream Docker CLI Go binary shipped by docker:29.9.3-cli
+      (the latest CLI tag), not an Alpine package — apk upgrade cannot patch it.
+    mitigation: >-
+      Re-scan on each CLI bump; adopt the first docker CLI image that ships
+      moby/go-archive >= 0.3.0.
+    advisory: https://avd.aquasec.com/nvd/cve-2026-17106
+    upstream_issue: https://github.com/moby/go-archive
+    approved_pr: 334
+    owner: klinux
+    expires: "2027-02-05"
+
+  - targets: [docker, buildx, docker-push]
+    cve: CVE-2026-78661
+    package: golang.org/x/net
+    installed: v0.60.0
+    fixed_version: "0.62.0"
+    origin: gobinary
+    class: upstream-bound
+    justification: >-
+      golang.org/x/net/html DoS, compiled into the upstream Docker CLI / buildx
+      binaries; clears only when Docker rebuilds against x/net >= 0.62.0.
+    mitigation: >-
+      Re-scan on each CLI bump; adopt the first docker CLI image built with
+      golang.org/x/net >= 0.62.0.
+    advisory: https://pkg.go.dev/vuln/GO-2026-6860
+    upstream_issue: https://github.com/golang/go/issues?q=x%2Fnet+html+DoS
+    approved_pr: 334
+    owner: klinux
+    expires: "2027-02-05"
+
+  - targets: [docker, buildx, docker-push]
+    cve: CVE-2026-78669
+    package: golang.org/x/net
+    installed: v0.60.0
+    fixed_version: "0.62.0"
+    origin: gobinary
+    class: upstream-bound
+    justification: >-
+      golang.org/x/net/http2 DoS, compiled into the upstream Docker CLI / buildx
+      binaries; same upstream-rebuild constraint as CVE-2026-78661.
+    mitigation: >-
+      Re-scan on each CLI bump; adopt the first docker CLI image built with
+      golang.org/x/net >= 0.62.0.
+    advisory: https://avd.aquasec.com/nvd/cve-2026-78669
+    upstream_issue: https://github.com/golang/go/issues?q=x%2Fnet+http2+DoS
+    approved_pr: 334
+    owner: klinux
+    expires: "2027-02-05"

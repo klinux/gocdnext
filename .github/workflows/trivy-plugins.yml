@@ -1,0 +1,178 @@
+name: Trivy plugins gate
+
+# Standing vulnerability gate for the PUBLISHED plugin images (the `:v1` channel)
+# plus the external images the buildx plugin pins (binfmt + buildkit). Runs on a
+# schedule (not per-PR) and on demand. Policy + baseline:
+#   plugins/SECURITY-SCANNING.md, plugins/.trivy-baseline.yaml
+# Comparator: plugins/scripts/trivy_gate.py.
+#
+# Rollout: CRITICAL and expired/invalid exceptions FAIL from day one. HIGH runs
+# in `observe` (reported in the summary/artifact, non-failing) during the
+# calibration window; a later one-line PR flips HIGH_MODE to `enforce`.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      high_mode:
+        description: "HIGH handling: observe (report) or enforce (fail)"
+        type: choice
+        options: [observe, enforce]
+        default: observe
+  # PR-time coverage for the gate machinery itself (comparator + baseline).
+  # The heavy scan/gate jobs stay schedule/dispatch-only; `unit` runs here.
+  pull_request:
+    paths:
+      - "plugins/scripts/**"
+      - "plugins/.trivy-baseline.yaml"
+      - "plugins/SECURITY-SCANNING.md"
+      - ".github/workflows/trivy-plugins.yml"
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  # Calibration default. Flip to `enforce` in a dedicated PR after the window.
+  HIGH_MODE: observe
+  # Match the sweep's scan surface: OS + language packages, vuln scanner,
+  # HIGH+CRITICAL. NB: no --ignore-unfixed here — the standing gate tracks
+  # unfixed/upstream-bound HIGH too (the baseline carries those with a window).
+  TRIVY_ARGS: "--quiet --severity HIGH,CRITICAL --scanners vuln --pkg-types os,library"
+
+jobs:
+  unit:
+    # Fast, dependency-light coverage of the comparator + a real parse of the
+    # committed baseline. Runs on every trigger, including PRs that touch the
+    # gate machinery, so a regression is caught before the weekly run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml==6.0.3
+      - name: comparator unit tests
+        run: python3 plugins/scripts/trivy_gate_test.py
+      - name: committed baseline parses + validates
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+          sys.path.insert(0, "plugins/scripts")
+          import trivy_gate
+          n = len(trivy_gate.load_baseline(pathlib.Path("plugins/.trivy-baseline.yaml")))
+          print(f"baseline valid: {n} exception(s)")
+          PY
+
+  discover:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      expect: ${{ steps.set.outputs.expect }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set
+        run: |
+          set -euo pipefail
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          reg="ghcr.io/${owner}"
+
+          # Only include plugins whose :v1 is actually published, so a plugin
+          # added since the last release doesn't look like a "missing scan".
+          entries=()
+          targets=()
+          for d in plugins/*/Dockerfile; do
+            p=$(basename "$(dirname "$d")")
+            img="${reg}/gocdnext-plugin-${p}:v1"
+            if docker manifest inspect "$img" >/dev/null 2>&1; then
+              entries+=("{\"target\":\"${p}\",\"ref\":\"${img}\"}")
+              targets+=("$p")
+            else
+              echo "::notice::no published :v1 for ${p} — skipping"
+            fi
+          done
+
+          # External images the buildx plugin pins — entrypoint.sh is the single
+          # source of truth, so the gate always scans exactly what ships.
+          ep=plugins/buildx/entrypoint.sh
+          binfmt=$(grep -E '^BINFMT_IMAGE=' "$ep" | cut -d'"' -f2)
+          buildkit=$(grep -E '^DEFAULT_BUILDKIT_IMAGE=' "$ep" | cut -d'"' -f2)
+          entries+=("{\"target\":\"external-binfmt\",\"ref\":\"${binfmt}\"}")
+          entries+=("{\"target\":\"external-buildkit\",\"ref\":\"${buildkit}\"}")
+          targets+=("external-binfmt" "external-buildkit")
+
+          matrix=$(printf '%s\n' "${entries[@]}" | jq -cs '{include: .}')
+          expect=$(IFS=,; echo "${targets[*]}")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "expect=$expect" >> "$GITHUB_OUTPUT"
+          echo "Scanning ${#targets[@]} targets"
+
+  scan:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Trivy scan ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # Resolve a plugin :v1 to an immutable digest so the report records
+          # exactly what was scanned; external refs are already digest-pinned.
+          ref="${{ matrix.ref }}"
+          if [[ "$ref" == *:v1 ]]; then
+            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+            ref="${ref%:v1}@${digest}"
+          fi
+          echo "scanning ${{ matrix.target }} -> ${ref}"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/out:/out" \
+            aquasec/trivy:0.69.3 image ${{ env.TRIVY_ARGS }} \
+            -f json -o "/out/${{ matrix.target }}.json" "$ref"
+          # Record the exact scanned ref next to the report (audit trail).
+          echo "$ref" > "out/${{ matrix.target }}.ref"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trivy-${{ matrix.target }}
+          path: out/*
+          retention-days: 14
+
+  gate:
+    needs: [discover, scan]
+    if: always() && needs.discover.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml==6.0.3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: trivy-*
+          path: dl
+          merge-multiple: true
+      - name: Evaluate against baseline
+        run: |
+          set -euo pipefail
+          mode="${{ github.event.inputs.high_mode || env.HIGH_MODE }}"
+          python3 plugins/scripts/trivy_gate.py \
+            --baseline plugins/.trivy-baseline.yaml \
+            --results-dir dl \
+            --high-mode "$mode" \
+            --expect-targets "${{ needs.discover.outputs.expect }}" \
+            --summary-file "$GITHUB_STEP_SUMMARY" \
+            --report-file dl/gate-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-gate-report
+          path: dl/gate-report.json
+          retention-days: 30
