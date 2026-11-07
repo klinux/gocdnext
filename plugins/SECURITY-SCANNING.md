@@ -49,9 +49,23 @@ flips `HIGH_MODE` to `enforce` (`HIGH not in baseline` then fails).
 exceptions — not a blanket `.trivyignore`.
 
 **Identity** — an exception applies only when ALL of these match a finding, so a
-different version or binary never inherits it:
-`(target, trivy_target, cve, package, installed, origin)`. One entry per distinct
-identity; `targets:` lists every logical target that shares it.
+different version, package type or report class never inherits it. OS-vs-binary is
+decided **solely by Trivy's report `Class`** (`result_class`), never by guessing
+from the distro name:
+
+- **`lang-pkgs`** (binary/library: gobinary, npm, jar, …) →
+  `(target, trivy_target, cve, package, installed, origin, result_class)`.
+  `trivy_target` pins WHICH binary, so a different binary can't inherit.
+- **`os-pkgs`** (distro packages) →
+  `(target, cve, package, installed, origin, result_class)`. `trivy_target` is
+  **omitted**: Trivy's target there is a volatile `"<image> (debian 12.12)"`
+  string that changes with the ref and every distro point-release and is identical
+  for every OS finding, while the installed version already pins the CVE.
+
+`result_class` is always part of the identity, so a finding never matches an
+exception of the other class, and a finding whose `Class` is missing/unknown (not
+`os-pkgs`/`lang-pkgs`) **fails the gate** rather than falling through. One entry
+per distinct identity; `targets:` lists every logical target that shares it.
 
 ```yaml
 version: 1
@@ -65,6 +79,8 @@ exceptions:
     installed: v0.2.0            # EXACT installed version (part of identity)
     fixed_version: "0.3.0"       # "" when no fix exists (record only)
     origin: gobinary            # Trivy `Type`: gobinary | alpine | node-pkg | ...
+    result_class: lang-pkgs     # Trivy `Class`: lang-pkgs (keep trivy_target) |
+                                #   os-pkgs (OMIT trivy_target)
     class: upstream-bound       # emergency | high-fixable | upstream-bound | no-fix
     justification: >-           # why it is acceptable right now
       moby/go-archive compiled into the bundled docker-buildx binary.
@@ -78,9 +94,11 @@ exceptions:
     expires: "2027-02-05"       # quoted YYYY-MM-DD; gate fails once past
 ```
 
-All fields except `fixed_version` are **required**; a missing one fails the gate.
-`origin` must equal Trivy's reported `Type`, and `trivy_target` its `Target`
-(find both in the Trivy JSON for the finding).
+All fields except `fixed_version` and `trivy_target` are **required**. `origin`
+must equal Trivy's reported `Type`, and `trivy_target` its `Target` (find both in
+the Trivy JSON). `trivy_target` is **required for binary/library origins** and
+**must be omitted for OS origins** (the gate rejects a missing one on a binary
+finding, and a present one on an OS finding).
 
 ### Targets
 

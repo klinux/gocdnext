@@ -7,11 +7,16 @@
 # when a class window is exceeded, when the file is invalid, or on any CRITICAL
 # not covered by a valid `emergency` exception. See plugins/SECURITY-SCANNING.md.
 #
-# Exception identity (ALL must match a finding for the exception to apply):
-#   target (plugin dir / external-<name>), trivy_target (Trivy's internal target,
-#   e.g. the binary path), cve, package, installed (exact version), origin (Trivy
-#   `Type`, e.g. gobinary/alpine/node-pkg). A different version or binary does NOT
-#   inherit the exception.
+# Every entry carries `result_class` — Trivy's report Class: `lang-pkgs` for
+# binary/library findings, `os-pkgs` for distro packages — which drives the
+# identity:
+#   lang-pkgs: (target, trivy_target, cve, package, installed, origin). trivy_target
+#     (Trivy's internal target, e.g. the binary path) is REQUIRED — it pins WHICH
+#     binary, so a different binary can't inherit the exception.
+#   os-pkgs:   (target, cve, package, installed, origin). trivy_target is OMITTED
+#     (Trivy's target there is a volatile "<image> (debian 12.12)" string); the
+#     installed version already pins the CVE.
+# A different installed version never inherits an exception.
 #
 # Class windows (expires - approved_at), HARD-enforced by the gate:
 #   emergency (CRITICAL)  <= 7 days    upstream-bound (HIGH) <= 90 days
@@ -45,6 +50,7 @@ exceptions:
     installed: v0.2.0
     fixed_version: "0.3.0"
     origin: gobinary
+    result_class: lang-pkgs
     class: upstream-bound
     justification: >-
       moby/go-archive compiled into the bundled docker-buildx binary; clears only
@@ -64,6 +70,7 @@ exceptions:
     installed: v0.59.0
     fixed_version: "0.62.0"
     origin: gobinary
+    result_class: lang-pkgs
     class: upstream-bound
     justification: >-
       x/net/html DoS compiled into bundled docker-buildx; upstream CLI rebuild
@@ -83,6 +90,7 @@ exceptions:
     installed: v0.59.0
     fixed_version: "0.60.0"
     origin: gobinary
+    result_class: lang-pkgs
     class: upstream-bound
     justification: >-
       x/net/http2 DoS compiled into bundled docker-buildx (v0.59.0); upstream CLI
@@ -102,6 +110,7 @@ exceptions:
     installed: v0.60.0
     fixed_version: "0.62.0"
     origin: gobinary
+    result_class: lang-pkgs
     class: upstream-bound
     justification: >-
       x/net/html DoS compiled into the bundled docker-compose binary (v0.60.0);
@@ -121,6 +130,7 @@ exceptions:
     installed: v28.5.2+incompatible
     fixed_version: ""
     origin: gobinary
+    result_class: lang-pkgs
     class: no-fix
     justification: >-
       Docker Engine SDK (github.com/docker/docker) compiled into bundled
@@ -140,6 +150,7 @@ exceptions:
     installed: v28.5.2+incompatible
     fixed_version: ""
     origin: gobinary
+    result_class: lang-pkgs
     class: no-fix
     justification: >-
       Docker Engine SDK (github.com/docker/docker) compiled into bundled
