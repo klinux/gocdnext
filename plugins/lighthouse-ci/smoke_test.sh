@@ -4,8 +4,7 @@
 # network, no external URL), using the plugin's documented auto-discovery path
 # (a `lighthouserc.json` at the working-dir root, which collect + assert + upload
 # all pick up). Proves:
-#   - `lhci collect` drives the bundled Chromium headless and writes a report
-#     (also proving the forced node-tar >= 7.5.19 override didn't break LHCI),
+#   - `lhci collect` drives the bundled Chromium headless and writes a report,
 #   - `lhci assert` actually gates: passes on a satisfiable budget, FAILS the job
 #     on a breached one.
 #
@@ -17,6 +16,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-lighthouse-ci:smoke-$$"
 W="$(mktemp -d)"
+SMOKE_OK=0
 cleanup() {
   # LHCI runs as root in the container and leaves root-owned files (incl.
   # dotdirs like .lighthouseci) under $W. Remove them from INSIDE the image —
@@ -28,6 +28,13 @@ cleanup() {
   fi
   docker image rm -f "$IMG" >/dev/null 2>&1 || true
   rm -rf "$W" 2>/dev/null || true
+  # Don't silently swallow a failed cleanup: if the workspace survived, say so,
+  # and fail the run when the smoke itself had otherwise passed (a leaked
+  # root-owned dir is a real defect to surface, not to hide).
+  if [ -d "$W" ]; then
+    echo "WARN: cleanup could not fully remove ${W} (root-owned leftovers?)" >&2
+    [ "$SMOKE_OK" = 1 ] && { echo "FAIL: smoke passed but left files behind" >&2; exit 1; }
+  fi
 }
 trap cleanup EXIT
 die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2" | tail -40; }; exit 1; }
@@ -90,4 +97,5 @@ run fail
 grep -q "first-contentful-paint" <<<"$OUT" \
   || die "expected lhci assert to report the breached first-contentful-paint assertion" "$OUT"
 
+SMOKE_OK=1
 echo "PASS: lighthouse-ci smoke"

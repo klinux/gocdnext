@@ -538,7 +538,7 @@ jobs:
           # never pushes on PRs, and fork tokens can't write GHCR. Both are
           # skipped entirely for no_cache plugins (don't import or export a
           # layer we deliberately rebuild).
-          cache-from: ${{ steps.nocache.outputs.value == 'true' && '' || format('type=registry,ref={0}/{1}/gocdnext-plugin-buildcache:{2}', env.REGISTRY, github.repository_owner, matrix.plugin) }}
+          cache-from: ${{ steps.nocache.outputs.value != 'true' && format('type=registry,ref={0}/{1}/gocdnext-plugin-buildcache:{2}', env.REGISTRY, github.repository_owner, matrix.plugin) || '' }}
           cache-to: ${{ (github.event_name != 'pull_request' && steps.nocache.outputs.value != 'true') && format('type=registry,ref={0}/{1}/gocdnext-plugin-buildcache:{2},mode=max', env.REGISTRY, github.repository_owner, matrix.plugin) || '' }}
 
       # Sign the manifest digest of every consumer plugin
