@@ -18,7 +18,22 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-trivy:smoke-$$"
 W="$(mktemp -d)"
-cleanup() { docker image rm -f "$IMG" >/dev/null 2>&1 || true; rm -rf "$W" 2>/dev/null || true; }
+SMOKE_OK=0
+cleanup() {
+  # The scans run as root and write a root-owned .cache/trivy into the mounted
+  # workspace; remove it from INSIDE the image (so the uid matches) before
+  # deleting the image, then drop the dir — and don't mask a failed cleanup.
+  if docker image inspect "$IMG" >/dev/null 2>&1; then
+    docker run --rm --entrypoint sh -v "$W:/w" "$IMG" \
+      -c 'rm -rf /w/* /w/.[!.]* /w/..?* 2>/dev/null || true' >/dev/null 2>&1 || true
+  fi
+  docker image rm -f "$IMG" >/dev/null 2>&1 || true
+  rm -rf "$W" 2>/dev/null || true
+  if [ -d "$W" ]; then
+    echo "WARN: cleanup could not fully remove ${W} (root-owned leftovers?)" >&2
+    [ "$SMOKE_OK" = 1 ] && { echo "FAIL: smoke passed but left files behind" >&2; exit 1; }
+  fi
+}
 trap cleanup EXIT
 die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2" | tail -40; }; exit 1; }
 
@@ -75,4 +90,23 @@ echo "==> fs scan passes a clean dir"
 run clean -e PLUGIN_SCAN_TYPE=fs -e PLUGIN_EXIT_CODE=1
 [ "$RC" -eq 0 ] || die "fs scan of a clean dir should pass (rc=$RC)" "$OUT"
 
+# config must use the binary's EMBEDDED checks even when a check bundle is already
+# on disk in the (persisted) cache — otherwise --skip-check-update silently reuses
+# a stale on-disk bundle. Warm the shared cache, then prove the plugin ignores it.
+echo "==> config uses EMBEDDED checks even against a warm on-disk cache"
+mkdir -p "$W/warm"
+cp "$W/cfg/pod.yaml" "$W/warm/pod.yaml"
+# warm /workspace/.cache/trivy with a downloaded check bundle (no --skip-check-update)
+docker run --rm -v "$W/warm:/workspace" -w /workspace --entrypoint trivy "$IMG" \
+  config --cache-dir /workspace/.cache/trivy . >/dev/null 2>&1 || true
+[ -d "$W/warm/.cache/trivy/policy" ] || die "could not warm the shared check cache"
+run warm -e PLUGIN_SCAN_TYPE=config -e PLUGIN_EXIT_CODE=1 -e TRIVY_DEBUG=true
+[ "$RC" -ne 0 ] || die "warm-cache config scan should still flag the pod (rc=$RC)" "$OUT"
+grep -qiE 'Embedded checks are loaded|Falling back to embedded' <<<"$OUT" \
+  || die "config did not fall back to embedded checks with a warm cache" "$OUT"
+if grep -qi 'from disk are loaded' <<<"$OUT"; then
+  die "config reused the on-disk check bundle instead of the embedded set" "$OUT"
+fi
+
+SMOKE_OK=1
 echo "PASS: trivy smoke"
