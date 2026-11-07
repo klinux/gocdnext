@@ -29,8 +29,16 @@
 #   PLUGIN_CONFIG_TOKEN (opt)     bearer for fetching defaults/template URLs.
 #
 # Debian slim (not alpine) because the entrypoint is bash and gio targets
-# CPython 3.7–3.9.
-FROM python:3.9-slim-bookworm
+# CPython 3.7–3.9 — so Python stays on 3.9 (bumping it risks the gio fork).
+# Base pinned by digest; `apt-get upgrade` below applies Debian security
+# backports at build time (the published :v1 had carried stale OpenSSL/GnuTLS
+# CRITICALs because its apt layer was cache-frozen). The plugin opts into
+# `no_cache` in plugin.yaml so the publish build can't re-import that stale layer.
+#
+# NOTE: `apt-get upgrade` pulls Debian's MUTABLE security repos, so the OS set is
+# patched at build time, not byte-identical build-to-build; the FROM digest pins
+# only the base layer, and the weekly Trivy gate catches drift.
+FROM python:3.9-slim-bookworm@sha256:a02e9c5406c416c504d6c9a1a306ff4080c3173f1008d192f953bd20382a2d5c
 
 # Which graviteeio-cli to install. Defaults to the klinux-maintained fork
 # (graviteeio-cli 0.4 + fixes): it accepts a Resource `configuration`
@@ -42,12 +50,15 @@ FROM python:3.9-slim-bookworm
 #   docker build --build-arg GRAVITEE_CLI_SPEC="graviteeio-cli==0.4"
 ARG GRAVITEE_CLI_SPEC="https://github.com/klinux/gravitee-cli/releases/download/v0.4.1/graviteeio_cli-0.4.1-py3-none-any.whl"
 # mikefarah yq v4 for the values merge (deep merge + array concat),
-# pinned + checksum-verified so the binary can't change under us.
-ARG YQ_VERSION="v4.44.3"
-ARG YQ_SHA256="a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
+# pinned + checksum-verified so the binary can't change under us. Bumped to
+# v4.54.2 (built with Go 1.27.3) to clear the Go-stdlib CVE-2025-68121 that
+# v4.44.3 carried (it was built with Go 1.22).
+ARG YQ_VERSION="v4.54.2"
+ARG YQ_SHA256="44c7759059b4910827a0059a2757b22001e59360cdecdb2ef8dedc4b6c7e9f32"
 
 RUN set -eux; \
     apt-get update; \
+    apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
         ca-certificates curl gettext-base jq git build-essential; \
     pip install --no-cache-dir "${GRAVITEE_CLI_SPEC}"; \
