@@ -10,6 +10,30 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **trivy plugin → Trivy 0.76.2, 5 → 0 CRITICAL.** The published `:v1` bundled
+  Trivy 0.56.2, which carried 5 CRITICAL: Alpine OpenSSL (`libcrypto3`/`libssl3`
+  CVE-2026-31789) and the Trivy Go binary's deps (`go-git` CVE-2025-21613,
+  `grpc` CVE-2026-33186, Go-stdlib CVE-2025-68121). Bumped to **0.76.2** (pinned by
+  digest — its binary bundles the patched deps) + `apk upgrade` (clears the OS
+  packages). Trivy `--pkg-types os,library`: **0 CRITICAL** (was 5; no residual).
+  The binary bump also moves the **embedded misconfig checks** forward with it.
+  Also hardened the `config` path so those embedded checks are *actually* used:
+  `--skip-check-update` alone still reused a check bundle sitting in the (persisted)
+  cache, so `config` scans now run against a **fresh, isolated cache dir** (the CVE
+  DB isn't used by config) — forcing the embedded fallback regardless of what's on
+  disk, without disturbing the shared `TRIVY_CACHE_DIR`. And since a `config` scan
+  needs no network, it now also passes `--skip-version-check` + `--disable-telemetry`
+  (genuinely offline, no skew). Opts into `no_cache: true` for OS currency. Wrapper
+  inputs unchanged (`@v1`; registry creds via `TRIVY_USERNAME`/`PASSWORD`, off argv).
+  New real `smoke_test.sh`: the binary is 0.76.2; a `config` scan flags a privileged
+  pod (embedded checks, **no skew error**) and passes a clean dir — and a dedicated
+  case proves it uses **embedded checks even against a pre-warmed on-disk cache**; an
+  `fs` scan detects a known CVE (lodash 4.17.4 / CVE-2019-10744) and passes a clean
+  dir; the wrapper arg wiring stays covered by `entrypoint_test.sh`. **Note:**
+  `apk upgrade` uses Alpine's mutable repos, so the OS set is patched at build time,
+  not byte-identical; the FROM digest pins the base layer and the weekly Trivy gate
+  catches drift.
+
 - **vercel plugin → Vercel CLI v65.12.1 + pinned tree, 7 → 0 CRITICAL.** The
   published `:v1` bundled Vercel CLI v37, whose deps carried 7 CRITICAL: an
   **esbuild binary built on Go 1.18.3** (CVE-2023-24538/24540, CVE-2024-24790,
