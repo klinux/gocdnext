@@ -49,9 +49,16 @@ flips `HIGH_MODE` to `enforce` (`HIGH not in baseline` then fails).
 exceptions — not a blanket `.trivyignore`.
 
 **Identity** — an exception applies only when ALL of these match a finding, so a
-different version or binary never inherits it:
-`(target, trivy_target, cve, package, installed, origin)`. One entry per distinct
-identity; `targets:` lists every logical target that shares it.
+different version never inherits it. For **binary/library** findings (gobinary,
+npm, jar, …) the identity is
+`(target, trivy_target, cve, package, installed, origin)` — `trivy_target` pins
+WHICH binary, so a different binary can't inherit. For **OS-package** findings
+(origin ∈ alpine/debian/ubuntu/…) `trivy_target` is **omitted**: Trivy's target
+there is a volatile `"<image> (debian 12.12)"` string that changes with the ref
+and every distro point-release and is identical for every OS finding, while the
+installed version already pins the CVE — so the identity is
+`(target, cve, package, installed, origin)`. One entry per distinct identity;
+`targets:` lists every logical target that shares it.
 
 ```yaml
 version: 1
@@ -78,9 +85,11 @@ exceptions:
     expires: "2027-02-05"       # quoted YYYY-MM-DD; gate fails once past
 ```
 
-All fields except `fixed_version` are **required**; a missing one fails the gate.
-`origin` must equal Trivy's reported `Type`, and `trivy_target` its `Target`
-(find both in the Trivy JSON for the finding).
+All fields except `fixed_version` and `trivy_target` are **required**. `origin`
+must equal Trivy's reported `Type`, and `trivy_target` its `Target` (find both in
+the Trivy JSON). `trivy_target` is **required for binary/library origins** and
+**must be omitted for OS origins** (the gate rejects a missing one on a binary
+finding, and a present one on an OS finding).
 
 ### Targets
 
