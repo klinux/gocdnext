@@ -8,6 +8,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Changed
+
+- **cosign plugin → cosign v3.1.4, Go CRITICALs cleared.** The published `:v1`
+  shipped the cosign v2.4.1 binary (built on an old Go), carrying the Go-stdlib
+  CVE-2025-68121 and grpc CVE-2026-33186; the base was also the now-EOL
+  `alpine:3.20`. Bumped the binary to **v3.1.4** (pinned by digest, built with Go
+  1.27.1 — Trivy on the binary: 0 CRITICAL) and the base to **alpine:3.24.4**
+  (supported, pinned) + `apk upgrade`. Trivy `--pkg-types os,library`: **0
+  CRITICAL**. **cosign v2 → v3 is a major release and may be breaking** (bundle
+  format / defaults) for consumers that parse its output — but the plugin's
+  surface is unchanged: `sign` / `verify` / `attest` / `login` and the flags it
+  passes (`--key`, `--certificate-identity`, `--certificate-oidc-issuer`,
+  `--predicate`, `--type`, `--yes`; `COSIGN_PASSWORD` via env) all still exist.
+  Opts into `no_cache: true`. Wrapper inputs unchanged (`@v1`; key password via
+  env, never on argv). New real `smoke_test.sh`: the binary is v3.1.4 and, using
+  an **ephemeral local keypair** (no interactive OIDC), each action the plugin
+  drives — `verify` / `sign` / `attest` with `--key` (+ `COSIGN_PASSWORD`) and
+  `login` — runs the real entrypoint and reaches cosign, failing on the
+  deterministic `example.invalid` registry-DNS lookup (not a parse error), with
+  the key passphrase and login password asserted absent from the log/argv.
+
 ## v0.126.0 — 2026-11-07
 
 ### Changed
