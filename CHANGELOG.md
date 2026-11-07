@@ -8,8 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.126.0 — 2026-11-07
+
 ### Changed
 
+- **Plugin Trivy gate hardening.** The scheduled gate (added in v0.125.0) gained:
+  finding de-duplication by identity (so the per-target aggregate matches the
+  canonical list); OS-vs-binary classification taken strictly from Trivy's report
+  `Class` (`os-pkgs`/`lang-pkgs`), with `trivy_target` optional for OS findings
+  (whose Trivy target is a volatile image+distro string) and required for
+  binary/library findings; a hard fail on an unknown/missing `Class`; and a new
+  **`os-no-fix`** exception class — a narrow, signed-off, CRITICAL-only, ≤90-day
+  cover for an OS-package CRITICAL with no upstream fix that lapses the instant
+  Trivy reports a fix (`emergency` stays the only cover for a CRITICAL that has a
+  fix or is non-OS). Gate tooling only; no plugin image change.
 - **trivy plugin → Trivy 0.76.2, 5 → 0 CRITICAL.** The published `:v1` bundled
   Trivy 0.56.2, which carried 5 CRITICAL: Alpine OpenSSL (`libcrypto3`/`libssl3`
   CVE-2026-31789) and the Trivy Go binary's deps (`go-git` CVE-2025-21613,
