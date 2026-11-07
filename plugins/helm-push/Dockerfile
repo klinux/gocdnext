@@ -29,9 +29,19 @@
 #                       of the chart repo. For nexus this is the
 #                       full hosted-helm-repo URL (e.g.
 #                       https://nexus.corp/repository/helm/).
-FROM alpine/helm:3.16.2
+# Base bumped alpine/helm:3.16.2 -> 3.22.1 (pinned by digest). 3.16.2 shipped the
+# `helm` binary built on an old Go that bundled vulnerable stdlib + grpc
+# (Go-stdlib CVE-2025-68121, grpc CVE-2026-33186); 3.22.1 is built on Go 1.26.9 and
+# rides Alpine 3.24. The plugin's surface is unchanged — it stays on the Helm 3
+# line (NOT 4.x, which is a breaking major): `helm package`, `helm push`,
+# `helm registry login` and the flags it passes (--destination, --version,
+# --app-version, --username, --password-stdin) all exist in 3.22.1 (proven by the
+# smoke). `apk upgrade` refreshes the OS set (clears brotli-libs CVE-2026-111497
+# CRITICAL); the FROM digest pins the base layer, not the upgraded set, so the
+# weekly Trivy gate catches drift.
+FROM alpine/helm:3.22.1@sha256:8191701ad1f82ee3695c87211fcbfe6d7b1bb7df92ac1c8de9ccdb0995a6a2c1
 
-RUN apk add --no-cache bash curl
+RUN apk upgrade --no-cache && apk add --no-cache bash curl
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-helm-push
 RUN chmod +x /usr/local/bin/gocdnext-helm-push
