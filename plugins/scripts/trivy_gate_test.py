@@ -66,10 +66,19 @@ def _baseline(exceptions: list[dict], unpublished=None) -> list[dict]:
 
 
 def _find(cve: str, sev: str, package: str = "pkg", *, installed="v1",
-          origin="gobinary", trivy_target="bin", result_class="lang-pkgs") -> dict:
-    return {"cve": cve, "package": package, "severity": sev, "fixed": "",
+          origin="gobinary", trivy_target="bin", result_class="lang-pkgs",
+          fixed="") -> dict:
+    return {"cve": cve, "package": package, "severity": sev, "fixed": fixed,
             "installed": installed, "origin": origin, "trivy_target": trivy_target,
             "result_class": result_class}
+
+
+def _osnofix(expires=FUTURE, approved_at=None, **kw):
+    """A valid os-no-fix exception: os-pkgs, empty fix, signed off."""
+    e = {**_exc(expires, "os-no-fix", origin="debian", result_class="os-pkgs",
+                trivy_target=None, approved_at=approved_at, **kw),
+         "fixed_version": "", "risk_accepted_by": "secteam"}
+    return e
 
 
 def ev(targets, exceptions, *, high_mode="observe", today=TODAY):
@@ -176,6 +185,16 @@ r = ev({"docker": [_find("CVE-1", "HIGH", result_class="os-pkgs", trivy_target="
        [_exc(FUTURE, result_class="lang-pkgs")], high_mode="enforce")
 check("class mismatch not covered", any("HIGH not in baseline" in f for f in r["failures"]), str(r))
 
+# 19. os-no-fix: covers an OS-package CRITICAL with no upstream fix.
+osf2 = dict(origin="debian", result_class="os-pkgs", package="zlib1g", cve="CVE-OS2")
+r = ev({"docker": [_find("CVE-OS2", "CRITICAL", fixed="", **{k: v for k, v in osf2.items() if k != "cve"})]},
+       [_osnofix(cve="CVE-OS2", package="zlib1g")])
+check("os-no-fix covers an OS CRITICAL (no fix)", not r["failures"], str(r))
+# ...but lapses the moment Trivy reports a fix.
+r = ev({"docker": [_find("CVE-OS2", "CRITICAL", fixed="1.2.14", **{k: v for k, v in osf2.items() if k != "cve"})]},
+       [_osnofix(cve="CVE-OS2", package="zlib1g")])
+check("os-no-fix lapses when a fix appears", any("fix is now available" in f for f in r["failures"]), str(r))
+
 # --- baseline validation (hard FAIL) ---
 def expect_invalid(name: str, exceptions, mutate=None, unpublished=None):
     import yaml
@@ -233,6 +252,20 @@ expect_invalid("bad result_class rejected",
 ok_os = _baseline([_exc(FUTURE, "no-fix", origin="alpine", result_class="os-pkgs",
                         trivy_target=None)])
 check("valid OS exception (no trivy_target) loads", len(ok_os) == 1)
+# os-no-fix authoring guards (OS-only, explicit empty fix, mandatory sign-off, <=90d)
+ok_onf = _baseline([_osnofix()])
+check("valid os-no-fix loads", len(ok_onf) == 1)
+expect_invalid("os-no-fix on lang-pkgs rejected",
+               [{**_exc(FUTURE, "os-no-fix", origin="gobinary", result_class="lang-pkgs"),
+                 "fixed_version": "", "risk_accepted_by": "x"}])
+expect_invalid("os-no-fix without empty fixed_version rejected",
+               [{k: v for k, v in _osnofix().items() if k != "fixed_version"}])
+expect_invalid("os-no-fix with non-empty fixed_version rejected",
+               [{**_osnofix(), "fixed_version": "1.2.3"}])
+expect_invalid("os-no-fix without risk_accepted_by rejected",
+               [{k: v for k, v in _osnofix().items() if k != "risk_accepted_by"}])
+expect_invalid("os-no-fix over 90 days rejected",
+               [_osnofix(expires="2027-06-01", approved_at="2026-11-07")])
 # a 7-day emergency is accepted
 ok7 = _baseline([_exc("2026-11-08", "emergency", approved_at="2026-11-07")])
 check("7-day emergency accepted", len(ok7) == 1)
