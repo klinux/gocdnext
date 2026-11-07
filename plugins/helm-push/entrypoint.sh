@@ -38,6 +38,48 @@ if [ -z "${tgz}" ] || [ ! -f "${tgz}" ]; then
 fi
 echo "==> packaged $(basename "${tgz}") ($(stat -c%s "${tgz}" 2>/dev/null || echo "?") bytes)"
 
+# --- curl credentials via a 0600 --config file (NEVER argv) ------------------
+# `curl --user u:p` puts the credential in /proc/<pid>/cmdline, readable by any
+# process sharing the PID namespace. For the chartmuseum/nexus backends the
+# creds go into a 0600 file in a 0700 dir instead, handed to curl via --config.
+# The values are escaped for curl's double-quoted config grammar so a password
+# containing a quote, backslash or newline can't inject a second curl option
+# (that escaping IS the injection defence). The file is removed on exit by the
+# trap — so the curl calls below do NOT `exec` (exec would skip the trap).
+AUTH_CFG=""
+AUTH_DIR=""
+cleanup_auth() {
+    [ -n "${AUTH_CFG}" ] && rm -f "${AUTH_CFG}" 2>/dev/null
+    [ -n "${AUTH_DIR}" ] && rm -rf "${AUTH_DIR}" 2>/dev/null
+    return 0
+}
+trap cleanup_auth EXIT
+
+curl_escape() { # escape a value for curl's double-quoted config value
+    local s="$1"
+    s="${s//\\/\\\\}"     # backslash first, so later escapes aren't doubled
+    s="${s//\"/\\\"}"     # double quote
+    s="${s//$'\n'/\\n}"   # LF  -> \n   (can't split the line)
+    s="${s//$'\r'/\\r}"   # CR  -> \r
+    s="${s//$'\t'/\\t}"   # TAB -> \t
+    printf '%s' "${s}"
+}
+
+# write_auth_cfg: if a username is set, write `user = "u:p"` to a private
+# --config file and set auth_args=(--config <file>); else auth_args=().
+write_auth_cfg() {
+    auth_args=()
+    [ -z "${PLUGIN_USERNAME:-}" ] && return 0
+    AUTH_DIR="$(mktemp -d)"
+    chmod 700 "${AUTH_DIR}"
+    AUTH_CFG="${AUTH_DIR}/auth"
+    ( umask 077
+      printf 'user = "%s:%s"\n' \
+          "$(curl_escape "${PLUGIN_USERNAME}")" \
+          "$(curl_escape "${PLUGIN_PASSWORD:-}")" >"${AUTH_CFG}" )
+    auth_args=(--config "${AUTH_CFG}")
+}
+
 case "${backend}" in
     oci)
         oci_repo="${PLUGIN_OCI_REPO:-}"
@@ -67,14 +109,12 @@ case "${backend}" in
         fi
         # ChartMuseum's HTTP API accepts a plain POST with the
         # chart body. No helm subcommand needed; curl handles
-        # the upload + optional basic auth in one line.
-        auth_args=()
-        if [ -n "${PLUGIN_USERNAME:-}" ]; then
-            auth_args=(--user "${PLUGIN_USERNAME}:${PLUGIN_PASSWORD:-}")
-        fi
+        # the upload + optional basic auth (via the --config file).
+        write_auth_cfg
         endpoint="${repo_url%/}/api/charts"
         echo "==> POST ${endpoint} <- $(basename "${tgz}")"
-        exec curl -fSsL "${auth_args[@]}" \
+        # No `exec`: the EXIT trap must run to shred the auth file.
+        curl -fSsL "${auth_args[@]}" \
             --data-binary "@${tgz}" \
             "${endpoint}"
         ;;
@@ -88,13 +128,11 @@ case "${backend}" in
         # Nexus hosted-helm repos accept a plain PUT with the
         # tgz. The URL needs the trailing filename so Nexus
         # can index the chart correctly.
-        auth_args=()
-        if [ -n "${PLUGIN_USERNAME:-}" ]; then
-            auth_args=(--user "${PLUGIN_USERNAME}:${PLUGIN_PASSWORD:-}")
-        fi
+        write_auth_cfg
         target="${repo_url%/}/$(basename "${tgz}")"
         echo "==> PUT ${target}"
-        exec curl -fSsL "${auth_args[@]}" \
+        # No `exec`: the EXIT trap must run to shred the auth file.
+        curl -fSsL "${auth_args[@]}" \
             --upload-file "${tgz}" \
             "${target}"
         ;;
