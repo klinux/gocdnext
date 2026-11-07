@@ -28,11 +28,37 @@ echo "==> gio runs on the patched python:3.9 base"
 OUT="$(docker run --rm --entrypoint gio "$IMG" --version 2>&1)" || die "gio --version failed" "$OUT"
 grep -q "0.4.1" <<<"$OUT" || die "unexpected gio version" "$OUT"
 
-echo "==> yq is the bumped v4.54.2 and functional"
+echo "==> yq is the bumped v4.54.2"
 OUT="$(docker run --rm --entrypoint yq "$IMG" --version 2>&1)" || die "yq --version failed" "$OUT"
 grep -q "4.54.2" <<<"$OUT" || die "yq is not v4.54.2" "$OUT"
-OUT="$(printf 'a:\n  b: 1\n' | docker run --rm -i --entrypoint yq "$IMG" -o=json '.a.b' 2>&1)" || die "yq run failed" "$OUT"
-[ "$OUT" = "1" ] || die "yq did not evaluate the expression (got '$OUT')"
+
+# Exercise the EXACT merge operators the entrypoint depends on (the yq bump is the
+# risk): deep merge with array CONCAT (`*+` ireduce, the `merge` mode) vs
+# merge-assign that REPLACES arrays (`*= load()`, the `overwrite` mode).
+printf 'a: 1\nlist: [x]\nmap: {k1: v1}\n' >"$W/defaults.yml"
+printf 'b: 2\nlist: [y]\nmap: {k2: v2}\n' >"$W/values.yml"
+yqrun() { docker run --rm -v "$W:/w" -w /w --entrypoint yq "$IMG" "$@" 2>&1; }
+
+echo "==> merge mode (*+): arrays concat, maps deep-merge"
+M="$(yqrun -o=json -I=0 eval-all '. as $i ireduce ({}; . *+ $i)' defaults.yml values.yml)" \
+  || die "merge yq failed" "$M"
+grep -q '"list":\["x","y"\]' <<<"$M" || die "merge did not concat arrays (got: $M)"
+grep -q '"k1":"v1"' <<<"$M" && grep -q '"k2":"v2"' <<<"$M" || die "merge did not deep-merge maps (got: $M)"
+
+echo "==> overwrite mode (*= load): arrays replaced"
+O="$(yqrun -o=json -I=0 '. *= load("values.yml")' defaults.yml)" || die "overwrite yq failed" "$O"
+grep -q '"list":\["y"\]' <<<"$O" || die "overwrite did not replace the array (got: $O)"
+
+echo "==> gio generate + real offline lint (clean definition -> errors(0))"
+L="$(docker run --rm --entrypoint sh "$IMG" -c '
+  set -e
+  d=$(mktemp -d)
+  gio apim apis definition generate --def-path "$d" >/dev/null 2>&1
+  # the scaffold ships a placeholder visibility the schema rejects; set the
+  # valid enum so a clean definition really lints clean.
+  sed -i "s/visibility: private/visibility: PRIVATE/" "$d/templates/api_config.yml.j2"
+  gio apim apis definition lint --def-path "$d" 2>&1 | tail -1' 2>&1)" || die "gio lint invocation failed" "$L"
+grep -q "errors(0)" <<<"$L" || die "gio offline lint did not report a clean definition (got: $L)"
 
 # gravitee-validate: a locked-down definition PASSES, an open one BLOCKS.
 cat >"$W/clean.json" <<'JSON'
