@@ -29,8 +29,11 @@ except ImportError:  # pragma: no cover - the workflow installs pyyaml
     print("trivy_gate: PyYAML is required (pip install pyyaml)", file=sys.stderr)
     sys.exit(2)
 
+# `result_class` (Trivy's os-pkgs/lang-pkgs) drives OS-vs-binary handling.
+# `trivy_target` is required for binary/library (lang-pkgs) findings — it pins
+# WHICH binary — but OMITTED for OS (os-pkgs) findings (see IDENTITY_*).
 REQUIRED_FIELDS = (
-    "targets", "trivy_target", "cve", "package", "installed", "origin", "class",
+    "targets", "cve", "package", "installed", "origin", "result_class", "class",
     "justification", "mitigation", "advisory", "upstream_issue", "approved_pr",
     "owner", "approved_at", "expires",
 )
@@ -45,11 +48,36 @@ MAX_WINDOW_DAYS = {"emergency": 7, "high-fixable": 14, "upstream-bound": 90, "no
 UNPUBLISHED_MAX_DAYS = 30
 UNPUBLISHED_FIELDS = ("target", "reason", "approved_at", "approved_pr", "expires")
 
-# An exception's identity — everything that must match a Trivy finding for the
-# exception to apply. Narrow on purpose: a different installed version, a
-# different binary (Trivy's internal target) or a different package type does NOT
-# inherit the exception.
-IDENTITY = ("target", "trivy_target", "cve", "package", "installed", "origin")
+# OS vs binary/library is taken straight from Trivy's own report CLASS — `os-pkgs`
+# for distro packages, `lang-pkgs` for everything compiled/bundled (gobinary, npm,
+# jar, …) — rather than a parallel allowlist of distro names that drifts from the
+# scanner. For OS findings Trivy's `Target` is the image+distro string
+# ("<ref> (debian 12.12)"), which changes with the ref and every distro
+# point-release and is identical for every OS finding, so pinning it adds churn
+# without discriminating (the installed version already pins the CVE). So OS
+# exceptions OMIT `trivy_target`; binary/library exceptions keep it REQUIRED so a
+# different binary can't inherit one.
+CLASS_OS = "os-pkgs"
+CLASS_LANG = "lang-pkgs"
+VALID_CLASSES_RESULT = {CLASS_OS, CLASS_LANG}
+
+
+def _is_os(item: dict) -> bool:
+    return item.get("result_class") == CLASS_OS
+
+
+# An exception's identity — everything that must match a Trivy finding. Narrow on
+# purpose: a different installed version, package type, or report class never
+# inherits one. `result_class` is ALWAYS in the identity (so a finding can't match
+# an exception of the other class, and an unknown-class finding matches nothing);
+# `trivy_target` is in it for binary/library findings (so a different binary can't
+# inherit) and dropped for OS findings (see above).
+IDENTITY_BIN = ("target", "trivy_target", "cve", "package", "installed", "origin", "result_class")
+IDENTITY_OS = ("target", "cve", "package", "installed", "origin", "result_class")
+
+
+def _identity_fields(item: dict) -> tuple:
+    return IDENTITY_OS if _is_os(item) else IDENTITY_BIN
 
 
 class BaselineError(Exception):
@@ -146,6 +174,23 @@ def load_baseline(path: pathlib.Path, today: dt.date | None = None) -> list[dict
         if item["class"] not in VALID_CLASSES:
             raise BaselineError(
                 f"{where}: class {item['class']!r} not in {sorted(VALID_CLASSES)}")
+        if item["result_class"] not in VALID_CLASSES_RESULT:
+            raise BaselineError(
+                f"{where}: result_class {item['result_class']!r} not in "
+                f"{sorted(VALID_CLASSES_RESULT)}")
+        # trivy_target: required (non-empty) for lang-pkgs (pins WHICH binary),
+        # and must be ABSENT for os-pkgs (the Trivy target there is a volatile
+        # image+distro string; the installed version already pins the CVE). Check
+        # PRESENCE, not truthiness — an explicit empty/null on an OS entry is still
+        # a mistake worth rejecting.
+        if _is_os(item):
+            if "trivy_target" in item:
+                raise BaselineError(
+                    f"{where}: os-pkgs exception must OMIT trivy_target entirely "
+                    f"(it's a volatile image+distro string)")
+        elif not item.get("trivy_target"):
+            raise BaselineError(
+                f"{where}: lang-pkgs exception requires a non-empty trivy_target")
         item = dict(item)
         item["expires_date"] = _parse_date(item["expires"], where)
         item["approved_at_date"] = _parse_date(item["approved_at"], where)
@@ -165,8 +210,9 @@ def load_baseline(path: pathlib.Path, today: dt.date | None = None) -> list[dict
             raise BaselineError(
                 f"{where}: class {item['class']!r} allows <= {limit} days, "
                 f"but expires - approved_at = {span} days (renew to shorten)")
+        fields = _identity_fields(item)
         for t in targets:
-            key = (t,) + tuple(str(item[f]) for f in IDENTITY[1:])
+            key = (t,) + tuple(str(item[f]) for f in fields[1:])
             if key in seen:
                 raise BaselineError(f"{where}: duplicate exception for {key}")
             seen.add(key)
@@ -190,23 +236,26 @@ def load_findings(path: pathlib.Path) -> list[dict]:
     for result in data.get("Results") or []:
         rtarget = result.get("Target", "")
         rtype = result.get("Type", "")
+        rclass = result.get("Class", "")
         for v in result.get("Vulnerabilities") or []:
             f = {
                 "trivy_target": rtarget,
                 "origin": rtype,
+                "result_class": rclass,
                 "cve": v.get("VulnerabilityID", ""),
                 "package": v.get("PkgName", ""),
                 "installed": v.get("InstalledVersion", ""),
                 "fixed": v.get("FixedVersion", ""),
                 "severity": (v.get("Severity") or "").upper(),
             }
-            # Dedupe on exactly the fields that drive the canonical tag + the
-            # per-target counters (NOT `fixed`): `fixed` is metadata, absent from
-            # the canonical string, so including it here would let two findings
-            # differing only in FixedVersion survive as two by_target bumps while
-            # the canonical list (set() of the tag) collapses them to one.
-            fkey = (f["trivy_target"], f["origin"], f["cve"], f["package"],
-                    f["installed"], f["severity"])
+            # Dedupe on the finding's full identity + severity (NOT `fixed`, which
+            # is metadata absent from the canonical string — including it would let
+            # two findings differing only in FixedVersion survive as two by_target
+            # bumps while the canonical list collapses them to one). `result_class`
+            # is included so two otherwise-identical rows of different class don't
+            # collapse.
+            fkey = (f["trivy_target"], f["origin"], f["result_class"], f["cve"],
+                    f["package"], f["installed"], f["severity"])
             if fkey in seen:
                 continue
             seen.add(fkey)
@@ -215,15 +264,17 @@ def load_findings(path: pathlib.Path) -> list[dict]:
 
 
 def _finding_key(target: str, f: dict) -> tuple:
-    """The identity tuple shared by a finding and its exception."""
-    return (target, f["trivy_target"], f["cve"], f["package"], f["installed"], f["origin"])
+    """The identity tuple shared by a finding and its exception. OS findings drop
+    the volatile trivy_target; binary/library findings keep it."""
+    return (target,) + tuple(f[k] for k in _identity_fields(f)[1:])
 
 
 def build_index(baseline: list[dict]) -> dict[tuple, dict]:
     idx: dict[tuple, dict] = {}
     for item in baseline:
+        fields = _identity_fields(item)
         for t in item["targets"]:
-            key = (t,) + tuple(str(item[f]) for f in IDENTITY[1:])
+            key = (t,) + tuple(str(item[f]) for f in fields[1:])
             idx[key] = item
     return idx
 
@@ -247,10 +298,21 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
             sev = f["severity"]
             if sev not in ("CRITICAL", "HIGH"):
                 continue
-            key = _finding_key(target, f)
-            exc = index.get(key)
             tag = (f"{target} {f['cve']} {f['package']} {f['installed']} "
                    f"[{f['origin']}@{f['trivy_target'].split('/')[-1]}] ({sev})")
+
+            # Fail closed on an unrecognised report Class: a vuln finding is
+            # os-pkgs or lang-pkgs, so a missing/unknown Class is an anomaly, not a
+            # free pass. Never let it fall through to the lang-pkgs branch where it
+            # could inherit an exception.
+            if f.get("result_class") not in VALID_CLASSES_RESULT:
+                failures.append(
+                    f"unknown Trivy Class {f.get('result_class')!r}: {tag}")
+                bump(target, "failures")
+                continue
+
+            key = _finding_key(target, f)
+            exc = index.get(key)
 
             if exc is None:
                 if sev == "CRITICAL":
@@ -275,8 +337,9 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
     # they must be cleaned up. Non-expired entries that matched nothing are
     # obsolete noise and only warn.
     for item in baseline:
+        fields = _identity_fields(item)
         for t in item["targets"]:
-            key = (t,) + tuple(str(item[f]) for f in IDENTITY[1:])
+            key = (t,) + tuple(str(item[f]) for f in fields[1:])
             if key in used_keys:
                 continue
             if item["expires_date"] < today:
