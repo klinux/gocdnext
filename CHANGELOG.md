@@ -10,6 +10,33 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **vercel plugin → Vercel CLI v65.12.1 + pinned tree, 7 → 0 CRITICAL.** The
+  published `:v1` bundled Vercel CLI v37, whose deps carried 7 CRITICAL: an
+  **esbuild binary built on Go 1.18.3** (CVE-2023-24538/24540, CVE-2024-24790,
+  CVE-2025-68121) and three copies of vulnerable **node-tar** (CVE-2026-59873).
+  Bumped the CLI to **v65.12.1** (modern esbuild) and pinned node-tar to the
+  patched 7.5.x via an `overrides` (a patch-level bump within tar 7.x — one
+  transitive copy lagged at 7.5.11). The CLI is installed from a **committed
+  `package.json` + `package-lock.json` via `npm ci`**, so the whole transitive
+  tree is pinned + integrity-verified across `no_cache` rebuilds. Base pinned by
+  digest (`node:22-alpine` = supported Alpine 3.24) + `apk upgrade`. Trivy
+  `--pkg-types os,library`: **0 CRITICAL** (was 7; no residual). **The wrapper
+  contract is preserved, but Vercel CLI v37→v65 crosses many majors and may be
+  breaking** for pipelines that parse the CLI's output — the plugin only runs
+  `vercel deploy --yes --global-config … [--prod] [--prebuilt]`, and those flags
+  all still exist. Opts into `no_cache: true` for OS currency. Wrapper inputs
+  unchanged (`@v1`). **Token hardening:** v65 reads `VERCEL_TOKEN` from the env, so
+  the entrypoint now writes the token to a `0600` `auth.json` (`--global-config`)
+  **and unsets `VERCEL_TOKEN`**, keeping the secret off both argv and the deploy
+  process env; the prebuilt catalog example does the same (and is bumped off the
+  vulnerable `vercel@37` to `@65.12.1`). New real `smoke_test.sh`: the CLI is
+  v65.12.1 and the **real entrypoint** given a bogus token authenticates **from the
+  file** and fails with the CLI's stable "The specified token is not valid" (not a
+  module/parse error) for both preview and `--prod` — proving the deploy path
+  (incl. the overridden tar) loads and the file-based auth is actually used. **Note:** `apk upgrade` uses Alpine's mutable repos, so the OS set is
+  patched at build time, not byte-identical; the FROM digest pins the base layer
+  and the weekly Trivy gate catches drift.
+
 - **argocd plugin → argocd CLI v3.6.1 + checksum-verified, 6 → 0 CRITICAL.** The
   published `:v1` bundled the argocd CLI v2.13.1, whose Go binary carried 6
   CRITICAL (argo-cd CVE-2025-47933 / CVE-2025-55190 / CVE-2026-77459, go-git
