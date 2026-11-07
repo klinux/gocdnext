@@ -107,6 +107,10 @@ grep -qiE 'Embedded checks are loaded|Falling back to embedded' <<<"$OUT" \
 if grep -qi 'from disk are loaded' <<<"$OUT"; then
   die "config reused the on-disk check bundle instead of the embedded set" "$OUT"
 fi
+# config is meant to be offline: the debug log must show the version check +
+# telemetry request was suppressed.
+grep -qi 'Version check and telemetry are disabled' <<<"$OUT" \
+  || die "config scan did not disable the version check + telemetry" "$OUT"
 
 SMOKE_OK=1
 echo "PASS: trivy smoke"

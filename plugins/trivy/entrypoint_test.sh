@@ -38,10 +38,21 @@ rm -f "$TMP/args"
 PLUGIN_SCAN_TYPE=config run || fail "entrypoint failed for scan_type=config"
 grep -qx -- "--skip-check-update" "$TMP/args" || fail "config scan missing --skip-check-update"
 
-# ── 4. non-config scans do NOT pass --skip-check-update (no misconfig checks) ──
+# ── 3b. config isolates the check cache + goes fully offline: a fresh --cache-dir
+#        (so --skip-check-update falls back to EMBEDDED checks, not a stale on-disk
+#        bundle) plus --skip-version-check + --disable-telemetry (no network). ──
+rm -f "$TMP/args"
+PLUGIN_SCAN_TYPE=config run || fail "entrypoint failed for scan_type=config"
+grep -qx -- "--cache-dir" "$TMP/args" || fail "config scan missing an isolated --cache-dir"
+grep -qx -- "--skip-version-check" "$TMP/args" || fail "config scan missing --skip-version-check"
+grep -qx -- "--disable-telemetry" "$TMP/args" || fail "config scan missing --disable-telemetry"
+
+# ── 4. non-config scans do NOT pass --skip-check-update / config-only flags ──
 rm -f "$TMP/args"
 PLUGIN_SCAN_TYPE=fs run || fail "entrypoint failed for scan_type=fs"
 grep -qx -- "--skip-check-update" "$TMP/args" && fail "spurious --skip-check-update on a non-config scan"
+grep -qx -- "--disable-telemetry" "$TMP/args" && fail "spurious --disable-telemetry on a non-config scan"
+grep -qx -- "--skip-version-check" "$TMP/args" && fail "spurious --skip-version-check on a non-config scan"
 
 # ── 4b. --ignore-unfixed is a CVE-scan flag (image/fs/repo); `trivy config`
 #        REJECTS it with `unknown flag` (FATAL). It defaults ON, so a config
@@ -86,5 +97,10 @@ rc=$?
 [ "$rc" -eq 1 ] || fail "offline gate failure should still exit 1 (got $rc)"
 [ "$(grep -cx -- "--skip-db-update" "$TMP/args")" -eq 2 ] \
   || fail "--skip-db-update must ride both the primary AND the summary re-run"
+# the config isolation + offline flags must ALSO ride both runs
+for f in "--cache-dir" "--skip-version-check" "--disable-telemetry"; do
+  [ "$(grep -cx -- "$f" "$TMP/args")" -eq 2 ] \
+    || fail "$f must ride both the primary AND the summary re-run"
+done
 
 echo "PASS: trivy entrypoint"
