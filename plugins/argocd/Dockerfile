@@ -39,11 +39,14 @@
 #
 # The CLI auths via the token in env (ARGOCD_AUTH_TOKEN) — no
 # config file persistence needed, every run is fresh.
-# Base pinned by digest + `apk upgrade` for OS security currency. Opts into
-# `no_cache` (plugin.yaml) so the publish build can't freeze a stale apk layer.
+# Base: a SUPPORTED Alpine (3.24), pinned by patch+digest, with `apk upgrade` for
+# OS security currency. 3.20 went EOL 2026-04-01 — an unsupported base stops
+# getting security updates (and Trivy's own DB coverage degrades: "OS version is
+# no longer supported"), which `apk upgrade` can't fix. Opts into `no_cache`
+# (plugin.yaml) so the publish build can't freeze a stale apk layer.
 # NOTE: `apk upgrade` pulls Alpine's MUTABLE repos — the FROM digest pins the base
 # layer, not the upgraded set; the weekly Trivy gate catches drift.
-FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+FROM alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4
 
 # argocd CLI bumped v2.13.1 -> v3.6.1: v2.13.1 carried 6 CRITICAL in its Go binary
 # (argo-cd CVE-2025-47933/CVE-2025-55190/CVE-2026-77459, go-git CVE-2025-21613,

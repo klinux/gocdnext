@@ -21,23 +21,39 @@ die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2" |
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
 
-arg() { docker run --rm --entrypoint argocd "$IMG" "$@" 2>&1; }
-
 echo "==> argocd client is v3.6.1"
-OUT="$(arg version --client)" || die "argocd version --client failed" "$OUT"
+OUT="$(docker run --rm --entrypoint argocd "$IMG" version --client 2>&1)" \
+  || die "argocd version --client failed" "$OUT"
 grep -q "v3.6.1" <<<"$OUT" || die "argocd is not v3.6.1" "$OUT"
 
-echo "==> subcommands the plugin drives exist"
-for sub in "app sync" "app wait" "app rollback"; do
-  # shellcheck disable=SC2086
-  OUT="$(arg $sub --help)" || die "'argocd $sub' missing in v3.6.1" "$OUT"
-done
+# Run the REAL entrypoint against a dead endpoint (127.0.0.1:1). The command must
+# reach the network and fail with a CONNECTION error — NOT a parse/usage error.
+# That proves the subcommand + flags the wrapper builds are still accepted by the
+# v3 CLI (a removed command/flag would be a parse error, not a connection one).
+runep() { # runep <extra -e flags...> : sets RC + OUT
+  set +e
+  OUT="$(docker run --rm \
+    -e PLUGIN_SERVER=127.0.0.1:1 -e PLUGIN_AUTH_TOKEN=smoke -e PLUGIN_INSECURE=true \
+    "$@" "$IMG" 2>&1)"; RC=$?
+  set -e
+}
+assert_conn() { # assert_conn <label>
+  [ "$RC" -ne 0 ] || die "$1: expected a non-zero connection failure (rc=$RC)" "$OUT"
+  grep -qiE 'connection refused|Failed to establish connection' <<<"$OUT" \
+    || die "$1: expected a connection error, got something else" "$OUT"
+  if grep -qiE 'unknown (flag|command|shorthand)|Error: accepts|requires at least' <<<"$OUT"; then
+    die "$1: got a PARSE/usage error — the argocd v3 CLI surface changed" "$OUT"
+  fi
+}
 
-echo "==> flags the plugin passes exist"
-SYNC_HELP="$(arg app sync --help)"
-for f in --insecure --server-crt --grpc-web; do
-  grep -q -- "$f" <<<"$SYNC_HELP" || die "flag $f missing from 'argocd app sync'" "$SYNC_HELP"
-done
-grep -q -- "--plugin-env" <<<"$(arg app set --help)" || die "--plugin-env missing from 'argocd app set'"
+echo "==> entrypoint 'app sync' reaches the server (connection failure, not parse)"
+runep -e PLUGIN_COMMAND="app sync demo"
+assert_conn "app sync"
+
+echo "==> entrypoint 'app set' + plugin_env forwards one arg and reaches the server"
+runep -e PLUGIN_COMMAND="app set demo" -e PLUGIN_PLUGIN_ENV="HELM_ARGS=--set x -f y"
+assert_conn "app set + plugin_env"
+grep -q -- "--plugin-env HELM_ARGS=--set x -f y" <<<"$OUT" \
+  || die "plugin_env was not forwarded as a single --plugin-env arg" "$OUT"
 
 echo "PASS: argocd smoke"
