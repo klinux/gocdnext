@@ -10,6 +10,24 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **argocd plugin → argocd CLI v3.6.1 + checksum-verified, 6 → 0 CRITICAL.** The
+  published `:v1` bundled the argocd CLI v2.13.1, whose Go binary carried 6
+  CRITICAL (argo-cd CVE-2025-47933 / CVE-2025-55190 / CVE-2026-77459, go-git
+  CVE-2025-21613, grpc CVE-2026-33186, Go-stdlib CVE-2025-68121) — and it was
+  downloaded with **no checksum verification**. Bumped the CLI to **v3.6.1** (built
+  with Go 1.27.3, bundling the patched deps; Trivy on the binary: 0 CRITICAL) and
+  the download is now **sha256-verified** against the release's published checksum.
+  Base `alpine:3.20` pinned by digest + `apk upgrade`. Trivy `--pkg-types os,library`:
+  **0 CRITICAL** (was 6; no residual). The v2→v3 bump is a CLI version bump only —
+  every subcommand (`app sync` / `wait` / `rollback`) and flag the plugin passes
+  (`--insecure`, `--server-crt`, `--grpc-web`, `--plugin-env`) still exists, proven
+  by the smoke. Opts into `no_cache: true` for OS currency. Wrapper inputs unchanged
+  (`@v1`; token stays env-only). New real `smoke_test.sh` (image CLI surface:
+  version + the subcommands/flags the wrapper depends on); the wrapper arg/token
+  handling stays covered by `entrypoint_test.sh`. **Note:** `apk upgrade` uses
+  Alpine's mutable repos, so the OS set is patched at build time, not byte-identical;
+  the FROM digest pins the base layer and the weekly Trivy gate catches drift.
+
 - **gravitee plugin → patched base + yq 4.54.2, 12 → 0 fixable CRITICAL.** The
   published `:v1` carried fixable CRITICAL because its apt layer was cache-frozen
   with stale OpenSSL/GnuTLS and a yq binary built on an old Go. Base pinned by
