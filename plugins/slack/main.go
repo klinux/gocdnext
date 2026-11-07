@@ -12,9 +12,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -36,21 +39,48 @@ func main() {
 		)
 	}
 
-	body, _ := json.Marshal(map[string]string{
+	if err := postSlack(webhook, channel, template); err != nil {
+		// NEVER print the raw webhook: its path carries the secret token.
+		fmt.Fprintln(os.Stderr, "slack post failed:", scrubbed(err, webhook))
+		os.Exit(1)
+	}
+	fmt.Println("slack: sent")
+}
+
+func postSlack(webhook, channel, template string) error {
+	body, err := json.Marshal(map[string]string{
 		"channel": channel,
 		"text":    template,
 	})
+	if err != nil {
+		return err
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Post(webhook, "application/json", bytes.NewReader(body))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "slack post:", err)
-		os.Exit(1)
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		fmt.Fprintln(os.Stderr, "slack responded:", resp.Status)
-		os.Exit(1)
+		return fmt.Errorf("slack responded: %s", resp.Status)
 	}
-	fmt.Println("slack: sent")
+	return nil
+}
+
+// scrubbed renders a post error WITHOUT the webhook URL, whose path carries the
+// secret token. net/http wraps transport failures in *url.Error, whose Error()
+// echoes the full URL; collapse it to the operation + underlying error (which
+// names the host, not the token-bearing path). As a belt-and-suspenders final
+// pass, replace any residual exact occurrence of the webhook string.
+func scrubbed(err error, webhook string) string {
+	msg := err.Error()
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		msg = fmt.Sprintf("%s: %v", uerr.Op, uerr.Err)
+	}
+	if webhook != "" {
+		msg = strings.ReplaceAll(msg, webhook, "[redacted-webhook]")
+	}
+	return msg
 }
