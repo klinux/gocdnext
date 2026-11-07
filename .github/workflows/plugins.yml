@@ -407,6 +407,17 @@ jobs:
           TAG=$(grep -E '^image_tag:' "plugins/${{ matrix.plugin }}/plugin.yaml" | head -1 | awk '{print $2}' | tr -d '"' || true)
           echo "tag=${TAG:-v1}" >> "$GITHUB_OUTPUT"
 
+      # Opt-in: a plugin whose freshness depends on a mutable upstream repo
+      # (e.g. lighthouse-ci rebuilds Chromium via `apt-get upgrade`) sets
+      # `no_cache: true` in its plugin.yaml. Without it the registry build cache
+      # would import the old apt/npm layer on a release that didn't touch the
+      # Dockerfile, silently re-shipping a stale (vulnerable) layer. When true we
+      # build with --no-cache AND skip cache import/export for that plugin.
+      - id: nocache
+        run: |
+          NC=$(grep -E '^no_cache:' "plugins/${{ matrix.plugin }}/plugin.yaml" | head -1 | awk '{print $2}' | tr -d '"' || true)
+          echo "value=${NC:-false}" >> "$GITHUB_OUTPUT"
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -518,12 +529,17 @@ jobs:
           # there's nothing to attest anyway.
           provenance: ${{ github.event_name != 'pull_request' }}
           sbom: ${{ github.event_name != 'pull_request' }}
+          # Force a from-scratch build for plugins that opt into no_cache, so a
+          # mutable-upstream layer (apt/npm) can't be re-imported stale.
+          no-cache: ${{ steps.nocache.outputs.value == 'true' }}
           # Registry cache — same rationale as the base job (10 GB GHA
           # cache cap + full-catalog rebuilds = recurring evicted-blob
           # import failures). cache-to skipped on any PR: the matrix
-          # never pushes on PRs, and fork tokens can't write GHCR.
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-buildcache:${{ matrix.plugin }}
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/{1}/gocdnext-plugin-buildcache:{2},mode=max', env.REGISTRY, github.repository_owner, matrix.plugin) || '' }}
+          # never pushes on PRs, and fork tokens can't write GHCR. Both are
+          # skipped entirely for no_cache plugins (don't import or export a
+          # layer we deliberately rebuild).
+          cache-from: ${{ steps.nocache.outputs.value == 'true' && '' || format('type=registry,ref={0}/{1}/gocdnext-plugin-buildcache:{2}', env.REGISTRY, github.repository_owner, matrix.plugin) }}
+          cache-to: ${{ (github.event_name != 'pull_request' && steps.nocache.outputs.value != 'true') && format('type=registry,ref={0}/{1}/gocdnext-plugin-buildcache:{2},mode=max', env.REGISTRY, github.repository_owner, matrix.plugin) || '' }}
 
       # Sign the manifest digest of every consumer plugin
       # (gradle, maven, node, go, docker, kubectl, trivy, slack

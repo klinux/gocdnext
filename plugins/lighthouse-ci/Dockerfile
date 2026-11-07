@@ -66,15 +66,15 @@ RUN apt-get update \
         fonts-liberation libnss3 \
     && rm -rf /var/lib/apt/lists/*
 
-# LHCI pinned by version. Installed into a project dir (not `-g`) so an
-# `overrides` can force the patched node-tar (>= 7.5.19, CVE-2026-59873) that
-# @lhci/cli otherwise pulls transitively at 6.2.1 — the smoke proves LHCI still
-# collects/asserts on the overridden tar. `lhci` is symlinked onto PATH.
-ARG LHCI_VERSION=0.16.0
+# LHCI 0.16.0 (was 0.14.0). The bump is what clears the node-tar DoS
+# (CVE-2026-59873): 0.14.x pulled vulnerable node-tar 6.2.1 transitively, while
+# 0.16.0 switched to the maintained `modern-tar`. Installed from a COMMITTED
+# package.json + package-lock.json via `npm ci`, so the ENTIRE transitive tree is
+# pinned and reproducible build-to-build (a plain `npm install` would let the tree
+# float on any cache miss). Regenerate the lock with `npm install` when bumping.
 WORKDIR /opt/lhci
-RUN printf '{"name":"gocdnext-lhci","private":true,"dependencies":{"@lhci/cli":"%s"},"overrides":{"tar":">=7.5.19"}}' \
-        "${LHCI_VERSION}" > package.json \
-    && npm install --omit=dev --no-audit --no-fund \
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund \
     && ln -sf /opt/lhci/node_modules/.bin/lhci /usr/local/bin/lhci \
     && lhci --version
 
