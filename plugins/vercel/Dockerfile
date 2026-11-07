@@ -9,7 +9,7 @@
 #   PLUGIN_PREBUILT    (optional)  deploy .vercel/output produced
 #                                  by `vercel build` in a prior job.
 #
-# Base pinned by digest (node:22-alpine = supported Alpine 3.23) + `apk upgrade`
+# Base pinned by digest (node:22-alpine = supported Alpine 3.24) + `apk upgrade`
 # for OS currency. Opts into `no_cache` (plugin.yaml) so the publish build can't
 # freeze a stale apk layer. NOTE: `apk upgrade` pulls Alpine's MUTABLE repos — the
 # FROM digest pins the base layer, not the upgraded set; the weekly Trivy gate

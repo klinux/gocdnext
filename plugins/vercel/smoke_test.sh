@@ -38,22 +38,29 @@ runep() { # runep <extra -e ...> : sets RC + OUT. Token is format-valid but bogu
     "$@" "$IMG" 2>&1)"; RC=$?
   set -e
 }
-assert_reached_api() { # assert_reached_api <label>
+# The entrypoint unsets VERCEL_TOKEN and authenticates from auth.json, so the CLI
+# returns its stable FILE-path rejection. Anchor on exactly that — NOT on
+# "Retrieving project" (which also precedes a later TLS/network error, a false
+# green) and NOT on the env-var message (which would mean auth.json was bypassed).
+assert_file_auth() { # assert_file_auth <label>
   [ "$RC" -ne 0 ] || die "$1: expected a non-zero auth failure (rc=$RC)" "$OUT"
-  grep -qiE 'token .*is not valid|not authorized|Retrieving project' <<<"$OUT" \
-    || die "$1: expected the CLI to reach the Vercel API and reject the token" "$OUT"
+  grep -q "The specified token is not valid" <<<"$OUT" \
+    || die "$1: expected the file-based 'The specified token is not valid' rejection" "$OUT"
+  if grep -qiE 'VERCEL_TOKEN environment variable' <<<"$OUT"; then
+    die "$1: CLI used the ENV token — auth.json was bypassed (VERCEL_TOKEN not unset)" "$OUT"
+  fi
   if grep -qiE 'Cannot find module|SyntaxError|is not a function|Unknown command|command not found' <<<"$OUT"; then
     die "$1: got a module/parse error — the CLI or deploy path failed to load" "$OUT"
   fi
 }
 
-echo "==> entrypoint 'deploy' (preview) loads + reaches the Vercel API"
+echo "==> entrypoint 'deploy' (preview) authenticates from auth.json and reaches the API"
 runep
-assert_reached_api "deploy (preview)"
+assert_file_auth "deploy (preview)"
 
 echo "==> entrypoint 'deploy --prod' is accepted the same way"
 runep -e PLUGIN_PROD=true
-assert_reached_api "deploy --prod"
+assert_file_auth "deploy --prod"
 grep -q "prod=true" <<<"$OUT" || die "the --prod path was not taken" "$OUT"
 
 echo "PASS: vercel smoke"
