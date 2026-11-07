@@ -207,9 +207,11 @@ def load_baseline(path: pathlib.Path, today: dt.date | None = None) -> list[dict
                 raise BaselineError(
                     f"{where}: class os-no-fix requires an explicit `fixed_version: \"\"` "
                     f"(the premise is no upstream fix)")
-            if not item.get("risk_accepted_by"):
+            rab = item.get("risk_accepted_by")
+            if not (isinstance(rab, str) and rab.strip()):
                 raise BaselineError(
-                    f"{where}: class os-no-fix requires `risk_accepted_by` (sign-off)")
+                    f"{where}: class os-no-fix requires `risk_accepted_by` as a "
+                    f"non-empty string sign-off (got {rab!r})")
         item = dict(item)
         item["expires_date"] = _parse_date(item["expires"], where)
         item["approved_at_date"] = _parse_date(item["approved_at"], where)
@@ -346,6 +348,12 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
             if exc["expires_date"] < today:
                 failures.append(
                     f"exception EXPIRED {exc['expires']} (renew or remove): {tag}"); bump(target, "failures")
+            elif exc["class"] == "os-no-fix" and sev != "CRITICAL":
+                # os-no-fix is a CRITICAL-only cover; a HIGH of the same identity
+                # must use no-fix/upstream-bound, not inherit this.
+                failures.append(
+                    f"os-no-fix is CRITICAL-only; this finding is {sev} — "
+                    f"use a no-fix/upstream-bound exception: {tag}"); bump(target, "failures")
             elif exc["class"] == "os-no-fix" and f.get("fixed"):
                 # The os-no-fix premise is "no upstream fix". Trivy now reports one
                 # ({fixed}), so the exception lapses immediately — patch it.

@@ -194,6 +194,14 @@ check("os-no-fix covers an OS CRITICAL (no fix)", not r["failures"], str(r))
 r = ev({"docker": [_find("CVE-OS2", "CRITICAL", fixed="1.2.14", **{k: v for k, v in osf2.items() if k != "cve"})]},
        [_osnofix(cve="CVE-OS2", package="zlib1g")])
 check("os-no-fix lapses when a fix appears", any("fix is now available" in f for f in r["failures"]), str(r))
+# os-no-fix is CRITICAL-only at RUNTIME: a HIGH of the same identity must NOT be
+# accepted, in either observe or enforce.
+for mode in ("observe", "enforce"):
+    r = ev({"docker": [_find("CVE-OS2", "HIGH", fixed="",
+                             **{k: v for k, v in osf2.items() if k != "cve"})]},
+           [_osnofix(cve="CVE-OS2", package="zlib1g")], high_mode=mode)
+    check(f"os-no-fix rejects a HIGH finding ({mode})",
+          any("os-no-fix is CRITICAL-only" in f for f in r["failures"]), str(r))
 
 # --- baseline validation (hard FAIL) ---
 def expect_invalid(name: str, exceptions, mutate=None, unpublished=None):
@@ -264,6 +272,13 @@ expect_invalid("os-no-fix with non-empty fixed_version rejected",
                [{**_osnofix(), "fixed_version": "1.2.3"}])
 expect_invalid("os-no-fix without risk_accepted_by rejected",
                [{k: v for k, v in _osnofix().items() if k != "risk_accepted_by"}])
+# risk_accepted_by must be a non-empty string sign-off (not whitespace/bool/number)
+expect_invalid("os-no-fix with whitespace risk_accepted_by rejected",
+               [{**_osnofix(), "risk_accepted_by": "   "}])
+expect_invalid("os-no-fix with boolean risk_accepted_by rejected",
+               [{**_osnofix(), "risk_accepted_by": True}])
+expect_invalid("os-no-fix with numeric risk_accepted_by rejected",
+               [{**_osnofix(), "risk_accepted_by": 123}])
 expect_invalid("os-no-fix over 90 days rejected",
                [_osnofix(expires="2027-06-01", approved_at="2026-11-07")])
 # a 7-day emergency is accepted
