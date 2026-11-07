@@ -10,6 +10,23 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **cloudflare-pages plugin → wrangler 4.158.0, Go/esbuild CRITICALs cleared.**
+  The published `:v1` was built on a floating `node:22-alpine` with
+  `wrangler@3`, whose bundled `esbuild` (built on Go 1.20.4) carried the
+  Go-stdlib CVE-2024-24790 and CVE-2025-68121, and whose floating base could
+  drift to an npm with a vulnerable `tar`. Pinned the base by digest
+  (`node:22-alpine`, Alpine 3.24, npm `tar` 7.5.22) + `apk upgrade`, and bumped
+  wrangler to **4.158.0** (ships esbuild 0.28.x on a patched Go). Deps now
+  install with `npm ci` from a **committed `package-lock.json`** so the image is
+  reproducible and the gate scans a frozen tree. Trivy `--pkg-types os,library`:
+  **0 CRITICAL, 0 HIGH**. The wrangler **v3 → v4 major** keeps the plugin
+  surface (`wrangler pages deploy <dir> --project-name --branch`) unchanged;
+  token/account continue to ride env (never argv). New real `smoke_test.sh`
+  (points `CLOUDFLARE_API_BASE_URL` at `example.invalid` and asserts the deploy
+  reaches the API, not a parse error, with the token absent from the log) and
+  `entrypoint_test.sh` (mocks wrangler, capturing argv to prove the token and
+  account id never reach argv and the required-input guards fail fast). Opts into
+  `no_cache: true`. (#350)
 - **cosign plugin → cosign v3.1.4, Go CRITICALs cleared.** The published `:v1`
   shipped the cosign v2.4.1 binary (built on an old Go), carrying the Go-stdlib
   CVE-2025-68121 and grpc CVE-2026-33186; the base was also the now-EOL
