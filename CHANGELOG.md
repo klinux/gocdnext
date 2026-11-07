@@ -10,6 +10,28 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **cloudflare-pages plugin → wrangler 4.158.0, Go/esbuild CRITICALs cleared.**
+  The published `:v1` was built on a floating `node:22-alpine` with
+  `wrangler@3`, whose bundled `esbuild` (built on Go 1.20.4) carried the
+  Go-stdlib CVE-2024-24790 and CVE-2025-68121, and whose floating base could
+  drift to an npm with a vulnerable `tar`. Pinned the base by digest
+  (`node:22-alpine`, Alpine 3.24, npm `tar` 7.5.22) + `apk upgrade`, and bumped
+  wrangler to **4.158.0** (ships esbuild 0.28.x on a patched Go). Deps now
+  install with `npm ci` from a **committed `package-lock.json`** so the npm
+  dependency tree is locked/reproducible and the gate scans a frozen tree (the
+  OS layer is not bit-reproducible — `apk upgrade` hits mutable repos, pinned by
+  the FROM digest + weekly gate). Trivy `--pkg-types os,library`: **0 CRITICAL,
+  0 HIGH**. The wrangler **v3 → v4 major** keeps the plugin surface (`wrangler
+  pages deploy <dir> --project-name --branch`) unchanged; token/account continue
+  to ride env (never argv). Sets `WRANGLER_SEND_METRICS=false` so a CI job never
+  phones home (no deviceId/telemetry). New real `smoke_test.sh` (points
+  `CLOUDFLARE_API_BASE_URL` at `example.invalid`, runs with `--branch` +
+  `WRANGLER_LOG=debug`, and asserts wrangler hits the exact Pages projects API
+  endpoint — not a generic fetch failure — recognises `--branch`, keeps the
+  token out of the log, and reports telemetry disabled) and `entrypoint_test.sh`
+  (mocks wrangler, capturing argv to prove the token and account id never reach
+  argv and every required-input guard fails fast). Opts into `no_cache: true`.
+  (#350)
 - **cosign plugin → cosign v3.1.4, Go CRITICALs cleared.** The published `:v1`
   shipped the cosign v2.4.1 binary (built on an old Go), carrying the Go-stdlib
   CVE-2025-68121 and grpc CVE-2026-33186; the base was also the now-EOL
