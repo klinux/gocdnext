@@ -1,5 +1,10 @@
 name: lighthouse-ci
 category: quality
+# This image bundles Chromium and refreshes it via `apt-get upgrade` at build
+# time, so it MUST build from scratch — otherwise the registry build cache
+# re-imports a stale (vulnerable) Chromium layer on a release that didn't touch
+# the Dockerfile. Consumed by the `nocache` step in plugins.yml.
+no_cache: true
 description: >
   Run Google's Lighthouse CI suite against one or more URLs —
   collect metrics, assert against a performance budget, and
