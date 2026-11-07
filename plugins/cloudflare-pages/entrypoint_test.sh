@@ -68,6 +68,8 @@ expect_fail2 "no project" "project-name: is required" \
   PLUGIN_DIR=site CLOUDFLARE_API_TOKEN="${TOKEN}" CLOUDFLARE_ACCOUNT_ID="${ACCT}"
 expect_fail2 "no token" "CLOUDFLARE_API_TOKEN" \
   PLUGIN_DIR=site PLUGIN_PROJECT_NAME=smoke CLOUDFLARE_ACCOUNT_ID="${ACCT}"
+expect_fail2 "no account" "CLOUDFLARE_ACCOUNT_ID" \
+  PLUGIN_DIR=site PLUGIN_PROJECT_NAME=smoke CLOUDFLARE_API_TOKEN="${TOKEN}"
 expect_fail2 "missing dir" "not found" \
   PLUGIN_DIR=nope PLUGIN_PROJECT_NAME=smoke CLOUDFLARE_API_TOKEN="${TOKEN}" CLOUDFLARE_ACCOUNT_ID="${ACCT}"
 

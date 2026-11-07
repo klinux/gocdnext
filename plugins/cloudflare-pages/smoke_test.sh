@@ -41,20 +41,32 @@ grep -q '4.158.0' <<<"$OUT" || die "wrangler is not 4.158.0" "$OUT"
 echo "==> stage a built site dir"
 mkdir -p "$W/site"; echo '<h1>smoke</h1>' >"$W/site/index.html"
 
-echo "==> pages deploy reaches the Cloudflare API; token not leaked"
+# WRANGLER_LOG=debug surfaces the exact CF API request wrangler builds, so we can
+# assert it reached the RIGHT Pages endpoint with the --branch flag honoured —
+# not just a generic "fetch failed" that some other init could also produce.
+echo "==> pages deploy (with --branch) reaches the exact Pages API; token not leaked; telemetry off"
 set +e
 OUT="$(docker run --rm -v "$W:/workspace" -w /workspace \
-  -e PLUGIN_DIR=site -e PLUGIN_PROJECT_NAME=smoke \
+  -e PLUGIN_DIR=site -e PLUGIN_PROJECT_NAME=smoke -e PLUGIN_BRANCH=preview \
   -e CLOUDFLARE_API_TOKEN="$TOKEN" -e CLOUDFLARE_ACCOUNT_ID=acct-smoke \
-  -e CLOUDFLARE_API_BASE_URL=https://example.invalid "$IMG" 2>&1)"; RC=$?
+  -e CLOUDFLARE_API_BASE_URL=https://example.invalid -e WRANGLER_LOG=debug "$IMG" 2>&1)"; RC=$?
 set -e
 [ "$RC" -ne 0 ] || die "expected a non-zero failure" "$OUT"
 grep -q '==> wrangler pages deploy' <<<"$OUT" || die "entrypoint did not invoke wrangler" "$OUT"
-grep -q 'fetch failed' <<<"$OUT" || die "expected the deterministic API-fetch failure" "$OUT"
+# Exact API call: proves wrangler 4 parsed `pages deploy --project-name --branch`,
+# resolved the account, and hit the project endpoint at our stub host.
+grep -qF 'CF API REQUEST: GET https://example.invalid/accounts/acct-smoke/pages/projects/smoke' <<<"$OUT" \
+  || die "did not reach the exact Pages projects API endpoint" "$OUT"
+# --branch must have been recognised (v4 surface), not silently dropped.
+grep -qE '"argsUsed":\[[^]]*"branch"' <<<"$OUT" || die "--branch was not recognised by wrangler 4" "$OUT"
 if grep -qiE 'unknown argument|not enough non-option|Unknown command|Usage:' <<<"$OUT"; then
   die "PARSE error — the wrangler CLI surface changed" "$OUT"
 fi
 grep -q 'SECRETMARKER' <<<"$OUT" && die "API token leaked into the log" "$OUT" || true
+# Telemetry must be off: the dispatcher reports "disabled", never "Posting data".
+grep -q 'Metrics dispatcher: Dispatching disabled' <<<"$OUT" \
+  || die "could not confirm wrangler telemetry is disabled (WRANGLER_SEND_METRICS)" "$OUT"
+grep -q 'Metrics dispatcher: Posting data' <<<"$OUT" && die "wrangler telemetry was POSTED despite WRANGLER_SEND_METRICS=false" "$OUT" || true
 
 SMOKE_OK=1
 echo "PASS: cloudflare-pages smoke"
