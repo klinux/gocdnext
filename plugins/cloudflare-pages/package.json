@@ -1,0 +1,9 @@
+{
+  "name": "gocdnext-cloudflare-pages",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned wrangler + locked transitive deps for the gocdnext cloudflare-pages plugin image. Installed with `npm ci` from the committed lockfile so the image is reproducible and the weekly Trivy gate scans a frozen tree.",
+  "dependencies": {
+    "wrangler": "4.158.0"
+  }
+}
