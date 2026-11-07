@@ -10,6 +10,26 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **gravitee plugin → patched base + yq 4.54.2, 12 → 0 fixable CRITICAL.** The
+  published `:v1` carried fixable CRITICAL because its apt layer was cache-frozen
+  with stale OpenSSL/GnuTLS and a yq binary built on an old Go. Base pinned by
+  digest (`python:3.9-slim-bookworm@sha256:a02e9c5…`) with `apt-get upgrade`
+  applying Debian security backports at build time (clears libssl3/openssl
+  CVE-2026-31789 and libgnutls30 CVE-2026-33845/CVE-2026-42010); yq bumped
+  `v4.44.3` → `v4.54.2` (built with Go 1.27.3, clearing the Go-stdlib
+  CVE-2025-68121). **Python stays on 3.9** — the graviteeio-cli fork targets
+  CPython 3.7–3.9, and none of the CRITICAL were Python-version-bound, so no
+  gio-breaking bump. Trivy `--ignore-unfixed`: **0 CRITICAL** (was 12). The 2
+  residual CRITICAL are the same unfixed Debian OS CVEs (`libsqlite3-0`, `zlib1g`)
+  handled in the fleet-wide no-fix baseline triage. Opts into `no_cache: true` so
+  the publish build can't re-import the stale OS layer. Wrapper inputs unchanged
+  (`@v1`; token still env-only, never on argv). New real `smoke_test.sh`: on the
+  built image, `gio` runs on the patched base, the bumped `yq` evaluates, and the
+  bundled `gravitee-validate` linter passes a locked-down definition and BLOCKS an
+  open one. **Note:** `apt-get upgrade` uses Debian's mutable repos, so the OS set
+  is patched at build time, not byte-identical; the FROM digest pins the base layer
+  and the weekly Trivy gate catches drift.
+
 - **lighthouse-ci plugin → Node 22 + current Chromium, 280 → 0 fixable CRITICAL.**
   The published `:v1` carried ~280 CRITICAL because its apt layer had been cached
   at Chromium 149 and never refreshed (a browser image is real exposure). Base

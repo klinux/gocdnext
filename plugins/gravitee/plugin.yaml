@@ -1,5 +1,10 @@
 name: gravitee
 category: deploy
+# Refreshes OS packages (OpenSSL/GnuTLS) via `apt-get upgrade` at build time, so
+# it MUST build from scratch — otherwise the registry build cache re-imports a
+# stale (vulnerable) OS layer on a release that didn't touch the Dockerfile.
+# Consumed by the `nocache` step in plugins.yml.
+no_cache: true
 description: >
   Configure a Gravitee.io API definition through the graviteeio-cli
   (`gio`): merge a base values file with the per-API values, render the
