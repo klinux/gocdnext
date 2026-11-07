@@ -16,13 +16,18 @@ convention that minor bumps may carry breaking changes until 1.0).
   `grpc` CVE-2026-33186, Go-stdlib CVE-2025-68121). Bumped to **0.76.2** (pinned by
   digest — its binary bundles the patched deps) + `apk upgrade` (clears the OS
   packages). Trivy `--pkg-types os,library`: **0 CRITICAL** (was 5; no residual).
-  The binary bump also moves the **embedded misconfig checks** forward together —
-  the entrypoint already uses `--skip-check-update` for `config` scans, so checks
-  track the pinned binary rather than a drifting registry bundle (no more
-  `requestedamis` skew). Opts into `no_cache: true` for OS currency. Wrapper inputs
-  unchanged (`@v1`; registry creds via `TRIVY_USERNAME`/`PASSWORD`, off argv). New
-  real `smoke_test.sh`: the binary is 0.76.2, a `config` scan flags a privileged
-  pod (offline embedded checks, **no skew error**) and passes a clean dir, and an
+  The binary bump also moves the **embedded misconfig checks** forward with it.
+  Also hardened the `config` path so those embedded checks are *actually* used:
+  `--skip-check-update` alone still reused a check bundle sitting in the (persisted)
+  cache, so `config` scans now run against a **fresh, isolated cache dir** (the CVE
+  DB isn't used by config) — forcing the embedded fallback regardless of what's on
+  disk, without disturbing the shared `TRIVY_CACHE_DIR`. And since a `config` scan
+  needs no network, it now also passes `--skip-version-check` + `--disable-telemetry`
+  (genuinely offline, no skew). Opts into `no_cache: true` for OS currency. Wrapper
+  inputs unchanged (`@v1`; registry creds via `TRIVY_USERNAME`/`PASSWORD`, off argv).
+  New real `smoke_test.sh`: the binary is 0.76.2; a `config` scan flags a privileged
+  pod (embedded checks, **no skew error**) and passes a clean dir — and a dedicated
+  case proves it uses **embedded checks even against a pre-warmed on-disk cache**; an
   `fs` scan detects a known CVE (lodash 4.17.4 / CVE-2019-10744) and passes a clean
   dir; the wrapper arg wiring stays covered by `entrypoint_test.sh`. **Note:**
   `apk upgrade` uses Alpine's mutable repos, so the OS set is patched at build time,
