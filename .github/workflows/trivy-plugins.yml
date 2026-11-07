@@ -6,11 +6,11 @@ name: Trivy plugins gate
 #   plugins/SECURITY-SCANNING.md, plugins/.trivy-baseline.yaml
 # Comparator: plugins/scripts/trivy_gate.py.
 #
-# Fail-closed by design: the `expect` set comes from the VERSIONED inventory
-# (every plugin dir minus `unpublished:` in the baseline), NOT from what the
-# registry resolves — so a GHCR outage/auth error can't shrink the scanned set
-# to a green run. A scan that can't resolve/pull its image fails the job, which
-# the gate then sees as a missing expected target (hard fail).
+# Fail-closed: the `expect` set comes from the VERSIONED inventory (every plugin
+# dir minus validated `unpublished:` entries in the baseline), NOT from what the
+# registry resolves — a GHCR outage can't shrink the scanned set to green. A scan
+# that can't pull its image fails its shard, which the gate sees as a missing
+# expected target (hard fail).
 #
 # Rollout: CRITICAL, expired/over-window exceptions, invalid baseline and missing
 # scans FAIL from day one. HIGH runs in `observe` during calibration; a later
@@ -35,14 +35,18 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 env:
   HIGH_MODE: observe
-  TRIVY_VERSION: "0.69.3"
-  # OS + language packages, vuln scanner, HIGH+CRITICAL. No --ignore-unfixed:
-  # the standing gate tracks unfixed/upstream-bound HIGH too (baseline windows).
-  TRIVY_ARGS: "--quiet --severity HIGH,CRITICAL --scanners vuln --pkg-types os,library --skip-db-update --skip-java-db-update"
+  # Scanner pinned by DIGEST (not a mutable tag) and run WITHOUT the docker
+  # socket (scans images remotely via the registry), so it is not root-equivalent
+  # on the runner.
+  TRIVY_IMAGE: "aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c"
+  # OS + language packages, vuln scanner, HIGH+CRITICAL, remote image source, DBs
+  # from the shared cache. No --ignore-unfixed: the standing gate tracks
+  # unfixed/upstream-bound HIGH too (baseline windows cover those).
+  TRIVY_ARGS: "--quiet --severity HIGH,CRITICAL --scanners vuln --pkg-types os,library --image-src remote --skip-db-update --skip-java-db-update"
+  SHARDS: "8"
 
 jobs:
   unit:
@@ -61,8 +65,10 @@ jobs:
           import pathlib, sys
           sys.path.insert(0, "plugins/scripts")
           import trivy_gate
-          n = len(trivy_gate.load_baseline(pathlib.Path("plugins/.trivy-baseline.yaml")))
-          print(f"baseline valid: {n} exception(s)")
+          p = pathlib.Path("plugins/.trivy-baseline.yaml")
+          n = len(trivy_gate.load_baseline(p))
+          u = trivy_gate.load_unpublished_targets(p)
+          print(f"baseline valid: {n} exception(s); unpublished: {sorted(u)}")
           PY
 
   discover:
@@ -80,25 +86,25 @@ jobs:
       - id: set
         env:
           OWNER: ${{ github.repository_owner }}
+          SHARDS: ${{ env.SHARDS }}
         run: |
           python3 - <<'PY'
           import json, os, pathlib, re, sys
           sys.path.insert(0, "plugins/scripts")
-          import yaml
+          import trivy_gate
 
           owner = os.environ["OWNER"].lower()
           reg = f"ghcr.io/{owner}"
+          base = pathlib.Path("plugins/.trivy-baseline.yaml")
           dirs = sorted(p.parent.name for p in pathlib.Path("plugins").glob("*/Dockerfile"))
 
-          base = yaml.safe_load(pathlib.Path("plugins/.trivy-baseline.yaml").read_text()) or {}
-          unpublished = {u["target"] for u in (base.get("unpublished") or [])}
-
-          # Expected plugins come from the versioned inventory, NOT the registry.
+          # Validated unpublished set (raises on a bad/expired entry) -> expected
+          # plugins come from the versioned inventory, never from the registry.
+          unpublished = trivy_gate.load_unpublished_targets(base)
           expected_plugins = [d for d in dirs if d not in unpublished]
 
-          # External pinned images — read from entrypoint.sh (single source of
-          # truth) and REQUIRE a @sha256 digest so a future switch back to a
-          # floating tag is caught here instead of silently scanning a moving ref.
+          # External pins — read from entrypoint.sh (single source of truth) and
+          # REQUIRE an @sha256 digest so a switch back to a floating tag is caught.
           ep = pathlib.Path("plugins/buildx/entrypoint.sh").read_text()
           def pin(var):
               m = re.search(rf'^{var}="([^"]+)"', ep, re.M)
@@ -111,20 +117,28 @@ jobs:
           externals = {"external-binfmt": pin("BINFMT_IMAGE"),
                        "external-buildkit": pin("DEFAULT_BUILDKIT_IMAGE")}
 
-          include = [{"target": p, "ref": f"{reg}/gocdnext-plugin-{p}:v1"} for p in expected_plugins]
-          include += [{"target": t, "ref": r} for t, r in externals.items()]
-          targets = expected_plugins + list(externals)
+          pairs = [(p, f"{reg}/gocdnext-plugin-{p}:v1") for p in expected_plugins]
+          pairs += list(externals.items())
+          targets = [t for t, _ in pairs]
+
+          # Shard so each runner downloads the shared DB ONCE and scans several
+          # targets, instead of 70 runners each pulling a ~1 GiB DB artifact.
+          n = max(1, int(os.environ["SHARDS"]))
+          shards = [pairs[i::n] for i in range(n)]
+          include = [{"shard": str(i), "pairs": " ".join(f"{t}={r}" for t, r in s)}
+                     for i, s in enumerate(shards) if s]
 
           out = pathlib.Path(os.environ["GITHUB_OUTPUT"])
           with out.open("a") as fh:
               fh.write(f"matrix={json.dumps({'include': include})}\n")
               fh.write(f"expect={','.join(targets)}\n")
-          print(f"expecting {len(targets)} targets ({len(expected_plugins)} plugins + {len(externals)} external)")
+          print(f"{len(targets)} targets across {len(include)} shards "
+                f"({len(expected_plugins)} plugins + {len(externals)} external)")
           PY
 
   db:
-    # Download the Trivy DBs ONCE and share as an artifact so all scans use the
-    # SAME snapshot (consistency) and we don't hit the DB registry 70 times.
+    # Download the Trivy DBs ONCE and share as an artifact so every shard scans
+    # against the SAME snapshot and we don't hit the DB registry per shard.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -133,11 +147,9 @@ jobs:
           set -euo pipefail
           mkdir -p trivy-cache
           docker run --rm -v "$PWD/trivy-cache:/root/.cache/trivy" \
-            aquasec/trivy:${{ env.TRIVY_VERSION }} image --download-db-only
+            "$TRIVY_IMAGE" image --download-db-only
           docker run --rm -v "$PWD/trivy-cache:/root/.cache/trivy" \
-            aquasec/trivy:${{ env.TRIVY_VERSION }} image --download-java-db-only
-          # Tarball so the cache round-trips through the artifact store with a
-          # deterministic layout (no upload/download path nesting surprises).
+            "$TRIVY_IMAGE" image --download-java-db-only
           tar czf trivy-db.tgz -C trivy-cache .
       - uses: actions/upload-artifact@v4
         with:
@@ -148,43 +160,35 @@ jobs:
   scan:
     needs: [discover, db]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 12
+      max-parallel: 8
       matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
     steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@v4
         with:
           name: trivy-db
           path: dbart
-      - name: Trivy scan ${{ matrix.target }}
+      - name: Trivy scan shard ${{ matrix.shard }}
+        env:
+          PAIRS: ${{ matrix.pairs }}
         run: |
           set -euo pipefail
           mkdir -p out trivy-cache
           tar xzf dbart/trivy-db.tgz -C trivy-cache
-          # Resolve a plugin :v1 to an immutable digest (audit trail + the scan
-          # matches exactly what ships). Any failure here fails the job -> the
-          # gate sees a missing expected target and fails (fail-closed).
-          ref="${{ matrix.ref }}"
-          if [[ "$ref" == *:v1 ]]; then
-            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
-            ref="${ref%:v1}@${digest}"
-          fi
-          echo "scanning ${{ matrix.target }} -> ${ref}"
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD/trivy-cache:/root/.cache/trivy" -v "$PWD/out:/out" \
-            aquasec/trivy:${{ env.TRIVY_VERSION }} image ${{ env.TRIVY_ARGS }} \
-            -f json -o "/out/${{ matrix.target }}.json" "$ref"
-          echo "$ref" > "out/${{ matrix.target }}.ref"
+          for pair in $PAIRS; do
+            target="${pair%%=*}"; ref="${pair#*=}"
+            echo "::group::scan ${target} -> ${ref}"
+            docker run --rm \
+              -v "$PWD/trivy-cache:/root/.cache/trivy" -v "$PWD/out:/out" \
+              "$TRIVY_IMAGE" image $TRIVY_ARGS -f json -o "/out/${target}.json" "$ref"
+            echo "$ref" > "out/${target}.ref"
+            echo "::endgroup::"
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: scan-${{ matrix.target }}
+          name: scan-shard-${{ matrix.shard }}
           path: out/*
           retention-days: 14
 
@@ -200,7 +204,7 @@ jobs:
       - run: pip install pyyaml==6.0.3
       - uses: actions/download-artifact@v4
         with:
-          pattern: scan-*
+          pattern: scan-shard-*
           path: dl
           merge-multiple: true
       - name: Evaluate against baseline

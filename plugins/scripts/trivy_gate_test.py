@@ -8,13 +8,16 @@ import json
 import pathlib
 import sys
 import tempfile
+from datetime import date
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import trivy_gate as g  # noqa: E402
 
 TODAY = "2026-11-07"
-FUTURE = "2027-02-05"
-PAST = "2026-11-01"
+FUTURE = "2027-02-05"   # TODAY + 90d: not expired, within the upstream-bound window
+EMERG = "2026-11-14"    # TODAY + 7d: valid emergency window
+PAST = "2026-11-01"     # expired
+TD = date.fromisoformat(TODAY)
 
 _fails = 0
 
@@ -36,20 +39,24 @@ def _exc(expires: str, cls: str = "upstream-bound", *, targets=None,
         "package": package, "installed": installed, "origin": origin, "class": cls,
         "justification": "j", "mitigation": "m", "advisory": "https://a",
         "upstream_issue": "https://u", "approved_pr": 1, "owner": "o",
-        # span 0 by default so the class window is always satisfied; tests that
-        # exercise the window pass approved_at explicitly.
-        "approved_at": approved_at or expires, "expires": expires,
+        # Default approved_at = min(expires, TODAY): <= today (never future) and,
+        # for a past `expires`, equal to it (span 0). Window tests pass it
+        # explicitly. String ISO dates compare correctly with min().
+        "approved_at": approved_at or min(expires, TODAY), "expires": expires,
     }
 
 
-def _baseline(exceptions: list[dict]) -> list[dict]:
+def _baseline(exceptions: list[dict], unpublished=None) -> list[dict]:
     """Round-trip through load_baseline so entries carry expires_date + validation."""
     import yaml
+    doc = {"version": 1, "exceptions": exceptions}
+    if unpublished is not None:
+        doc["unpublished"] = unpublished
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
-        yaml.safe_dump({"version": 1, "exceptions": exceptions}, fh)
+        yaml.safe_dump(doc, fh)
         path = pathlib.Path(fh.name)
     try:
-        return g.load_baseline(path)
+        return g.load_baseline(path, today=TD)
     finally:
         path.unlink()
 
@@ -61,7 +68,8 @@ def _find(cve: str, sev: str, package: str = "pkg", *, installed="v1",
 
 
 def ev(targets, exceptions, *, high_mode="observe", today=TODAY):
-    return g.evaluate(targets, _baseline(exceptions), today=__import__("datetime").date.fromisoformat(today), high_mode=high_mode)
+    return g.evaluate(targets, _baseline(exceptions),
+                      today=date.fromisoformat(today), high_mode=high_mode)
 
 
 # 1. CRITICAL with no exception -> fail
@@ -69,7 +77,7 @@ r = ev({"docker": [_find("CVE-X", "CRITICAL")]}, [])
 check("critical no exception fails", any("CRITICAL with no exception" in f for f in r["failures"]))
 
 # 2. CRITICAL with valid emergency exception -> matched, no failure
-r = ev({"docker": [_find("CVE-1", "CRITICAL")]}, [_exc(FUTURE, "emergency")])
+r = ev({"docker": [_find("CVE-1", "CRITICAL")]}, [_exc(EMERG, "emergency")])
 check("critical + valid emergency passes", not r["failures"], str(r["failures"]))
 check("critical + emergency is matched", len(r["matched"]) == 1)
 
@@ -133,16 +141,18 @@ r = ev({"docker": [_find("CVE-1", "HIGH", installed="v2", origin="gobinary", tri
 check("full identity match covers", not r["failures"], str(r))
 
 # --- baseline validation (hard FAIL) ---
-def expect_invalid(name: str, exceptions, mutate=None):
+def expect_invalid(name: str, exceptions, mutate=None, unpublished=None):
     import yaml
     doc = {"version": 1, "exceptions": exceptions}
+    if unpublished is not None:
+        doc["unpublished"] = unpublished
     if mutate:
         mutate(doc)
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
         yaml.safe_dump(doc, fh)
         path = pathlib.Path(fh.name)
     try:
-        g.load_baseline(path)
+        g.load_baseline(path, today=TD)
         check(name, False, "expected BaselineError")
     except g.BaselineError:
         check(name, True)
@@ -165,9 +175,40 @@ expect_invalid("upstream-bound over 90 days rejected",
 # expires before approved_at
 expect_invalid("expires before approved_at rejected",
                [_exc("2026-01-01", "upstream-bound", approved_at="2026-11-07")])
+# approved_at in the FUTURE is rejected (can't park a short window ahead)
+expect_invalid("future approved_at rejected",
+               [_exc(FUTURE, "emergency", approved_at="2099-01-01")])
 # a 7-day emergency is accepted
 ok7 = _baseline([_exc("2026-11-08", "emergency", approved_at="2026-11-07")])
 check("7-day emergency accepted", len(ok7) == 1)
+
+# --- unpublished block validation ---
+def _unpub(target="someplugin", reason="r", expires=FUTURE):
+    return {"target": target, "reason": reason, "expires": expires}
+
+try:
+    _baseline([], unpublished=[_unpub()])  # valid -> no raise
+    check("valid unpublished accepted", True)
+except g.BaselineError as e:
+    check("valid unpublished accepted", False, str(e))
+expect_invalid("unpublished missing reason rejected", [],
+               unpublished=[{"target": "p", "expires": FUTURE}])
+expect_invalid("unpublished missing expires rejected", [],
+               unpublished=[{"target": "p", "reason": "r"}])
+expect_invalid("expired unpublished rejected", [], unpublished=[_unpub(expires=PAST)])
+expect_invalid("duplicate unpublished rejected", [], unpublished=[_unpub(), _unpub()])
+
+def unpub_targets(unpublished):
+    import yaml
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+        yaml.safe_dump({"version": 1, "exceptions": [], "unpublished": unpublished}, fh)
+        p = pathlib.Path(fh.name)
+    try:
+        return g.load_unpublished_targets(p, today=TD)
+    finally:
+        p.unlink()
+
+check("unpublished targets returned", unpub_targets([_unpub(target="foo")]) == {"foo"})
 
 # a well-formed baseline loads and carries expires_date
 ok = _baseline([_exc(FUTURE)])
@@ -219,6 +260,19 @@ check("missing expected target fails", rc == 1, f"rc={rc}")
 rc = run_main_expect({"docker": [_find("CVE-1", "HIGH")], "buildx": []},
                      [_exc(FUTURE)], "docker,buildx")
 check("all expected targets present passes", rc == 0, f"rc={rc}")
+
+# --- summary stays bounded even with thousands of warnings (GitHub 1 MiB cap) ---
+big = {"failures": [f"f{i}" for i in range(5000)],
+       "warnings": [f"w{i}" for i in range(5000)],
+       "matched": [f"m{i}" for i in range(5000)],
+       "by_target": {f"t{i}": {"failures": 1, "warnings": 1, "matched": 1} for i in range(70)}}
+summary = g.render(big, high_mode="observe")
+import re as _re
+check("summary caps failures", len(_re.findall(r"(?m)^- f\d", summary)) <= g.SUMMARY_MAX["failures"])
+check("summary caps warnings", len(_re.findall(r"(?m)^- w\d", summary)) <= g.SUMMARY_MAX["warnings"])
+check("summary notes truncation", "and 4800 more" in summary or "more (see" in summary)
+check("summary well under 1 MiB", len(summary.encode()) < 200_000, f"{len(summary)} bytes")
+check("summary has per-target table", "Per target" in summary)
 
 if _fails:
     print("SOME FAILED")
