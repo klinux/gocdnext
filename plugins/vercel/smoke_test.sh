@@ -63,4 +63,15 @@ runep -e PLUGIN_PROD=true
 assert_file_auth "deploy --prod"
 grep -q "prod=true" <<<"$OUT" || die "the --prod path was not taken" "$OUT"
 
+# prebuilt is a public input taking a DIFFERENT functional path (deploy an
+# existing .vercel/output instead of building), so gate it too. Lay down the
+# minimal prebuilt output the official `vercel build` produces.
+echo "==> entrypoint 'deploy --prebuilt' takes the prebuilt path and reaches the API"
+mkdir -p "$W/.vercel/output/static"
+printf '{"version":3}\n' >"$W/.vercel/output/config.json"
+printf '<!doctype html><title>prebuilt</title><h1>prebuilt</h1>\n' >"$W/.vercel/output/static/index.html"
+runep -e PLUGIN_PREBUILT=true
+assert_file_auth "deploy --prebuilt"
+grep -q "prebuilt=true" <<<"$OUT" || die "the --prebuilt path was not taken" "$OUT"
+
 echo "PASS: vercel smoke"
