@@ -28,6 +28,26 @@ convention that minor bumps may carry breaking changes until 1.0).
   `login` — runs the real entrypoint and reaches cosign, failing on the
   deterministic `example.invalid` registry-DNS lookup (not a parse error), with
   the key passphrase and login password asserted absent from the log/argv.
+- **helm-push plugin → alpine/helm 3.22.1, Go CRITICALs + brotli cleared.** The
+  published `:v1` was built on `alpine/helm:3.16.2`, whose `helm` binary (old Go)
+  carried the Go-stdlib CVE-2025-68121 and grpc CVE-2026-33186, on an Alpine with
+  the brotli-libs CVE-2026-111497 (CRITICAL). Bumped the base to **3.22.1**
+  (pinned by digest, Go 1.26.9, Alpine 3.24) + `apk upgrade`. Trivy `--pkg-types
+  os,library`: alpine **0**, helm binary **0 CRITICAL** (2 HIGH remain —
+  `golang.org/x/net` CVE-2026-78661 + stdlib CVE-2026-111943, baked into the
+  upstream helm binary, upstream-bound until `alpine/helm` rebuilds on Go
+  1.26.10+/x-net 0.62.0; HIGH is observation-only per the gate policy). Stays on
+  the **Helm 3** line (not 4.x, a breaking major) — the plugin surface (`helm
+  package` / `push` / `registry login` and its flags) is unchanged. **Helm 3
+  reaches security EOL on 2026-11-11**; a Helm 4 migration is tracked in #349.
+  Opts into `no_cache: true`. **Security fix:** the chartmuseum/nexus backends no
+  longer pass `--user u:p` on the curl argv (visible via `/proc/<pid>/cmdline`) —
+  credentials now go into a 0600 `--config` file, escaped for curl's config
+  grammar so a password can't inject a second option, shredded on exit. New
+  `smoke_test.sh` (packages a chart, drives oci login + oci push + chartmuseum +
+  nexus to the `example.invalid` DNS boundary) and `entrypoint_test.sh` (mocks
+  `helm`/`curl`, capturing argv to prove the password never reaches argv and the
+  auth config is a single well-formed line). (#348)
 
 ## v0.126.0 — 2026-11-07
 
