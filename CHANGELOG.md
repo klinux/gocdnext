@@ -22,9 +22,12 @@ convention that minor bumps may carry breaking changes until 1.0).
   passes (`--key`, `--certificate-identity`, `--certificate-oidc-issuer`,
   `--predicate`, `--type`, `--yes`; `COSIGN_PASSWORD` via env) all still exist.
   Opts into `no_cache: true`. Wrapper inputs unchanged (`@v1`; key password via
-  env, never on argv). New real `smoke_test.sh`: the binary is v3.1.4 and each
-  action (verify/sign/attest, keyless) runs the real entrypoint and reaches cosign
-  (failing on the network/OIDC boundary, not a parse error).
+  env, never on argv). New real `smoke_test.sh`: the binary is v3.1.4 and, using
+  an **ephemeral local keypair** (no interactive OIDC), each action the plugin
+  drives — `verify` / `sign` / `attest` with `--key` (+ `COSIGN_PASSWORD`) and
+  `login` — runs the real entrypoint and reaches cosign, failing on the
+  deterministic `example.invalid` registry-DNS lookup (not a parse error), with
+  the key passphrase and login password asserted absent from the log/argv.
 
 ## v0.126.0 — 2026-11-07
 
