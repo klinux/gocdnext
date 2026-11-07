@@ -39,10 +39,22 @@
 #   PLUGIN_PREDICATE_TYPE (optional)  for action=attest: e.g.
 #                                     "spdxjson", "cyclonedx",
 #                                     "slsaprovenance".
-FROM gcr.io/projectsigstore/cosign:v2.4.1 AS cosign
+# cosign binary bumped v2.4.1 -> v3.1.4 (pinned by digest). v2.4.1 was built on an
+# old Go and bundled vulnerable deps (Go-stdlib CVE-2025-68121, grpc
+# CVE-2026-33186); v3.1.4 is built with Go 1.27.1 and Trivy on its binary is 0
+# CRITICAL. The v2->v3 bump is a major cosign release and MAY be breaking (bundle
+# format / defaults) for consumers — but the plugin's surface is unchanged: sign /
+# verify / attest / login and the flags it passes (--key, --certificate-identity,
+# --certificate-oidc-issuer, --predicate, --type, --yes; COSIGN_PASSWORD via env)
+# all exist in v3.1.4 (proven by the smoke).
+FROM gcr.io/projectsigstore/cosign:v3.1.4@sha256:0f06154836d2de34f887a5c273506d52ca43edaa1d9e53e6510fa78a48f69c2d AS cosign
 
-FROM alpine:3.20
-RUN apk add --no-cache bash ca-certificates
+# Base: a SUPPORTED Alpine (3.24, pinned by digest) + apk upgrade. alpine:3.20
+# went EOL 2026-04-01 (no more security updates / degraded scanner coverage).
+# NOTE: `apk upgrade` pulls Alpine's MUTABLE repos — the FROM digest pins the base
+# layer, not the upgraded set; the weekly Trivy gate catches drift.
+FROM alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4
+RUN apk upgrade --no-cache && apk add --no-cache bash ca-certificates
 COPY --from=cosign /ko-app/cosign /usr/local/bin/cosign
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-cosign
