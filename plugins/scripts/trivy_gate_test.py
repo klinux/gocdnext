@@ -183,8 +183,14 @@ ok7 = _baseline([_exc("2026-11-08", "emergency", approved_at="2026-11-07")])
 check("7-day emergency accepted", len(ok7) == 1)
 
 # --- unpublished block validation ---
-def _unpub(target="someplugin", reason="r", expires=FUTURE):
-    return {"target": target, "reason": reason, "expires": expires}
+UNPUB_OK = "2026-11-20"  # TODAY + 13d, within the 30-day unpublished window
+
+def _unpub(target="someplugin", reason="r", expires=UNPUB_OK, approved_at=None, approved_pr=7):
+    e = {"target": target, "reason": reason, "expires": expires,
+         "approved_at": approved_at or min(expires, TODAY)}
+    if approved_pr is not None:
+        e["approved_pr"] = approved_pr
+    return e
 
 try:
     _baseline([], unpublished=[_unpub()])  # valid -> no raise
@@ -192,10 +198,17 @@ try:
 except g.BaselineError as e:
     check("valid unpublished accepted", False, str(e))
 expect_invalid("unpublished missing reason rejected", [],
-               unpublished=[{"target": "p", "expires": FUTURE}])
+               unpublished=[{"target": "p", "expires": UNPUB_OK, "approved_at": TODAY, "approved_pr": 1}])
+expect_invalid("unpublished missing approved_pr rejected", [],
+               unpublished=[_unpub(approved_pr=None)])
 expect_invalid("unpublished missing expires rejected", [],
-               unpublished=[{"target": "p", "reason": "r"}])
-expect_invalid("expired unpublished rejected", [], unpublished=[_unpub(expires=PAST)])
+               unpublished=[{"target": "p", "reason": "r", "approved_at": TODAY, "approved_pr": 1}])
+expect_invalid("expired unpublished rejected", [],
+               unpublished=[_unpub(expires=PAST, approved_at="2026-10-28")])
+expect_invalid("over-window unpublished rejected", [],
+               unpublished=[_unpub(expires="2027-06-01", approved_at=TODAY)])
+expect_invalid("future approved_at unpublished rejected", [],
+               unpublished=[_unpub(approved_at="2099-01-01")])
 expect_invalid("duplicate unpublished rejected", [], unpublished=[_unpub(), _unpub()])
 
 def unpub_targets(unpublished):
@@ -273,6 +286,12 @@ check("summary caps warnings", len(_re.findall(r"(?m)^- w\d", summary)) <= g.SUM
 check("summary notes truncation", "and 4800 more" in summary or "more (see" in summary)
 check("summary well under 1 MiB", len(summary.encode()) < 200_000, f"{len(summary)} bytes")
 check("summary has per-target table", "Per target" in summary)
+
+# a single pathological huge field must not blow the byte cap
+huge = {"failures": ["x" * 2_000_000], "warnings": [], "matched": [], "by_target": {}}
+hs = g.render(huge, high_mode="observe")
+check("summary byte-capped", len(hs.encode()) <= g.SUMMARY_BYTES_MAX, f"{len(hs.encode())} bytes")
+check("long line clipped", ("x" * g.SUMMARY_LINE_MAXLEN + "…") in hs or "truncated" in hs)
 
 if _fails:
     print("SOME FAILED")

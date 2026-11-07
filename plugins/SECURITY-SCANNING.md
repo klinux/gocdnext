@@ -92,8 +92,28 @@ All fields except `fixed_version` are **required**; a missing one fails the gate
   a floating tag fails discovery instead of silently scanning a moving ref.
 
 The workflow downloads the Trivy DBs **once** and shares them as an artifact
-(`--skip-db-update` on each scan), so all targets scan against one consistent
-snapshot without hitting the DB registry per target.
+(`--skip-db-update` on each scan), then **shards** the scans so each runner pulls
+that DB once and scans several targets — one consistent snapshot, without a
+per-target DB download.
+
+### The `unpublished` list
+
+Plugins that intentionally have no published `:v1` yet go in the baseline's
+`unpublished:` block so they aren't treated as a missing scan. Because an entry
+removes a whole plugin from the expected inventory, it is **short-lived and
+justified** — each needs `target`, `reason`, `approved_pr`, a non-future
+`approved_at`, and an `expires` **within 30 days** of `approved_at`. The gate
+fails on a missing field, a future `approved_at`, an over-window or expired entry,
+or a duplicate — so a plugin can't be dropped from the gate indefinitely.
+
+```yaml
+unpublished:
+  - target: newplugin
+    reason: "added in #NNN, first release not cut yet"
+    approved_pr: NNN
+    approved_at: "2026-11-07"
+    expires: "2026-11-21"   # <= 30 days later
+```
 
 ## Working with exceptions
 
@@ -109,9 +129,11 @@ snapshot without hitting the DB registry per target.
 ## Running locally
 
 ```sh
-# scan an image to JSON named after its target
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/out:/out" \
-  aquasec/trivy:0.69.3 image --quiet --severity HIGH,CRITICAL --scanners vuln \
+# scan an image to JSON named after its target — same as CI: scanner pinned by
+# DIGEST, image pulled REMOTELY (no docker socket mounted, not root-equivalent).
+docker run --rm -v "$PWD/out:/out" \
+  aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c \
+  image --image-src remote --quiet --severity HIGH,CRITICAL --scanners vuln \
   --pkg-types os,library -f json -o /out/docker.json \
   ghcr.io/klinux/gocdnext-plugin-docker:v1
 

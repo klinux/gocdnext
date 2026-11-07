@@ -40,6 +40,10 @@ CRITICAL_CLASSES = {"emergency"}
 # Maximum exception lifetime (days) per class, enforced as expires - approved_at.
 # This makes the 7/14/90-day policy a HARD check, not just a review convention.
 MAX_WINDOW_DAYS = {"emergency": 7, "high-fixable": 14, "upstream-bound": 90, "no-fix": 90}
+# An `unpublished` entry removes a whole plugin from the expected inventory, so
+# it gets a SHORT window — it must be revisited (publish or re-justify) soon.
+UNPUBLISHED_MAX_DAYS = 30
+UNPUBLISHED_FIELDS = ("target", "reason", "approved_at", "approved_pr", "expires")
 
 # An exception's identity — everything that must match a Trivy finding for the
 # exception to apply. Narrow on purpose: a different installed version, a
@@ -76,9 +80,11 @@ def _read_raw(path: pathlib.Path) -> dict:
 
 
 def load_unpublished_targets(path: pathlib.Path, today: dt.date | None = None) -> set[str]:
-    """Validated set of plugin targets that intentionally have no :v1 yet. Each
-    entry needs target + reason + a non-expired `expires`, so a target can't be
-    silently and permanently dropped from the gate without a dated justification."""
+    """Validated set of plugin targets that intentionally have no :v1 yet.
+    Dropping a whole plugin from the gate is high-impact, so each entry needs
+    target + reason + approved_pr + approved_at (not future) + a non-expired
+    `expires` within a SHORT window (<= UNPUBLISHED_MAX_DAYS) — it can't suppress
+    a target indefinitely and must be revisited soon."""
     today = today or _today_utc()
     raw = _read_raw(path)
     items = raw.get("unpublished") or []
@@ -89,14 +95,24 @@ def load_unpublished_targets(path: pathlib.Path, today: dt.date | None = None) -
         where = f"unpublished[{i}]"
         if not isinstance(item, dict):
             raise BaselineError(f"{where}: must be a mapping")
-        for f in ("target", "reason", "expires"):
+        for f in UNPUBLISHED_FIELDS:
             if not item.get(f):
                 raise BaselineError(f"{where}: missing required field {f!r}")
+        approved = _parse_date(item["approved_at"], where)
         exp = _parse_date(item["expires"], where)
+        if approved > today:
+            raise BaselineError(f"{where}: approved_at {item['approved_at']} is in the future")
         if exp < today:
             raise BaselineError(
                 f"{where}: unpublished entry for {item['target']!r} expired "
                 f"{item['expires']} — publish it or re-justify")
+        span = (exp - approved).days
+        if span < 0:
+            raise BaselineError(f"{where}: expires is before approved_at")
+        if span > UNPUBLISHED_MAX_DAYS:
+            raise BaselineError(
+                f"{where}: unpublished window is {span} days, max is "
+                f"{UNPUBLISHED_MAX_DAYS} (publish the plugin or renew by PR)")
         if item["target"] in targets:
             raise BaselineError(f"{where}: duplicate unpublished target {item['target']!r}")
         targets.add(item["target"])
@@ -269,6 +285,15 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
 # it and aborted the upload. The full, unabridged lists always live in the JSON
 # report artifact; the summary shows per-target aggregates + the first N lines.
 SUMMARY_MAX = {"failures": 200, "warnings": 50, "matched": 20}
+# Belt-and-suspenders byte caps: a single pathological field (a huge package
+# name or tag) can't blow the GitHub 1 MiB step-summary limit. Lines are clipped
+# individually and the whole summary is hard-capped well under 1 MiB.
+SUMMARY_LINE_MAXLEN = 500
+SUMMARY_BYTES_MAX = 900_000
+
+
+def _clip(s: str) -> str:
+    return s if len(s) <= SUMMARY_LINE_MAXLEN else s[:SUMMARY_LINE_MAXLEN] + "…"
 
 
 def render(report: dict, *, high_mode: str) -> str:
@@ -296,14 +321,22 @@ def render(report: dict, *, high_mode: str) -> str:
             continue
         cap = SUMMARY_MAX[key]
         lines.append(head)
-        lines.extend(f"- {line}" for line in items[:cap])
+        lines.extend(f"- {_clip(line)}" for line in items[:cap])
         if len(items) > cap:
             lines.append(f"- … and {len(items) - cap} more (see the gate-report artifact)")
         lines.append("")
 
     lines.append("**PASS** — no policy violations." if not report["failures"]
                  else "**FAIL** — see failures above (full detail in the artifact).")
-    return "\n".join(lines) + "\n"
+    text = "\n".join(lines) + "\n"
+
+    # Absolute byte cap: even with per-line clipping + count caps, guarantee the
+    # summary fits GitHub's 1 MiB limit so the job can never fail just on size.
+    if len(text.encode()) > SUMMARY_BYTES_MAX:
+        notice = "\n\n**summary truncated to fit the size limit — see the gate-report artifact.**\n"
+        budget = SUMMARY_BYTES_MAX - len(notice.encode())
+        text = text.encode()[:budget].decode("utf-8", "ignore") + notice
+    return text
 
 
 def main(argv: list[str] | None = None) -> int:
