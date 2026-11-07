@@ -177,14 +177,21 @@ def load_baseline(path: pathlib.Path, today: dt.date | None = None) -> list[dict
 def load_findings(path: pathlib.Path) -> list[dict]:
     """Flatten a Trivy JSON report. Each finding keeps the full identity: the
     internal Trivy target (binary path / image), the package TYPE (origin), the
-    installed version, plus cve/package/severity."""
+    installed version, plus cve/package/severity.
+
+    Trivy occasionally emits the SAME finding twice (e.g. a package listed under
+    more than one source within one Result). We dedupe by the full finding
+    identity so a duplicate row is counted once everywhere — otherwise the
+    per-target aggregate (incremented per finding) would over-count relative to
+    the canonical lists (which dedupe), as seen for playwright tar/CVE-2026-59873."""
     data = json.loads(path.read_text())
     findings: list[dict] = []
+    seen: set[tuple] = set()
     for result in data.get("Results") or []:
         rtarget = result.get("Target", "")
         rtype = result.get("Type", "")
         for v in result.get("Vulnerabilities") or []:
-            findings.append({
+            f = {
                 "trivy_target": rtarget,
                 "origin": rtype,
                 "cve": v.get("VulnerabilityID", ""),
@@ -192,7 +199,18 @@ def load_findings(path: pathlib.Path) -> list[dict]:
                 "installed": v.get("InstalledVersion", ""),
                 "fixed": v.get("FixedVersion", ""),
                 "severity": (v.get("Severity") or "").upper(),
-            })
+            }
+            # Dedupe on exactly the fields that drive the canonical tag + the
+            # per-target counters (NOT `fixed`): `fixed` is metadata, absent from
+            # the canonical string, so including it here would let two findings
+            # differing only in FixedVersion survive as two by_target bumps while
+            # the canonical list (set() of the tag) collapses them to one.
+            fkey = (f["trivy_target"], f["origin"], f["cve"], f["package"],
+                    f["installed"], f["severity"])
+            if fkey in seen:
+                continue
+            seen.add(fkey)
+            findings.append(f)
     return findings
 
 
