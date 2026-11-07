@@ -30,12 +30,22 @@ except ImportError:  # pragma: no cover - the workflow installs pyyaml
     sys.exit(2)
 
 REQUIRED_FIELDS = (
-    "targets", "cve", "package", "origin", "class", "justification",
-    "mitigation", "advisory", "upstream_issue", "approved_pr", "owner", "expires",
+    "targets", "trivy_target", "cve", "package", "installed", "origin", "class",
+    "justification", "mitigation", "advisory", "upstream_issue", "approved_pr",
+    "owner", "approved_at", "expires",
 )
 VALID_CLASSES = {"emergency", "high-fixable", "upstream-bound", "no-fix"}
 # A CRITICAL finding may only be held open by one of these classes.
 CRITICAL_CLASSES = {"emergency"}
+# Maximum exception lifetime (days) per class, enforced as expires - approved_at.
+# This makes the 7/14/90-day policy a HARD check, not just a review convention.
+MAX_WINDOW_DAYS = {"emergency": 7, "high-fixable": 14, "upstream-bound": 90, "no-fix": 90}
+
+# An exception's identity — everything that must match a Trivy finding for the
+# exception to apply. Narrow on purpose: a different installed version, a
+# different binary (Trivy's internal target) or a different package type does NOT
+# inherit the exception.
+IDENTITY = ("target", "trivy_target", "cve", "package", "installed", "origin")
 
 
 class BaselineError(Exception):
@@ -81,8 +91,20 @@ def load_baseline(path: pathlib.Path) -> list[dict]:
                 f"{where}: class {item['class']!r} not in {sorted(VALID_CLASSES)}")
         item = dict(item)
         item["expires_date"] = _parse_date(item["expires"], where)
+        item["approved_at_date"] = _parse_date(item["approved_at"], where)
+        # Enforce the per-class lifetime: a CRITICAL `emergency` can't be parked
+        # until 2030, and an `upstream-bound` can't exceed 90 days without a
+        # fresh PR that bumps approved_at.
+        span = (item["expires_date"] - item["approved_at_date"]).days
+        if span < 0:
+            raise BaselineError(f"{where}: expires is before approved_at")
+        limit = MAX_WINDOW_DAYS[item["class"]]
+        if span > limit:
+            raise BaselineError(
+                f"{where}: class {item['class']!r} allows <= {limit} days, "
+                f"but expires - approved_at = {span} days (renew to shorten)")
         for t in targets:
-            key = (t, str(item["cve"]), str(item["package"]))
+            key = (t,) + tuple(str(item[f]) for f in IDENTITY[1:])
             if key in seen:
                 raise BaselineError(f"{where}: duplicate exception for {key}")
             seen.add(key)
@@ -91,26 +113,38 @@ def load_baseline(path: pathlib.Path) -> list[dict]:
 
 
 def load_findings(path: pathlib.Path) -> list[dict]:
-    """Flatten a Trivy JSON report to [{cve, package, severity, fixed, installed}]."""
+    """Flatten a Trivy JSON report. Each finding keeps the full identity: the
+    internal Trivy target (binary path / image), the package TYPE (origin), the
+    installed version, plus cve/package/severity."""
     data = json.loads(path.read_text())
     findings: list[dict] = []
     for result in data.get("Results") or []:
+        rtarget = result.get("Target", "")
+        rtype = result.get("Type", "")
         for v in result.get("Vulnerabilities") or []:
             findings.append({
+                "trivy_target": rtarget,
+                "origin": rtype,
                 "cve": v.get("VulnerabilityID", ""),
                 "package": v.get("PkgName", ""),
-                "severity": (v.get("Severity") or "").upper(),
-                "fixed": v.get("FixedVersion", ""),
                 "installed": v.get("InstalledVersion", ""),
+                "fixed": v.get("FixedVersion", ""),
+                "severity": (v.get("Severity") or "").upper(),
             })
     return findings
 
 
-def build_index(baseline: list[dict]) -> dict[tuple[str, str, str], dict]:
-    idx: dict[tuple[str, str, str], dict] = {}
+def _finding_key(target: str, f: dict) -> tuple:
+    """The identity tuple shared by a finding and its exception."""
+    return (target, f["trivy_target"], f["cve"], f["package"], f["installed"], f["origin"])
+
+
+def build_index(baseline: list[dict]) -> dict[tuple, dict]:
+    idx: dict[tuple, dict] = {}
     for item in baseline:
         for t in item["targets"]:
-            idx[(t, str(item["cve"]), str(item["package"]))] = item
+            key = (t,) + tuple(str(item[f]) for f in IDENTITY[1:])
+            idx[key] = item
     return idx
 
 
@@ -118,7 +152,7 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
              today: dt.date, high_mode: str) -> dict:
     """Core policy. Returns a report dict with `failures`, `warnings`, `matched`."""
     index = build_index(baseline)
-    used_keys: set[tuple[str, str, str]] = set()
+    used_keys: set[tuple] = set()
     failures: list[str] = []
     warnings: list[str] = []
     matched: list[str] = []
@@ -128,9 +162,10 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
             sev = f["severity"]
             if sev not in ("CRITICAL", "HIGH"):
                 continue
-            key = (target, f["cve"], f["package"])
+            key = _finding_key(target, f)
             exc = index.get(key)
-            tag = f"{target} {f['cve']} {f['package']} ({sev})"
+            tag = (f"{target} {f['cve']} {f['package']} {f['installed']} "
+                   f"[{f['origin']}@{f['trivy_target'].split('/')[-1]}] ({sev})")
 
             if exc is None:
                 if sev == "CRITICAL":
@@ -156,7 +191,7 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
     # obsolete noise and only warn.
     for item in baseline:
         for t in item["targets"]:
-            key = (t, str(item["cve"]), str(item["package"]))
+            key = (t,) + tuple(str(item[f]) for f in IDENTITY[1:])
             if key in used_keys:
                 continue
             if item["expires_date"] < today:
@@ -170,7 +205,11 @@ def evaluate(targets: dict[str, list[dict]], baseline: list[dict], *,
                     f"obsolete exception — no matching finding, remove: "
                     f"{t} {item['cve']} {item['package']}")
 
-    return {"failures": failures, "warnings": warnings, "matched": matched}
+    return {
+        "failures": sorted(set(failures)),
+        "warnings": sorted(set(warnings)),
+        "matched": sorted(set(matched)),
+    }
 
 
 def render(report: dict, *, high_mode: str) -> str:

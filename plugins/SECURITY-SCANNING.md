@@ -12,6 +12,13 @@ It runs weekly (`cron`) and on demand (`workflow_dispatch`) — it is **not** a
 per-PR blocker. Its job is to catch regressions in what is already shipped and to
 force stale exceptions to be renewed or removed.
 
+**Fail-closed.** The set of targets the gate *expects* to scan comes from the
+**versioned inventory** — every plugin dir minus the `unpublished:` list in the
+baseline — **not** from what the registry resolves. A GHCR outage or auth error
+therefore cannot shrink the scanned set to a green run: a scan that can't resolve
+or pull its image fails its job, and the gate treats the missing result as a hard
+failure.
+
 ## Policy
 
 | Severity | Rule |
@@ -19,14 +26,14 @@ force stale exceptions to be renewed or removed.
 | **CRITICAL** | Fails immediately. Allowed only with a **non-expired `emergency` exception** — explicit, emergency-only, window **≤ 7 days**. |
 | **HIGH, fixable by us** | Does **not** normally go in the baseline — fix it (bump base, `apk upgrade`, patch). A temporary `high-fixable` exception is **≤ 14 days** cover only. |
 | **HIGH, no fix / upstream-bound** | `upstream-bound` or `no-fix` exception, **≤ 90 days**, renewed by a PR with a fresh assessment. |
-| **Expired exception** | Hard fail — renew (new PR) or remove. |
-| **Invalid baseline** | Hard fail (schema/parse error, missing field, duplicate, bad date). |
+| **Expired / over-window exception** | Hard fail — the comparator enforces `expires - approved_at ≤` the class window; renew (new PR) or remove. |
+| **Invalid baseline** | Hard fail (schema/parse error, missing field, duplicate, bad/invalid date). |
 | **Exception matching no finding** | Reported as **obsolete** (warning) — remove it to avoid silent accumulation. |
 | **Missing scan for an expected target** | Hard fail — a dropped scan must never silently hide a CRITICAL. |
 
-The exception **windows (7 / 14 / 90 days) are an authoring rule enforced by
-review**; the comparator enforces only that an exception is **not expired** and
-that a CRITICAL is held by an `emergency`-class entry.
+The class **windows (7 / 14 / 90 days) are HARD-enforced**: the comparator checks
+`expires - approved_at` against the class limit, that the exception is not
+expired, and that a CRITICAL is held only by an `emergency`-class entry.
 
 ### HIGH rollout (calibration)
 
@@ -39,39 +46,54 @@ flips `HIGH_MODE` to `enforce` (`HIGH not in baseline` then fails).
 ## The baseline file
 
 [`.trivy-baseline.yaml`](.trivy-baseline.yaml) is a list of **specific**
-exceptions — not a blanket `.trivyignore`. Match key is
-`(target, cve, package)`. One entry per CVE+package; list every target it covers.
+exceptions — not a blanket `.trivyignore`.
+
+**Identity** — an exception applies only when ALL of these match a finding, so a
+different version or binary never inherits it:
+`(target, trivy_target, cve, package, installed, origin)`. One entry per distinct
+identity; `targets:` lists every logical target that shares it.
 
 ```yaml
 version: 1
+# Plugin dirs that intentionally have NO published :v1 yet (don't expect a scan).
+unpublished: []
 exceptions:
-  - targets: [docker, buildx, docker-push]  # plugin dir names, or external-<name>
+  - targets: [docker, buildx, docker-push]       # plugin dirs, or external-<name>
+    trivy_target: usr/local/libexec/docker/cli-plugins/docker-buildx  # Trivy Target
     cve: CVE-2026-17106
     package: github.com/moby/go-archive
-    installed: v0.2.0            # optional, for audit
-    fixed_version: "0.3.0"       # "" when no fix exists
-    origin: gobinary            # os | gobinary | npm | jar | ...
+    installed: v0.2.0            # EXACT installed version (part of identity)
+    fixed_version: "0.3.0"       # "" when no fix exists (record only)
+    origin: gobinary            # Trivy `Type`: gobinary | alpine | node-pkg | ...
     class: upstream-bound       # emergency | high-fixable | upstream-bound | no-fix
     justification: >-           # why it is acceptable right now
-      Embedded in the upstream Docker CLI Go binary; not an Alpine package.
+      moby/go-archive compiled into the bundled docker-buildx binary.
     mitigation: >-              # what reduces the risk / the exit plan
       Adopt the first docker CLI image shipping the patched module.
     advisory: https://avd.aquasec.com/nvd/cve-2026-17106
     upstream_issue: https://github.com/moby/go-archive
     approved_pr: 334            # PR that approved this exception
     owner: klinux               # who owns the follow-up
+    approved_at: "2026-11-07"   # when approved; window = expires - approved_at
     expires: "2027-02-05"       # quoted YYYY-MM-DD; gate fails once past
 ```
 
-All fields except `installed` / `fixed_version` are **required**; a missing one
-fails the gate.
+All fields except `fixed_version` are **required**; a missing one fails the gate.
+`origin` must equal Trivy's reported `Type`, and `trivy_target` its `Target`
+(find both in the Trivy JSON for the finding).
 
 ### Targets
 
 - A plugin target is its directory name under `plugins/` (e.g. `docker`).
 - An external pinned image is `external-<name>` (`external-binfmt`,
   `external-buildkit`). The workflow reads the exact pinned refs from
-  `plugins/buildx/entrypoint.sh`, so the gate always scans what actually ships.
+  `plugins/buildx/entrypoint.sh`, so the gate always scans what actually ships —
+  and **requires each to be `@sha256:`-digest-pinned**, so a future switch back to
+  a floating tag fails discovery instead of silently scanning a moving ref.
+
+The workflow downloads the Trivy DBs **once** and shares them as an artifact
+(`--skip-db-update` on each scan), so all targets scan against one consistent
+snapshot without hitting the DB registry per target.
 
 ## Working with exceptions
 
