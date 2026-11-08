@@ -188,8 +188,13 @@ case "${action}" in
             apply_args+=("--prune" "-l" "${PLUGIN_PRUNE_LABEL}")
         fi
 
+        # `set -f` disables pathname (glob) expansion: an unquoted
+        # ${PLUGIN_EXTRA_ARGS} would otherwise expand `*`/`?`/`[...]` against the
+        # workspace and silently rewrite args. Word-splitting still applies.
+        set -f
         # shellcheck disable=SC2086
         emit | kubectl apply "${apply_args[@]}" -f - ${PLUGIN_EXTRA_ARGS:-}
+        set +f
 
         # ── Wait for the rollout so deploy-success == rolled-out, not just
         #    "submitted". Workloads + their namespace are parsed from the
