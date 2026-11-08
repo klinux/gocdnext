@@ -8,6 +8,26 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Changed
+
+- **liquibase plugin → alpine `apk upgrade` + `lpm` removed, 2 CRITICALs cleared
+  (liquibase version unchanged).** The published `:v1` (`liquibase/liquibase:
+  4.31-alpine`) carried the OS OpenSSL `libcrypto3`/`libssl3` **CVE-2026-31789**
+  and, in `/liquibase/bin/lpm` (the Liquibase **Package Manager**, a Go binary on
+  an old Go), stdlib **CVE-2025-68121**. Pinned the base by digest + `apk upgrade`
+  (clears the OpenSSL CRITICAL) and **removed `lpm`** — the plugin only ever runs
+  `liquibase` (status/validate/update-sql/update), never `lpm` (a separate CLI for
+  installing extensions). **The liquibase version is deliberately NOT bumped**: it
+  is a schema-migration tool and both CRITICALs are cleared without touching it, so
+  its SQL/changelog behaviour is unchanged (no gratuitous migration-tool churn).
+  Trivy `--pkg-types os,library` (DB 2026-11-07): **0 CRITICAL**; HIGH = bundled
+  Java JARs (jackson/JDBC) — upstream-bound, gate-tracked. New real `smoke_test.sh`
+  (fully offline, `offline:` JDBC URL): asserts liquibase is 4.31.1 and `lpm` is
+  gone, the entrypoint guards (missing/non-whitelisted command, rollback
+  forward-only, missing URL, missing changelog) all exit 2, `validate` passes a
+  well-formed changelog and fails a malformed one, and `update-sql` generates the
+  expected DDL. Opts into `no_cache: true`. (#362)
+
 ### Fixed
 
 - **buf / kubectl / kustomize plugins — command args no longer glob-expand against
