@@ -10,6 +10,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **helm plugin → helm v3.22.1 + alpine 3.24.4, Go CRITICALs cleared; download
+  checksum-verified + architecture-aware.** The published `:v1` built on the
+  now-EOL `alpine:3.20` and `curl`'d helm v3.16.2 (old Go + grpc →
+  **CVE-2025-68121** + **CVE-2026-33186**) **with no integrity check**, amd64-only.
+  Bumped helm to **v3.22.1** (go1.26.9), pinned the base `alpine:3.24.4` + `apk
+  upgrade`, and the download is now **architecture-aware** (`TARGETARCH`
+  amd64/arm64) and **verified against the get.helm.sh sha256**. Trivy `--pkg-types
+  os,library` (DB 2026-11-07): **0 CRITICAL**; HIGH **→ 2** (`x/net` + stdlib in
+  the binary — upstream-bound, gate-tracked). Pinned Helm 3 (security fixes to
+  2027-02-10); the Helm 4 migration is tracked in #349. **Shared kubeconfig fix**
+  (this plugin mirrors kubectl/kustomize): the base64 detection used a byte-window
+  grep and the token/cert config was written to a fixed `/tmp` path then `chmod`'d
+  — now it's materialised into a fresh `mktemp /tmp/gocdnext-kubeconfig.XXXXXX`
+  (0600, `/tmp`-anchored so `$TMPDIR` can't redirect it) written by redirection,
+  and base64 is distinguished by scanning the **whole** decoded file for
+  `apiVersion` (this image has no kubectl, so `kubectl config view` isn't
+  available; helm validates the config when it runs). New `entrypoint_test.sh`
+  (guards + kubeconfig 0600/fresh-path/content for file/base64/base64-behind-a-
+  comment/literal) and a real `smoke_test.sh` (fully offline): asserts v3.22.1, a
+  missing command exits 2, and `helm template` renders a local chart. Opts into
+  `no_cache: true`. (#359)
 - **goose plugin → goose v3.29.0 + Go 1.27 + alpine 3.24.4, 3 CRITICALs cleared.**
   The published `:v1` built `goose@v3.27.0` with `golang:1.25` on `alpine:3.21`:
   the binary bundled vulnerable deps — pgx/v5 **CVE-2026-33815** + **CVE-2026-33816**
