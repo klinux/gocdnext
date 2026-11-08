@@ -15,7 +15,7 @@ setup() {
   cat >"$BIN/osv-scanner" <<'EOF'
 #!/usr/bin/env bash
 out=""
-while [ $# -gt 0 ]; do case "$1" in --output) out="$2"; shift 2;; *) shift;; esac; done
+while [ $# -gt 0 ]; do case "$1" in --output-file) out="$2"; shift 2;; *) shift;; esac; done
 [ -n "${OSV_MSG:-}" ] && echo "${OSV_MSG}" >&2
 [ "${OSV_WRITE:-0}" = "1" ] && [ -n "$out" ] && echo '{"runs":[{"results":[]}]}' > "$out"
 exit "${OSV_RC:-0}"

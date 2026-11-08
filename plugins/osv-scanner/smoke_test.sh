@@ -21,8 +21,8 @@ W="$(mktemp -d)"       # vuln workspace
 WE="$(mktemp -d)"      # empty workspace (no sources)
 SMOKE_OK=0
 cleanup() {
-  # osv-scanner writes the report as root into the mounts; shred from inside the
-  # image (matching uid) before removing, then verify.
+  # osv-scanner writes the report as root into the mounts; remove it from inside
+  # the image (matching uid) before deleting the dirs, then verify they're gone.
   if docker image inspect "$IMG" >/dev/null 2>&1; then
     docker run --rm --entrypoint sh -v "$W:/a" -v "$WE:/b" "$IMG" \
       -c 'rm -rf /a/* /a/.[!.]* /b/* /b/.[!.]* 2>/dev/null || true' >/dev/null 2>&1 || true
@@ -37,6 +37,7 @@ cleanup() {
 trap cleanup EXIT
 die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2" | tail -40; }; exit 1; }
 count() { docker run --rm -v "$1:/w" --entrypoint jq "$IMG" '[.runs[].results[]] | length' "/w/$2" 2>/dev/null; }
+no_deprecation() { grep -qi 'deprecat' <<<"$2" && die "$1: wrapper used a deprecated osv-scanner flag" "$2" || true; }
 
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
@@ -45,13 +46,14 @@ echo "==> osv-scanner is v2.7.0"
 OUT="$(docker run --rm --entrypoint osv-scanner "$IMG" --version 2>&1)" || die "osv-scanner --version failed" "$OUT"
 grep -q '2.7.0' <<<"$OUT" || die "osv-scanner is not v2.7.0" "$OUT"
 
-echo "==> no lockfiles -> clean pass + empty SARIF (offline)"
+echo "==> no lockfiles -> clean pass + empty SARIF (offline, --network none)"
 set +e
-OUT="$(docker run --rm -v "$WE:/workspace" -w /workspace "$IMG" 2>&1)"; RC=$?
+OUT="$(docker run --rm --network none -v "$WE:/workspace" -w /workspace "$IMG" 2>&1)"; RC=$?
 set -e
 [ "$RC" -eq 0 ] || die "no-sources: expected exit 0, got $RC" "$OUT"
 grep -qi 'nothing to scan' <<<"$OUT" || die "no-sources: expected the clean 'nothing to scan' path" "$OUT"
 [ "$(count "$WE" osv-report.sarif)" = "0" ] || die "no-sources: empty SARIF not synthesized" "$OUT"
+no_deprecation "no-sources" "$OUT"
 
 echo "==> a known-vulnerable lockfile is detected"
 cat >"$W/package-lock.json" <<'JSON'
@@ -75,6 +77,7 @@ set -e
 [ "$RC" -eq 1 ] || die "vuln/any: expected exit 1, got $RC" "$OUT"
 n="$(count "$W" osv-report.sarif)"
 [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null || die "vuln/any: SARIF has no findings (got '${n}')" "$OUT"
+no_deprecation "vuln/any" "$OUT"
 echo "   (found ${n} results)"
 
 echo "   fail-on=none -> exit 0 (report-only), findings still recorded"
@@ -84,6 +87,7 @@ set -e
 [ "$RC" -eq 0 ] || die "vuln/none: expected exit 0 (report-only), got $RC" "$OUT"
 n="$(count "$W" osv-report.sarif)"
 [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null || die "vuln/none: SARIF lost its findings (got '${n}')" "$OUT"
+no_deprecation "vuln/none" "$OUT"
 
 SMOKE_OK=1
 echo "PASS: osv-scanner smoke"
