@@ -22,14 +22,18 @@ fi
 # as base64 in a secret get a straight decode path.
 if [ -n "${PLUGIN_KUBECONFIG:-}" ]; then
     dest=/tmp/gocdnext-kubeconfig
+    # The config holds tokens/certs, so create it private from the FIRST byte:
+    # umask 077 before any write, not chmod-after (which leaves a world-readable
+    # window). A subshell scopes the umask so it doesn't leak to the rest of run.
     if [ -f "${PLUGIN_KUBECONFIG}" ]; then
-        cp "${PLUGIN_KUBECONFIG}" "${dest}"
-    elif echo "${PLUGIN_KUBECONFIG}" | base64 -d >"${dest}" 2>/dev/null \
-         && head -c 256 "${dest}" | grep -q 'apiVersion\|kind:'; then
-        : # decoded ok and looks like YAML
+        ( umask 077; cp "${PLUGIN_KUBECONFIG}" "${dest}" )
+    elif ( umask 077; echo "${PLUGIN_KUBECONFIG}" | base64 -d >"${dest}" ) 2>/dev/null \
+         && kubectl config view --kubeconfig "${dest}" >/dev/null 2>&1; then
+        : # the base64 DECODED to a kubeconfig kubectl itself accepts (validated
+          # over the whole file, not a byte-window heuristic).
     else
         # Treat as literal YAML — covers the inline case.
-        printf '%s' "${PLUGIN_KUBECONFIG}" >"${dest}"
+        ( umask 077; printf '%s' "${PLUGIN_KUBECONFIG}" >"${dest}" )
     fi
     chmod 0600 "${dest}"
     export KUBECONFIG="${dest}"
