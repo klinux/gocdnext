@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **buf / kubectl / kustomize plugins — command args no longer glob-expand against
+  the workspace.** These wrappers word-split a user-supplied command/args by
+  leaving the expansion **unquoted** (`exec buf ${PLUGIN_COMMAND}`,
+  `kubectl … ${PLUGIN_COMMAND}`, `kubectl apply … ${PLUGIN_EXTRA_ARGS}`), which
+  also subjected `*`/`?`/`[…]` to pathname expansion — so a command containing a
+  glob was silently rewritten from whatever files happened to be in the workspace
+  (e.g. a `--set` value or a path). Each now runs `set -f` (disable globbing) right
+  before the split; word-splitting — the intended behaviour — still applies.
+  Regression tests assert a literal `*` reaches the tool (the kubectl/kustomize
+  mock argv logs and the buf smoke). The same class was found in more wrappers
+  (`aws-cli`, `gcloud`, `argocd`, `dotnet`, `go`, and some extra-args handling) and
+  is tracked separately for a wider audit. (helm was already fixed in #359.)
+
 ### Changed
 
 - **helm plugin → helm v3.22.1 + alpine 3.24.4, Go CRITICALs cleared; download
