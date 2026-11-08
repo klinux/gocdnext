@@ -10,6 +10,25 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **goose plugin → goose v3.29.0 + Go 1.27 + alpine 3.24.4, 3 CRITICALs cleared.**
+  The published `:v1` built `goose@v3.27.0` with `golang:1.25` on `alpine:3.21`:
+  the binary bundled vulnerable deps — pgx/v5 **CVE-2026-33815** + **CVE-2026-33816**
+  and grpc **CVE-2026-33186** (all CRITICAL). Bumped goose to **v3.29.0** (via `go
+  install`, content-addressed; pgx ≥5.9.0, grpc ≥1.79.3), builder to **golang:1.27**
+  (pinned), base to **alpine:3.24.4** (pinned) + `apk upgrade`. Trivy `--pkg-types
+  os,library` (DB 2026-11-07): **0 CRITICAL**; HIGH **→ 1** (`golang.org/x/net` in
+  the binary — upstream-bound, gate-tracked). **Behavioral note** (the v3.27→v3.29
+  span includes v3.28): the schema of a **newly created** `goose_db_version`
+  tracking table changed for two advertised drivers — ClickHouse now orders by
+  `version_id`, and MySQL/TiDB `tstamp` is `DATETIME` instead of `TIMESTAMP`.
+  **Existing tables are not altered**, so running pipelines are unaffected; only
+  tables created from first use on the new version differ. New real
+  `smoke_test.sh` (fully offline): asserts the binary is v3.29.0, the entrypoint
+  guards (missing command, a non-whitelisted command, `down`/`redo` forward-only,
+  missing `GOOSE_DBSTRING`, missing dir) all exit 2, `validate` passes on a
+  well-formed migration and fails on a malformed one, and the **core flow** runs
+  against a real driver — `up` applies a migration to a SQLite DB in the workspace
+  and `status` then reports it applied. Opts into `no_cache: true`. (#358)
 - **kustomize plugin → kustomize 5.8.3 + kubectl v1.37.2 + alpine 3.24.4, stdlib
   CRITICALs cleared; downloads checksum-verified + architecture-aware.** The
   published `:v1` built on the now-EOL `alpine:3.20` and `curl`'d **two** binaries
