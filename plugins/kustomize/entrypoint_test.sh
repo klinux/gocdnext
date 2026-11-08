@@ -57,7 +57,20 @@ cat >"$TMP/kubectl" <<EOF
 #!/usr/bin/env bash
 args="\$*"
 printf '%s\n' "\$args" >> "$TMP/kubectl.log"
+# Record the mode+path AND content hash of the materialised kubeconfig, so the
+# test can assert it's a fresh, 0600, /tmp-anchored file holding the CORRECT bytes
+# (not garbage a rubber-stamped detection might have written).
+if [ -n "\${KUBECONFIG:-}" ] && [ -e "\${KUBECONFIG}" ]; then
+    stat -c '%a %n' "\${KUBECONFIG}" >> "$TMP/kcmode.log" 2>/dev/null || true
+    sha256sum "\${KUBECONFIG}" 2>/dev/null | awk '{print \$1}' >> "$TMP/kchash.log" || true
+fi
 case "\$args" in *"-f -"*) cat > "$TMP/kubectl.stdin" ;; esac
+# config view: mimic real kubectl — accept ONLY a plausible kubeconfig. If the mock
+# rubber-stamped this, the entrypoint's base64 branch would accept garbage and the
+# literal fallback would never be reached, masking a detection regression.
+if [ "\$1 \$2" = "config view" ]; then
+    f="\$4"; { [ -n "\$f" ] && grep -q 'apiVersion' "\$f" 2>/dev/null; } && exit 0 || exit 1
+fi
 case "\$args" in
     "get namespace"*) [ "\${NS_EXISTS:-0}" = 1 ] && exit 0 || exit 1 ;;
     "rollout status"*) [ "\${ROLLOUT_FAIL:-0}" = 1 ] && exit 1 || exit 0 ;;
@@ -67,7 +80,7 @@ EOF
 chmod +x "$TMP/kubectl"
 
 run() { PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh"; }
-reset() { : >"$TMP/kustomize.log"; : >"$TMP/kubectl.log"; : >"$TMP/kubectl.stdin"; }
+reset() { : >"$TMP/kustomize.log"; : >"$TMP/kubectl.log"; : >"$TMP/kubectl.stdin"; : >"$TMP/kcmode.log"; : >"$TMP/kchash.log"; }
 fail() {
     echo "FAIL: $1"
     echo "--- kustomize.log ---"; cat "$TMP/kustomize.log" 2>/dev/null
@@ -253,5 +266,50 @@ EOF
     printf '%s' "$out" | grep -q "omitted (envsubst enabled" || fail "missing the omitted-render notice"
     grep -q "$secret" "$TMP/kubectl.stdin" || fail "apply didn't receive the resolved manifest"
 fi
+
+# ── N. kubeconfig is materialised 0600 at a FRESH, /tmp-anchored path, with the
+#       CORRECT content, for file / base64 / base64-behind-comment / literal ──
+cat >"$TMP/kc.yaml" <<'EOF'
+apiVersion: v1
+kind: Config
+clusters: [{cluster: {server: https://example.invalid:6443}, name: smoke}]
+contexts: [{context: {cluster: smoke, user: smoke}, name: smoke-ctx}]
+current-context: smoke-ctx
+users: [{name: smoke, user: {token: fake}}]
+EOF
+# a valid kubeconfig whose apiVersion sits behind a long leading comment — the old
+# byte-window detector would miss it.
+{ printf '# '; head -c 300 /dev/zero | tr '\0' x; printf '\n'; cat "$TMP/kc.yaml"; } >"$TMP/kc-comment.yaml"
+KC_B64="$(base64 -w0 "$TMP/kc.yaml")"
+KC_B64C="$(base64 -w0 "$TMP/kc-comment.yaml")"
+KC_LIT="$(cat "$TMP/kc.yaml")"
+# the literal branch writes `printf '%s'` (no trailing newline), so the expected
+# bytes are exactly that — build the reference the same way.
+printf '%s' "$KC_LIT" >"$TMP/kc-lit-expected.yaml"
+PREV_KC=""
+check_kc() { # check_kc <desc> <PLUGIN_KUBECONFIG value> <expected-content-file>
+    reset
+    ( umask 000
+      PLUGIN_PATH="$TMP/overlay" PLUGIN_KUBECONFIG="$2" NS_EXISTS=1 TMPDIR="$TMP" \
+        PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh" >/dev/null 2>&1 )
+    local line mode path; line="$(tail -n1 "$TMP/kcmode.log" 2>/dev/null)"
+    mode="${line%% *}"; path="${line#* }"
+    [ "$mode" = "600" ] || fail "kubeconfig($1): mode '${mode}', want 600"
+    case "$path" in
+        /tmp/gocdnext-kubeconfig.??????*) : ;;
+        *) rm -f "$path" 2>/dev/null; fail "kubeconfig($1): at '${path}', not anchored under /tmp/gocdnext-kubeconfig. (TMPDIR could redirect the secret)" ;;
+    esac
+    [ -n "$PREV_KC" ] && [ "$path" = "$PREV_KC" ] && { rm -f "$path" 2>/dev/null; fail "kubeconfig($1): reused previous dest ${path} (not a fresh mktemp)"; }
+    # content must be the EXACT expected bytes — proves detection wrote the right
+    # config, not garbage from a rubber-stamped base64 branch.
+    local want got; want="$(sha256sum "$3" | awk '{print $1}')"; got="$(tail -n1 "$TMP/kchash.log" 2>/dev/null)"
+    [ "$got" = "$want" ] || { rm -f "$path" 2>/dev/null; fail "kubeconfig($1): content hash mismatch (want ${want}, got ${got}) — wrong bytes materialised"; }
+    PREV_KC="$path"; rm -f "$path" 2>/dev/null
+    echo "  kubeconfig($1): 0600, fresh $path, content verified"
+}
+check_kc "file"           "$TMP/kc.yaml"      "$TMP/kc.yaml"
+check_kc "base64"         "$KC_B64"           "$TMP/kc.yaml"
+check_kc "base64+comment" "$KC_B64C"          "$TMP/kc-comment.yaml"
+check_kc "literal"        "$KC_LIT"           "$TMP/kc-lit-expected.yaml"
 
 echo "PASS: kustomize entrypoint"

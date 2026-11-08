@@ -10,6 +10,36 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **kustomize plugin → kustomize 5.8.3 + kubectl v1.37.2 + alpine 3.24.4, stdlib
+  CRITICALs cleared; downloads checksum-verified + architecture-aware.** The
+  published `:v1` built on the now-EOL `alpine:3.20` and `curl`'d **two** binaries
+  with **no integrity check**, amd64-only: kustomize 5.4.3 and kubectl v1.31.1,
+  both on an old Go (**CVE-2025-68121**, ×2). Bumped to **kustomize 5.8.3** +
+  **kubectl v1.37.2** (both patched Go), pinned the base `alpine:3.24.4` + `apk
+  upgrade`, and both downloads are now **architecture-aware** (`TARGETARCH`
+  amd64/arm64) and **verified against the upstream sha256** (kustomize
+  `checksums.txt` / `dl.k8s.io`). **Also installs Helm** (`v3.22.1`, pinned +
+  checksum-verified + architecture-aware, go1.26.9) — `enable_helm` was advertised
+  (`kustomize build --enable-helm` to inflate `helmCharts:`) but **Helm wasn't in
+  the image**, so the feature was broken; the smoke now renders a local chart to
+  prove it. Trivy `--pkg-types os,library` (DB 2026-11-07): **0 CRITICAL**; HIGH
+  **→ 9** (stdlib/`x/net`/`x/text` across the three binaries — upstream-bound,
+  gate-tracked). (Published `:v1` stays `linux/amd64` fleet-wide.) **Compat:** the
+  plugin's **wrapper contract** (inputs + apply/build/diff/validate) is preserved,
+  but kustomize `5.4.3 → 5.8.3` includes render fixes (e.g. namespace propagation
+  for Helm), so **rendered manifests may legitimately change**; and bundled kubectl
+  is now v1.37.2 — supported within **±1 minor** of the API server (core verbs work
+  wider; operators needing an exact match derive this image).
+  **Shared kubeconfig fix** (this plugin mirrors kubectl/helm): the entrypoint's
+  base64 detection used a byte-window grep and the config was written to a fixed
+  `/tmp` path then `chmod`'d — now the token/cert config is validated whole via
+  `kubectl config view` and materialised into a fresh `mktemp
+  /tmp/gocdnext-kubeconfig.XXXXXX` (0600, anchored to `/tmp` so `$TMPDIR` can't
+  redirect it) written by redirection. New real `smoke_test.sh` (fully offline):
+  asserts kustomize 5.8.3 + kubectl v1.37.2, a missing path fails, `build` renders
+  (namePrefix), `images:` rewrites a tag, and `envsubst:` substitutes a `${VAR}`;
+  `entrypoint_test.sh` gains a kubeconfig section asserting 0600 at a fresh
+  `/tmp`-anchored path for file/base64/literal. Opts into `no_cache: true`. (#357)
 - **kubectl plugin → kubectl v1.37.2 + alpine 3.24.4, stdlib CRITICAL cleared;
   download now checksum-verified + architecture-aware.** The published `:v1` built
   on the now-EOL `alpine:3.20` and `curl`'d kubectl v1.31.1 (built on an old Go →
