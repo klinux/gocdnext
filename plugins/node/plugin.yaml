@@ -25,6 +25,11 @@
 name: node
 category: build
 image_tag: v3
+# Refreshes OS packages via `apt-get upgrade` and bumps npm at build time, so it
+# MUST build from scratch — otherwise the registry build cache re-imports a stale
+# OS/npm layer on a release that didn't touch the Dockerfile. Consumed by the
+# `nocache` step in plugins.yml.
+no_cache: true
 description: >
   Node.js install + run with multi-manager support (pnpm, npm,
   yarn v3+, bun) AND multi-version node. Bakes node 20/22/24 in one
