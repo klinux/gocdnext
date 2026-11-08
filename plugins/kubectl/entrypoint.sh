@@ -35,7 +35,9 @@ if [ -n "${PLUGIN_KUBECONFIG:-}" ]; then
         # Treat as literal YAML — covers the inline case.
         ( umask 077; printf '%s' "${PLUGIN_KUBECONFIG}" >"${dest}" )
     fi
-    chmod 0600 "${dest}"
+    # No chmod-after: every branch above writes under `umask 077`, so the file is
+    # 0600 from the first byte (entrypoint_test.sh asserts this). A chmod here
+    # would only re-close an already-closed window and mask that regression test.
     export KUBECONFIG="${dest}"
 fi
 
