@@ -38,16 +38,21 @@ esac
 #    YAML, auto-detected; empty defers to the agent's in-cluster SA.
 #    (The cluster registry's `cluster:` key feeds PLUGIN_KUBECONFIG.) ──
 if [ -n "${PLUGIN_KUBECONFIG:-}" ]; then
-    dest=/tmp/gocdnext-kubeconfig
+    # The config holds tokens/certs. Materialise into a FRESH, unique, 0600 file
+    # anchored to /tmp (a bare `mktemp` honours $TMPDIR, which a job could point at
+    # a persisted /workspace volume; a fixed path could preexist permissive and its
+    # mode would be inherited by the write). Write with REDIRECTION — `cp` would
+    # copy the source file's mode. Detect base64 by validating the WHOLE decoded
+    # file with `kubectl config view` (not a byte-window heuristic).
+    dest="$(mktemp /tmp/gocdnext-kubeconfig.XXXXXX)"
     if [ -f "${PLUGIN_KUBECONFIG}" ]; then
-        cp "${PLUGIN_KUBECONFIG}" "${dest}"
+        cat "${PLUGIN_KUBECONFIG}" >"${dest}"
     elif echo "${PLUGIN_KUBECONFIG}" | base64 -d >"${dest}" 2>/dev/null \
-        && head -c 7 "${dest}" | grep -q 'apiVersion\|kind:'; then
+        && kubectl config view --kubeconfig "${dest}" >/dev/null 2>&1; then
         :
     else
         printf '%s' "${PLUGIN_KUBECONFIG}" >"${dest}"
     fi
-    chmod 0600 "${dest}"
     export KUBECONFIG="${dest}"
 fi
 
