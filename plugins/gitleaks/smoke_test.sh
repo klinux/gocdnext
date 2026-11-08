@@ -40,7 +40,11 @@ no_deprecation() { grep -qiE 'deprecat' <<<"$2" && die "$1: used a deprecated gi
 # read its raw bytes — the report is root-owned in the mount, so go via the image.
 count()  { docker run --rm --network none -v "$1:/w" --entrypoint sh  "$IMG" -c '[ -f "/w/'"$2"'" ] && { grep -c "\"RuleID\"" "/w/'"$2"'" || true; } || echo 0'; }
 report() { docker run --rm --network none -v "$1:/w" --entrypoint cat "$IMG" "/w/$2" 2>/dev/null; }
-rmrep()  { docker run --rm --network none -v "$1:/w" --entrypoint sh  "$IMG" -c 'rm -f "/w/'"$2"'"' >/dev/null 2>&1 || true; }
+# rmrep must actually remove the report AND verify it's gone — a swallowed failure
+# would let a stale report from a prior case satisfy the next one.
+rmrep()  { docker run --rm --network none -v "$1:/w" --entrypoint sh "$IMG" \
+             -c 'rm -f "/w/'"$2"'" && test ! -e "/w/'"$2"'"' \
+             || die "could not remove stale report /w/$2 before a case"; }
 
 # The planted secret VALUES — referenced both when planting and when asserting
 # that --redact kept them out of the log and the JSON report.
@@ -103,8 +107,12 @@ OUT="$(docker run --rm --network none -v "$WC:/workspace" -w /workspace \
 set -e
 [ "$RC" -eq 0 ] || die "clean: expected exit 0, got $RC" "$OUT"
 no_deprecation "clean" "$OUT"
-n="$(count "$WC" gitleaks.json)"
-[ "$n" = "0" ] || die "clean: report should have zero findings (got '${n}')" "$OUT"
+# Require the report to be PRESENT and a valid, empty array — count==0 alone would
+# also pass if no report were written at all.
+docker run --rm --network none -v "$WC:/w" --entrypoint sh "$IMG" -c 'test -e /w/gitleaks.json' \
+  || die "clean: no report written (expected an empty '[]')" "$OUT"
+clean_rep="$(printf '%s' "$(report "$WC" gitleaks.json)" | tr -d '[:space:]')"
+[ "$clean_rep" = "[]" ] || die "clean: report is not a valid empty array (got '${clean_rep}')" "$OUT"
 
 SMOKE_OK=1
 echo "PASS: gitleaks smoke"
