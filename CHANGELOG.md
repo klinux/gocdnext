@@ -28,9 +28,12 @@ convention that minor bumps may carry breaking changes until 1.0).
   could never match `apiVersion` (and would miss keys behind a leading comment),
   so a valid base64 `kubeconfig:` was silently written as literal and broke — now
   the decoded file is validated as a whole by `kubectl config view --kubeconfig`;
-  (2) the kubeconfig (tokens/certs) was created with the default umask and only
-  `chmod 0600`'d afterward, leaving a brief world-readable window — now written
-  under `umask 077` from the first byte. New real `smoke_test.sh` (fully offline):
+  (2) the kubeconfig (tokens/certs) was written to a FIXED path (`/tmp/gocdnext-
+  kubeconfig`) and `chmod 0600`'d afterward — but a preexisting/permissive file at
+  that path keeps its mode (redirection inherits the existing inode's mode), so
+  "0600 from the first byte" wasn't guaranteed. It's now materialised into a fresh
+  `mktemp` file (0600, unique) written via redirection (not `cp`, which copies the
+  source's mode), so the private mode holds with no window and no path reuse. New real `smoke_test.sh` (fully offline):
   asserts v1.37.2, a missing command exits 2, `kubectl kustomize` renders, `create
   --dry-run=client` emits an object while a `kind`-less manifest fails client-side,
   and base64 (incl. behind a long comment), literal, and file kubeconfigs all

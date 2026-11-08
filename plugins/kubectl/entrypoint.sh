@@ -21,23 +21,23 @@ fi
 # through env vars is brittle; operators who store the config
 # as base64 in a secret get a straight decode path.
 if [ -n "${PLUGIN_KUBECONFIG:-}" ]; then
-    dest=/tmp/gocdnext-kubeconfig
-    # The config holds tokens/certs, so create it private from the FIRST byte:
-    # umask 077 before any write, not chmod-after (which leaves a world-readable
-    # window). A subshell scopes the umask so it doesn't leak to the rest of run.
+    # The config holds tokens/certs, so it MUST be 0600 from the first byte.
+    # mktemp gives a FRESH, unique, 0600 file — a fixed path could preexist
+    # permissive (and redirection/cp into an existing inode inherit its mode, so
+    # neither umask nor chmod-after reliably closes the window). Then write with
+    # REDIRECTION (not `cp`, which copies the SOURCE file's mode) so the 0600
+    # mktemp set is preserved. entrypoint_test.sh asserts the result is 0600.
+    dest="$(mktemp)"
     if [ -f "${PLUGIN_KUBECONFIG}" ]; then
-        ( umask 077; cp "${PLUGIN_KUBECONFIG}" "${dest}" )
-    elif ( umask 077; echo "${PLUGIN_KUBECONFIG}" | base64 -d >"${dest}" ) 2>/dev/null \
+        cat "${PLUGIN_KUBECONFIG}" >"${dest}"
+    elif echo "${PLUGIN_KUBECONFIG}" | base64 -d >"${dest}" 2>/dev/null \
          && kubectl config view --kubeconfig "${dest}" >/dev/null 2>&1; then
         : # the base64 DECODED to a kubeconfig kubectl itself accepts (validated
           # over the whole file, not a byte-window heuristic).
     else
         # Treat as literal YAML — covers the inline case.
-        ( umask 077; printf '%s' "${PLUGIN_KUBECONFIG}" >"${dest}" )
+        printf '%s' "${PLUGIN_KUBECONFIG}" >"${dest}"
     fi
-    # No chmod-after: every branch above writes under `umask 077`, so the file is
-    # 0600 from the first byte (entrypoint_test.sh asserts this). A chmod here
-    # would only re-close an already-closed window and mask that regression test.
     export KUBECONFIG="${dest}"
 fi
 
