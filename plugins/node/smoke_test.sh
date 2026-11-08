@@ -16,8 +16,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> build (same Dockerfile/context as the official build)"
-docker build -t "${IMG}" "${HERE}" >/dev/null
+echo "==> build (--no-cache, same Dockerfile/context as the official build)"
+docker build --no-cache -t "${IMG}" "${HERE}" >/dev/null
 
 # plug <fixture-dir> <env-flags...> — run the plugin against a fixture.
 plug() {
@@ -36,17 +36,24 @@ for maj in 20 22 24; do
   echo "$out" | grep -qE "^v${maj}\." || die "node v${maj} not on PATH in bash -lc" "$out"
 done
 
-# 1b. the npm-bundled node-tar in EVERY baked major is >= 7.5.19 — the removed
-#     CVE-2026-59873. node 20/22 shipped npm 10.x (tar 6.2.1 / 7.5.11, both
-#     vulnerable) and were bumped to npm 11.19.1 (tar 7.5.22); node 24 already
-#     had it. Read the version straight from each relocated npm so a future base
-#     re-pin that regresses tar fails HERE. (version sort: dates/semver are not
-#     zero-padded, so the 7.5.19 floor must sort first.)
+# 1b. npm 11.19.1 actually RUNS under each selected major, and the node-tar it
+#     bundles is >= 7.5.19 — the removed CVE-2026-59873. node 20/22 shipped npm
+#     10.x (tar 6.2.1 / 7.5.11, both vulnerable) and were bumped to npm 11.19.1
+#     (tar 7.5.22); node 24 already had it. This drives the REAL path: the plugin
+#     selects the major and npm is EXECUTED under THAT node (not the image
+#     default), so an npm that installed but can't run under node 20/22 fails
+#     HERE — as does a future base re-pin that regresses tar. (version sort:
+#     semver is not zero-padded, so the 7.5.19 floor must sort first.)
 for maj in 20 22 24; do
-  tv="$(docker run --rm --entrypoint node "${IMG}" \
-        -p "require('/opt/node/node-${maj}/lib/node_modules/npm/node_modules/tar/package.json').version" 2>&1)"
+  d="$(mkfix "ver${maj}" "{\"engines\":{\"node\":\"${maj}.x\"}}")"
+  out="$(plug "$d" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='npm --version')"
+  printf '%s\n' "$out" | grep -qxF '11.19.1' \
+    || die "node-${maj}: npm 11.19.1 must run under the selected node" "$out"
+  out="$(plug "$d" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='cat "$(npm root -g)/npm/node_modules/tar/package.json"')"
+  tv="$(printf '%s\n' "$out" | grep -oE '"version": *"[0-9]+\.[0-9]+\.[0-9]+"' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+  [ -n "$tv" ] || die "node-${maj}: could not read the npm-bundled tar version" "$out"
   [ "$(printf '%s\n7.5.19\n' "$tv" | sort -V | head -1)" = "7.5.19" ] \
-    || die "node-${maj}: npm-bundled tar ${tv} is < 7.5.19 (CVE-2026-59873)"
+    || die "node-${maj}: npm-bundled tar ${tv} is < 7.5.19 (CVE-2026-59873)" "$out"
 done
 
 # NOTE: always CAPTURE the plug output then grep the string — never
