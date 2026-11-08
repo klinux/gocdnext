@@ -10,6 +10,24 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **nuclei plugin → nuclei v3.11.1 + yq v4.54.2 + alpine 3.24.4, 4 CRITICALs
+  cleared.** The published `:v1` bundled `projectdiscovery/nuclei:v3.3.2` (built
+  on Go 1.21.13) carrying stdlib CVE-2025-68121, go-git CVE-2025-21613, and
+  kin-openapi GHSA-r277-6w6q-xmqw; a `yq` v4.44.3 binary with stdlib
+  CVE-2025-68121; and the now-EOL `alpine:3.20` runtime. Bumped nuclei to
+  **v3.11.1** (pinned by digest, go1.26.5, deps patched), **yq to v4.54.2** (now
+  downloaded with a **pinned sha256** matching yq's published checksums — a
+  floating download was a supply-chain hole), and the base to **alpine:3.24.4**
+  (pinned) + `apk upgrade`. Trivy `--pkg-types os,library` (DB 2026-11-07): **0
+  CRITICAL** (the goal, 4 → 0); **27 HIGH remain in the nuclei binary**
+  (stdlib/kin-openapi/grpc/go-git/x-net/…) and are **upstream-bound** — v3.11.1 is
+  the latest upstream release, so they clear only when ProjectDiscovery rebuilds;
+  the weekly Trivy gate tracks them. Templates are **immutably pinned** to the
+  `v10.4.5` commit (`e5a0fba…`, verified at build — a moved tag fails the build)
+  and baked, never updated at runtime. The entrypoint test (14 groups) and the
+  real smoke (now `--no-cache`; boots a target, runs the baseline scan **and** an
+  OpenAPI-spec-driven scan) pass on the new engine. Opts into `no_cache: true`.
+  (#352)
 - **slack plugin → Go 1.27 toolchain + alpine 3.24.4, stdlib CRITICAL cleared;
   webhook no longer logged on error.** The published `:v1` built the reference
   Go binary with `golang:1.23-alpine` (stdlib carrying Go CVE-2025-68121) on the
