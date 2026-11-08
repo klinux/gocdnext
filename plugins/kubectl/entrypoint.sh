@@ -25,7 +25,7 @@ if [ -n "${PLUGIN_KUBECONFIG:-}" ]; then
     if [ -f "${PLUGIN_KUBECONFIG}" ]; then
         cp "${PLUGIN_KUBECONFIG}" "${dest}"
     elif echo "${PLUGIN_KUBECONFIG}" | base64 -d >"${dest}" 2>/dev/null \
-         && head -c 7 "${dest}" | grep -q 'apiVersion\|kind:'; then
+         && head -c 256 "${dest}" | grep -q 'apiVersion\|kind:'; then
         : # decoded ok and looks like YAML
     else
         # Treat as literal YAML — covers the inline case.
