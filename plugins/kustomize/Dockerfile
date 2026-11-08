@@ -36,8 +36,9 @@ ENV KUSTOMIZE_VERSION=5.8.3
 ENV KUBECTL_VERSION=v1.37.2
 # helm is REQUIRED for `enable_helm` (kustomize build --enable-helm inflates
 # helmCharts: entries by shelling out to `helm`). v3.22.1 is the latest Helm 3,
-# built on go1.26.9 (patched). Pinned Helm 3 (not 4) to match what kustomize's
-# helm integration expects.
+# built on go1.26.9 (patched). Kustomize 5.8.1+ works with Helm 3 OR 4; Helm 3 is
+# a TEMPORARY pin (its security fixes run to 2027-02-10) — the Helm 4 migration is
+# tracked in #349.
 ENV HELM_VERSION=v3.22.1
 
 RUN apk upgrade --no-cache && apk add --no-cache bash ca-certificates curl gettext \
