@@ -36,10 +36,24 @@ cleanup() {
 trap cleanup EXIT
 die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2" | tail -40; }; exit 1; }
 no_deprecation() { grep -qiE 'deprecat' <<<"$2" && die "$1: used a deprecated gitleaks subcommand/flag" "$2" || true; }
-# count findings in a gitleaks JSON report (array of objects with "RuleID").
-# The report is root-owned in the mount, so read it from inside the image.
-count() { docker run --rm --network none -v "$1:/w" --entrypoint sh "$IMG" \
-            -c 'grep -c "\"RuleID\"" "/w/'"$2"'" 2>/dev/null || echo 0'; }
+# count findings in a gitleaks JSON report (array of objects with "RuleID") and
+# read its raw bytes — the report is root-owned in the mount, so go via the image.
+count()  { docker run --rm --network none -v "$1:/w" --entrypoint sh  "$IMG" -c '[ -f "/w/'"$2"'" ] && { grep -c "\"RuleID\"" "/w/'"$2"'" || true; } || echo 0'; }
+report() { docker run --rm --network none -v "$1:/w" --entrypoint cat "$IMG" "/w/$2" 2>/dev/null; }
+rmrep()  { docker run --rm --network none -v "$1:/w" --entrypoint sh  "$IMG" -c 'rm -f "/w/'"$2"'"' >/dev/null 2>&1 || true; }
+
+# The planted secret VALUES — referenced both when planting and when asserting
+# that --redact kept them out of the log and the JSON report.
+AWS_SECRET='wJalrXUtnFEMI/K7MDENG/bPxRfiCYz2aBcDeFgH'
+KEY_BODY='MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDummykeydata12'
+assert_redacted() { # <label> <out> <workspace> <report>
+  local lbl="$1" out="$2" ws="$3" rep="$4" rc; rc="$(report "$ws" "$rep")"
+  for s in "$AWS_SECRET" "$KEY_BODY"; do
+    grep -qF "$s" <<<"$out" && die "${lbl}: raw secret value leaked into the log (redaction off)" "$out"
+    grep -qF "$s" <<<"$rc"  && die "${lbl}: raw secret value leaked into the JSON report" "$rc"
+  done
+  return 0
+}
 
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
@@ -51,10 +65,11 @@ grep -q '8.30.1' <<<"$OUT" || die "gitleaks is not v8.30.1 (got: ${OUT})" "$OUT"
 echo "==> stage a workspace WITH a secret"
 # A non-allowlisted AWS secret-key-shaped value (NOT the AKIA…EXAMPLE allowlisted
 # demo key) + a private key block — both hit gitleaks' default ruleset.
-printf 'aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYz2aBcDeFgH"\n' >"$WD/creds.env"
-printf -- '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDummykeydata12\n-----END PRIVATE KEY-----\n' >"$WD/id.pem"
+printf 'aws_secret_access_key = "%s"\n' "$AWS_SECRET" >"$WD/creds.env"
+printf -- '-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n' "$KEY_BODY" >"$WD/id.pem"
 
-echo "==> secret detected: exit-code 1 -> plugin exits 1, report has findings"
+echo "==> secret detected: exit-code 1 -> plugin exits 1, report has findings, values redacted"
+rmrep "$WD" gitleaks.json
 set +e
 OUT="$(docker run --rm --network none -v "$WD:/workspace" -w /workspace \
   -e PLUGIN_SCAN_MODE=dir -e PLUGIN_EXIT_CODE=1 -e PLUGIN_REPORT=gitleaks.json "$IMG" 2>&1)"; RC=$?
@@ -64,24 +79,32 @@ grep -qiE 'leaks found' <<<"$OUT" || die "detect: gitleaks reported no leaks for
 no_deprecation "detect" "$OUT"
 n="$(count "$WD" gitleaks.json)"
 [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null || die "detect: report has no findings (got '${n}')" "$OUT"
-echo "   (found ${n} findings)"
+assert_redacted "detect" "$OUT" "$WD" gitleaks.json
+echo "   (found ${n} findings, redacted)"
 
-echo "==> advisory mode: exit-code 0 reports but passes"
+echo "==> advisory mode: exit-code 0 still reports findings but passes"
+rmrep "$WD" gitleaks.json   # fresh report — never pass on a stale file
 set +e
 OUT="$(docker run --rm --network none -v "$WD:/workspace" -w /workspace \
   -e PLUGIN_SCAN_MODE=dir -e PLUGIN_EXIT_CODE=0 -e PLUGIN_REPORT=gitleaks.json "$IMG" 2>&1)"; RC=$?
 set -e
 [ "$RC" -eq 0 ] || die "advisory: expected exit 0, got $RC" "$OUT"
 no_deprecation "advisory" "$OUT"
+n="$(count "$WD" gitleaks.json)"
+[ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null || die "advisory: report missing findings — advisory stopped writing (got '${n}')" "$OUT"
+assert_redacted "advisory" "$OUT" "$WD" gitleaks.json
 
-echo "==> clean workspace passes (exit 0)"
+echo "==> clean workspace passes (exit 0) with a valid, empty report"
 echo 'the quick brown fox' >"$WC/readme.txt"
+rmrep "$WC" gitleaks.json
 set +e
 OUT="$(docker run --rm --network none -v "$WC:/workspace" -w /workspace \
-  -e PLUGIN_SCAN_MODE=dir -e PLUGIN_EXIT_CODE=1 "$IMG" 2>&1)"; RC=$?
+  -e PLUGIN_SCAN_MODE=dir -e PLUGIN_EXIT_CODE=1 -e PLUGIN_REPORT=gitleaks.json "$IMG" 2>&1)"; RC=$?
 set -e
 [ "$RC" -eq 0 ] || die "clean: expected exit 0, got $RC" "$OUT"
 no_deprecation "clean" "$OUT"
+n="$(count "$WC" gitleaks.json)"
+[ "$n" = "0" ] || die "clean: report should have zero findings (got '${n}')" "$OUT"
 
 SMOKE_OK=1
 echo "PASS: gitleaks smoke"
