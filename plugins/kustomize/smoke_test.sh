@@ -93,5 +93,29 @@ run . -e PLUGIN_PATH="sub" -e PLUGIN_ACTION="build" -e PLUGIN_ENVSUBST="MYVAR" -
 [ "$RC" -eq 0 ] || die "envsubst: expected exit 0, got $RC" "$OUT"
 grep -q "envsubst-ok-$$" <<<"$OUT" || die "envsubst: \${MYVAR} not substituted in the rendered output" "$OUT"
 
+echo "==> enable_helm inflates a LOCAL chart (helm is in the image, offline)"
+mkdir -p "$W/eh/charts/mychart/templates"
+printf 'apiVersion: v2\nname: mychart\nversion: 0.1.0\n' >"$W/eh/charts/mychart/Chart.yaml"
+printf '{}\n' >"$W/eh/charts/mychart/values.yaml"
+cat >"$W/eh/charts/mychart/templates/cm.yaml" <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-cm
+data:
+  key: helm-rendered-ok
+YAML
+cat >"$W/eh/kustomization.yaml" <<'YAML'
+helmGlobals:
+  chartHome: charts
+helmCharts:
+  - name: mychart
+    releaseName: smoke
+YAML
+run . -e PLUGIN_PATH="eh" -e PLUGIN_ACTION="build" -e PLUGIN_ENABLE_HELM="true"
+[ "$RC" -eq 0 ] || die "enable_helm: expected exit 0, got $RC — is helm installed?" "$OUT"
+grep -q 'name: smoke-cm' <<<"$OUT" || die "enable_helm: the local chart was not inflated (helm missing/not invoked)" "$OUT"
+grep -q 'key: helm-rendered-ok' <<<"$OUT" || die "enable_helm: chart template not rendered" "$OUT"
+
 SMOKE_OK=1
 echo "PASS: kustomize smoke"
