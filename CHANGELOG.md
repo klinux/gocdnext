@@ -10,6 +10,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **buf plugin → bufbuild/buf 1.75.0 + alpine 3.24.4, OpenSSL/Go CRITICALs
+  cleared.** The published `:v1` used `bufbuild/buf:1.47`: the binary was built on
+  an old Go + grpc (**CVE-2025-68121**, **CVE-2026-33186**) on an Alpine carrying
+  the OpenSSL `libcrypto3`/`libssl3` **CVE-2026-31789** (CRITICAL). Bumped the base
+  to **1.75.0** (pinned by digest; its binary is built on go1.27.3, on Alpine 3.24)
+  + `apk upgrade`. Trivy `--pkg-types os,library` (DB 2026-11-07): **0 CRITICAL**;
+  HIGH **93 → 1** (only `golang.org/x/net` in the buf binary — upstream-bound,
+  gate-tracked). buf's CLI surface (lint/breaking/generate) is unchanged. New real
+  `smoke_test.sh` (offline): asserts the binary is v1.75.0, a missing command exits
+  2, `buf lint` passes on a clean module (exit 0) and fails on a lint violation
+  (non-zero, naming the rule). Opts into `no_cache: true`. (#355)
 - **gitleaks plugin → gitleaks v8.30.1 built on Go 1.27 + alpine 3.24.4, stdlib
   CRITICAL cleared.** The published `:v1` used the upstream `zricethezav/gitleaks:
   v8.21.2` image (binary built on go1.22.8 → **CVE-2025-68121**) on alpine 3.19,
