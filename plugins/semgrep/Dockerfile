@@ -20,7 +20,8 @@
 # from 1.96.0 clears all three CRITICALs WITHOUT any pip/apk surgery —
 # they ride in the upstream image:
 #   - OS OpenSSL (libcrypto3/libssl3 CVE-2026-31789): alpine 3.23.8
-#     already ships the patched 3.3.x; `apk upgrade` keeps it fresh.
+#     already ships the patched OpenSSL (3.5.9-r0); `apk upgrade`
+#     keeps it fresh.
 #   - certifi (GHSA-6q48-6c7w-9gw2): 1.184.0 bundles certifi
 #     2026.10.23 (>= the 2026.10.18 fix) in semgrep's own venv.
 # semgrep is a scanner, so a version bump is desirable (newer engine +

@@ -16,7 +16,8 @@
 #     fail-on=warning (proves the jq ruleId->level resolution, since semgrep
 #     does not stamp .level on each SARIF result);
 #   - a broken --config (scan error) propagates loud (exit >= 2), not masked;
-#   - --baseline-commit reports only findings NEW since a commit.
+#   - --baseline-commit filters a LEGACY finding (present at the baseline) and
+#     reports only the one introduced afterward (asserts the file, not just count).
 # NB: this proves the wrapper CONTRACT, not that findings match 1.96.0 — the
 # engine and bundled rules evolved across 88 minors, so results may legitimately
 # move. The rules here are local and fixed, so the contract assertions are stable.
@@ -68,12 +69,15 @@ rules:
     pattern: eval(...)
 YAML
 }
-bad()   { printf 'def f(x):\n    return eval(x)\n' >"$1/bad.py"; }
-clean() { printf 'def f(x):\n    return int(x)\n'  >"$1/ok.py"; }
+bad()      { printf 'def f(x):\n    return eval(x)\n' >"$1/bad.py"; }
+clean()    { printf 'def f(x):\n    return int(x)\n'  >"$1/ok.py"; }
+evalfile() { printf 'def f(x):\n    return eval(x)\n' >"$1/$2"; }   # $1=dir $2=filename
 # run the wrapper (its real entrypoint) in $1, offline. Sets RC + OUT.
 run() { d="$1"; shift; set +e; OUT="$(docker run --rm --network none -v "$d:/workspace" -w /workspace "$@" "$IMG" 2>&1)"; RC=$?; set -e; }
 # count SARIF results inside the image (jq is baked in).
 sarif_count() { docker run --rm --network none -v "$1:/w" -w /w --entrypoint jq "$IMG" '[.runs[].results[]] | length' "$2" 2>/dev/null; }
+# unique artifact URIs of the SARIF results (which files the findings point at).
+sarif_uris()  { docker run --rm --network none -v "$1:/w" -w /w --entrypoint jq "$IMG" -r '[.runs[].results[].locations[].physicalLocation.artifactLocation.uri] | unique | .[]' "$2" 2>/dev/null; }
 
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
@@ -83,8 +87,10 @@ OUT="$(docker run --rm --network none --entrypoint semgrep "$IMG" --version 2>&1
 grep -qF '1.184.0' <<<"$OUT" || die "semgrep is not 1.184.0 (got: ${OUT})" "$OUT"
 CERTIFI="$(docker run --rm --network none --entrypoint python3 "$IMG" -c 'import certifi; print(certifi.__version__)' 2>&1)" \
   || die "could not read certifi version" "$CERTIFI"
-# certifi versions are date-stamped YYYY.MM.DD; string compare is correct ordering.
-[ "$(printf '%s\n2026.10.18\n' "$CERTIFI" | sort | head -1)" = "2026.10.18" ] \
+# certifi versions are date-stamped YYYY.MM.DD but NOT zero-padded (2026.9.30),
+# so a lexical sort is wrong (it ranks "2026.10.18" below "2026.9.30"). Use a
+# version sort: the fix floor must sort first for CERTIFI to be >= it.
+[ "$(printf '%s\n2026.10.18\n' "$CERTIFI" | sort -V | head -1)" = "2026.10.18" ] \
   || die "certifi ${CERTIFI} is older than the 2026.10.18 fix (GHSA-6q48-6c7w-9gw2)"
 
 echo "==> fail-on is validated: a bad value exits 2"
@@ -123,18 +129,33 @@ echo "==> broken --config (scan error) propagates loud (exit >= 2), not masked a
 run "$WC" -e PLUGIN_CONFIG="rules/does-not-exist.yaml" -e PLUGIN_FAIL_ON="error"
 [ "$RC" -ge 2 ] || die "scan-error: a broken config must propagate (expected >= 2), got $RC" "$OUT"
 
-echo "==> baseline-commit reports only findings NEW since the commit"
-rule "$WB" ERROR; clean "$WB"
+echo "==> baseline-commit filters out the LEGACY finding, reports only the NEW one"
+# The baseline must ALREADY contain a finding, otherwise count==1 proves nothing
+# (a non-filtering scan of a one-new-finding tree also returns 1). So: legacy.py
+# has a finding AT the baseline; new.py adds a second finding afterward. A full
+# scan sees BOTH; baseline mode must return ONLY new.py.
+rule "$WB" ERROR
+evalfile "$WB" legacy.py            # a finding that EXISTS at the baseline commit
 git -C "$WB" init -q -b main
 git -C "$WB" -c user.email=smoke@example.invalid -c user.name=smoke add -A
 git -C "$WB" -c user.email=smoke@example.invalid -c user.name=smoke commit -qm baseline
 BASE="$(git -C "$WB" rev-parse HEAD)"
-bad "$WB"   # the NEW finding, in a tracked change
+evalfile "$WB" new.py               # a SECOND finding, introduced after the baseline
 git -C "$WB" -c user.email=smoke@example.invalid -c user.name=smoke add -A
 git -C "$WB" -c user.email=smoke@example.invalid -c user.name=smoke commit -qm introduce-eval
+# Full scan (no baseline) sees BOTH findings — proves the legacy one is detectable.
+run "$WB" -e PLUGIN_CONFIG="rules/no-eval.yaml" -e PLUGIN_FAIL_ON="none"
+[ "$RC" -eq 0 ] || die "baseline/full: expected exit 0 (fail-on=none), got $RC" "$OUT"
+[ "$(sarif_count "$WB" semgrep.sarif)" = "2" ] \
+  || die "baseline/full: a full scan should see BOTH findings (legacy + new)" "$OUT"
+# Baseline scan returns ONLY the new finding, pointing at new.py (not legacy.py).
 run "$WB" -e PLUGIN_CONFIG="rules/no-eval.yaml" -e PLUGIN_FAIL_ON="none" -e PLUGIN_BASELINE_COMMIT="$BASE"
 [ "$RC" -eq 0 ] || die "baseline: expected exit 0 (fail-on=none), got $RC" "$OUT"
-[ "$(sarif_count "$WB" semgrep.sarif)" = "1" ] || die "baseline: should report exactly the 1 NEW finding" "$OUT"
+[ "$(sarif_count "$WB" semgrep.sarif)" = "1" ] \
+  || die "baseline: should report exactly the 1 NEW finding, not the legacy one" "$OUT"
+URIS="$(sarif_uris "$WB" semgrep.sarif)"
+grep -q 'new.py' <<<"$URIS" || die "baseline: the reported finding must point at new.py" "$URIS"
+if grep -q 'legacy.py' <<<"$URIS"; then die "baseline: the legacy finding was NOT filtered out" "$URIS"; fi
 
 SMOKE_OK=1
 echo "PASS: semgrep smoke"
