@@ -20,8 +20,11 @@
 # Base alpine:3.20 (EOL 2026-04-01) -> 3.24.4 (pinned) + apk upgrade. kubectl
 # bumped v1.31.1 -> v1.37.2 (latest stable): v1.31.1 was built on an old Go
 # (Go-stdlib CVE-2025-68121); v1.37.2 is on a patched Go. The download is now
-# multi-arch (TARGETARCH) and VERIFIED against the official dl.k8s.io sha256 — the
-# old `curl` had no integrity check (a supply-chain hole). NOTE on skew: kubectl
+# architecture-aware (TARGETARCH, amd64/arm64) and VERIFIED against the official
+# dl.k8s.io sha256 — the old `curl` had no integrity check (a supply-chain hole)
+# and hardcoded amd64. NOTE: plugins.yml currently publishes `:v1` linux/amd64
+# only (fleet-wide); this Dockerfile builds correctly for arm64 once that is
+# enabled. NOTE on skew: kubectl
 # is supported within ±1 minor of the API server; core verbs work across a wider
 # range, and operators needing an exact match derive this image and re-pin kubectl.
 FROM alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4

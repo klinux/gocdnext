@@ -11,24 +11,30 @@ convention that minor bumps may carry breaking changes until 1.0).
 ### Changed
 
 - **kubectl plugin → kubectl v1.37.2 + alpine 3.24.4, stdlib CRITICAL cleared;
-  download now checksum-verified + multi-arch.** The published `:v1` built on the
-  now-EOL `alpine:3.20` and `curl`'d kubectl v1.31.1 (built on an old Go →
-  **CVE-2025-68121**) **with no integrity check**, amd64-only. Bumped kubectl to
-  **v1.37.2** (latest stable, patched Go), pinned the base `alpine:3.24.4` + `apk
-  upgrade`, and the download is now **multi-arch (TARGETARCH)** and **verified
-  against the official dl.k8s.io sha256**. Trivy `--pkg-types os,library` (DB
+  download now checksum-verified + architecture-aware.** The published `:v1` built
+  on the now-EOL `alpine:3.20` and `curl`'d kubectl v1.31.1 (built on an old Go →
+  **CVE-2025-68121**) **with no integrity check**, hardcoded amd64. Bumped kubectl
+  to **v1.37.2** (latest stable, patched Go), pinned the base `alpine:3.24.4` +
+  `apk upgrade`, and the download is now **architecture-aware (`TARGETARCH`,
+  amd64/arm64)** and **verified against the official dl.k8s.io sha256**. (The
+  published `:v1` stays `linux/amd64` — `plugins.yml` publishes amd64 fleet-wide;
+  this Dockerfile builds correctly for arm64 once multi-arch publishing returns.)
+  Trivy `--pkg-types os,library` (DB
   2026-11-07): **0 CRITICAL**; HIGH **40 → 3** (`x/net`/`x/text` in the kubectl
   binary — upstream-bound, gate-tracked). NB: kubectl is supported within ±1 minor
   of the API server; core verbs work across a wider range, and operators needing an
-  exact match derive this image and re-pin kubectl. **Fix:** the entrypoint's
-  base64-kubeconfig detection used a 7-byte window that could never match
-  `apiVersion` (10 chars), so a standard `apiVersion:`-first kubeconfig passed via
-  `kubeconfig:` base64 was silently written as literal and broke — widened to 256
-  bytes (literal YAML still falls through correctly). New real `smoke_test.sh`
-  (fully offline): asserts v1.37.2, a missing command exits 2, `kubectl kustomize`
-  renders, `create --dry-run=client` emits an object while a `kind`-less manifest
-  fails client-side, and both base64 and literal kubeconfigs round-trip through
-  `config current-context`. Opts into `no_cache: true`. (#356)
+  exact match derive this image and re-pin kubectl. **Two entrypoint fixes the new
+  smoke exposed:** (1) base64-kubeconfig detection used a byte-window grep that
+  could never match `apiVersion` (and would miss keys behind a leading comment),
+  so a valid base64 `kubeconfig:` was silently written as literal and broke — now
+  the decoded file is validated as a whole by `kubectl config view --kubeconfig`;
+  (2) the kubeconfig (tokens/certs) was created with the default umask and only
+  `chmod 0600`'d afterward, leaving a brief world-readable window — now written
+  under `umask 077` from the first byte. New real `smoke_test.sh` (fully offline):
+  asserts v1.37.2, a missing command exits 2, `kubectl kustomize` renders, `create
+  --dry-run=client` emits an object while a `kind`-less manifest fails client-side,
+  and base64 (incl. behind a long comment), literal, and file kubeconfigs all
+  round-trip through `config current-context`. Opts into `no_cache: true`. (#356)
 - **buf plugin → bufbuild/buf 1.75.0 + alpine 3.24.4, OpenSSL/Go CRITICALs
   cleared.** The published `:v1` used `bufbuild/buf:1.47`: the binary was built on
   an old Go + grpc (**CVE-2025-68121**, **CVE-2026-33186**) on an Alpine carrying

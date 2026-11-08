@@ -79,6 +79,14 @@ YAML
 B64="$(base64 -w0 "$W/kc.yaml" 2>/dev/null || base64 "$W/kc.yaml" | tr -d '\n')"
 run -e PLUGIN_KUBECONFIG="$B64" -e PLUGIN_COMMAND="config current-context"
 [ "$RC" -eq 0 ] && grep -q 'smoke-ctx' <<<"$OUT" || die "kubeconfig(base64): expected 'smoke-ctx', got RC=$RC" "$OUT"
+# Regression guard: a VALID kubeconfig whose apiVersion/kind sit past any fixed
+# byte-window (here behind a long leading comment) must still be detected — the
+# detector validates the whole decoded file via `kubectl config view`, not a
+# head -c heuristic.
+{ printf '# '; head -c 300 /dev/zero | tr '\0' x; printf '\n'; cat "$W/kc.yaml"; } >"$W/kc-comment.yaml"
+B64C="$(base64 -w0 "$W/kc-comment.yaml" 2>/dev/null || base64 "$W/kc-comment.yaml" | tr -d '\n')"
+run -e PLUGIN_KUBECONFIG="$B64C" -e PLUGIN_COMMAND="config current-context"
+[ "$RC" -eq 0 ] && grep -q 'smoke-ctx' <<<"$OUT" || die "kubeconfig(base64+comment): valid config past the byte-window was rejected, RC=$RC" "$OUT"
 LIT="$(cat "$W/kc.yaml")"
 run -e PLUGIN_KUBECONFIG="$LIT" -e PLUGIN_COMMAND="config current-context"
 [ "$RC" -eq 0 ] && grep -q 'smoke-ctx' <<<"$OUT" || die "kubeconfig(literal): expected 'smoke-ctx', got RC=$RC" "$OUT"
