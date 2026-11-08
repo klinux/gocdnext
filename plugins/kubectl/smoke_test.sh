@@ -90,6 +90,9 @@ run -e PLUGIN_KUBECONFIG="$B64C" -e PLUGIN_COMMAND="config current-context"
 LIT="$(cat "$W/kc.yaml")"
 run -e PLUGIN_KUBECONFIG="$LIT" -e PLUGIN_COMMAND="config current-context"
 [ "$RC" -eq 0 ] && grep -q 'smoke-ctx' <<<"$OUT" || die "kubeconfig(literal): expected 'smoke-ctx', got RC=$RC" "$OUT"
+# the third accepted shape: a path relative to the workspace.
+run -e PLUGIN_KUBECONFIG="kc.yaml" -e PLUGIN_COMMAND="config current-context"
+[ "$RC" -eq 0 ] && grep -q 'smoke-ctx' <<<"$OUT" || die "kubeconfig(file path): expected 'smoke-ctx', got RC=$RC" "$OUT"
 
 SMOKE_OK=1
 echo "PASS: kubectl smoke"
