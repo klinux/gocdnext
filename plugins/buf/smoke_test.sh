@@ -93,6 +93,17 @@ set -e
 [ "$RC" -ne 0 ] || die "lint-violation: expected a non-zero exit, got 0" "$OUT"
 grep -qi 'lower_snake_case' <<<"$OUT" || die "lint-violation: buf did not report the expected lint error" "$OUT"
 
+echo "==> command is word-split WITHOUT glob expansion (a literal * reaches buf)"
+# decoy files in the workspace a bare \${PLUGIN_COMMAND} would have expanded to.
+: >"$WC/decoy-a.yaml"; : >"$WC/decoy-b.yaml"
+set +e
+OUT="$(docker run --rm --network none -v "$WC:/workspace" -w /workspace -e PLUGIN_COMMAND="lint *" "$IMG" 2>&1)"; RC=$?
+set -e
+[ "$RC" -ne 0 ] || die "glob: expected a non-zero exit for a literal '*' path, got 0" "$OUT"
+# buf received the literal "*" as an input path (not the decoy files); if the glob
+# had expanded, buf would have linted decoy-a.yaml/decoy-b.yaml instead.
+grep -qF '"*"' <<<"$OUT" || die "glob: '*' was expanded instead of passed literally to buf" "$OUT"
+
 echo "==> breaking --against a disposable git baseline detects a deleted field"
 cfg "$WB"; proto "$WB" 'string thing_id = 1;
   string name = 2;'
