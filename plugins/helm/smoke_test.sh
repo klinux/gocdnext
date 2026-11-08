@@ -5,9 +5,12 @@
 # checksum-verified download):
 #   - the binary is v3.22.1;
 #   - a missing command fails fast (exit 2);
-#   - `helm template` renders a local chart (the Release name reaches the output).
-# Kubeconfig materialisation (0600, /tmp-anchored, content) is covered offline by
-# entrypoint_test.sh.
+#   - `helm template` renders a local chart (the Release name reaches the output);
+#   - `helm diff` (the external helm-diff plugin) is installed and recognized;
+#   - a base64 kubeconfig (behind a long comment) is decoded and used — `helm list`
+#     reaches the cluster boundary (connection refused, not a parse error) with the
+#     token absent from the log.
+# Kubeconfig mode/path/content (0600, /tmp-anchored) is covered by entrypoint_test.sh.
 #
 # Convention-named so plugins.yml runs it as a PRE-PUBLISH gate. Needs docker.
 # Built --no-cache to match the no_cache publish build. Trap cleanup, fail-closed.
@@ -58,6 +61,34 @@ run -e PLUGIN_COMMAND="template smoke ./chart"
 [ "$RC" -eq 0 ] || die "template: expected exit 0, got $RC" "$OUT"
 grep -q 'name: smoke-cm' <<<"$OUT" || die "template: Release name not rendered — helm didn't template the chart" "$OUT"
 grep -q 'key: helm-tmpl-ok' <<<"$OUT" || die "template: chart template not rendered" "$OUT"
+
+echo "==> helm diff is installed and recognized (the advertised 'diff upgrade' plugin)"
+run -e PLUGIN_COMMAND="diff version"
+[ "$RC" -eq 0 ] || die "diff: expected exit 0, got $RC" "$OUT"
+grep -qiE 'unknown command' <<<"$OUT" && die "diff: helm-diff plugin not installed (unknown command)" "$OUT" || true
+grep -q '3.15.15' <<<"$OUT" || die "diff: helm-diff version not reported" "$OUT"
+
+echo "==> a base64 kubeconfig (behind a comment) reaches the cluster; token not leaked"
+TOKEN="helm-smoke-TOKENMARKER-$$"
+cat >"$W/kc.yaml" <<YAML
+apiVersion: v1
+kind: Config
+clusters: [{cluster: {server: https://127.0.0.1:1}, name: smoke}]
+contexts: [{context: {cluster: smoke, user: smoke}, name: smoke-ctx}]
+current-context: smoke-ctx
+users: [{name: smoke, user: {token: ${TOKEN}}}]
+YAML
+{ printf '# '; head -c 300 /dev/zero | tr '\0' x; printf '\n'; cat "$W/kc.yaml"; } >"$W/kc-comment.yaml"
+B64C="$(base64 -w0 "$W/kc-comment.yaml")"
+run -e PLUGIN_KUBECONFIG="$B64C" -e PLUGIN_COMMAND="list"
+[ "$RC" -ne 0 ] || die "kubeconfig: expected a non-zero exit, got 0" "$OUT"
+# must be a CONNECTION failure (proves the config was decoded + used), not a parse/
+# load error (which would mean the base64 wasn't detected).
+grep -qiE 'cluster unreachable|connection refused|dial tcp' <<<"$OUT" \
+  || die "kubeconfig: expected a connection failure to 127.0.0.1:1 (config not decoded?)" "$OUT"
+grep -qiE 'error loading config|unable to read|yaml:|parse' <<<"$OUT" \
+  && die "kubeconfig: helm hit a config PARSE error — base64 not detected" "$OUT" || true
+grep -q "$TOKEN" <<<"$OUT" && die "kubeconfig: the token leaked into the log" "$OUT" || true
 
 SMOKE_OK=1
 echo "PASS: helm smoke"
