@@ -2,9 +2,14 @@
 # validate `with:` inputs before a run dispatches.
 name: buf
 category: lint
+# Refreshes OS packages via `apk upgrade` at build time, so it MUST build from
+# scratch — otherwise the registry build cache re-imports a stale OS layer on a
+# release that didn't touch the Dockerfile. Consumed by the `nocache` step in
+# plugins.yml.
+no_cache: true
 description: >
   Run buf CLI commands — lint, breaking, generate, format.
-  Wraps bufbuild/buf:1.47 with git + ca-certificates so
+  Wraps bufbuild/buf:1.75.0 with git + ca-certificates so
   `breaking --against` references work out of the box.
 
 inputs:
