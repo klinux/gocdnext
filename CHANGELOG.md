@@ -10,6 +10,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **semgrep plugin → semgrep 1.184.0 (alpine 3.23.8, Python 3.12), 3 CRITICALs
+  cleared by the upstream bump.** The published `:v1` (`semgrep/semgrep:1.96.0` on
+  alpine 3.20.3) carried the OS OpenSSL `libcrypto3`/`libssl3` **CVE-2026-31789**
+  and, in semgrep's own Python venv, `certifi` **GHSA-6q48-6c7w-9gw2**. Bumped the
+  base to `semgrep/semgrep:1.184.0` pinned by digest: alpine 3.23.8 already ships
+  the patched OpenSSL and the image bundles `certifi` 2026.10.23 (≥ the 2026.10.18
+  fix), so **all three CRITICALs clear with no pip/apk surgery** — `apk upgrade`
+  (+ `no_cache: true`) only keeps the OS layer fresh against drift. semgrep is a
+  scanner, so the engine/rules bump is desirable; the wrapper **contract** (SARIF
+  output, `--metrics=off`, `--baseline-commit`, the jq severity gate that keeps the
+  full report while the threshold only sets the exit code) is unchanged and
+  smoke-proven. Trivy `--pkg-types os,library` (DB 2026-11-07): **0 CRITICAL, 0
+  HIGH**. New real `smoke_test.sh` (fully offline, local rule files under
+  `--network none`): asserts semgrep is 1.184.0 and `certifi` ≥ 2026.10.18; a bad
+  `fail-on` exits 2; an error-severity finding gates `fail-on=error` (exit 1) while
+  `fail-on=none` exits 0 **with the finding still in the SARIF** (the gate never
+  drops findings); a clean tree exits 0 with an empty report; a warning-severity
+  finding does not gate `fail-on=error` but does gate `fail-on=warning` (exercising
+  the jq `ruleId`→level resolution, since semgrep does not stamp `.level` per
+  result); a broken `--config` propagates loud (exit ≥ 2); and `--baseline-commit`
+  reports only findings new since a commit. (#363)
 - **liquibase plugin → alpine `apk upgrade` + `lpm` removed, 2 CRITICALs cleared
   (liquibase version unchanged).** The published `:v1` (`liquibase/liquibase:
   4.31-alpine`) carried the OS OpenSSL `libcrypto3`/`libssl3` **CVE-2026-31789**
