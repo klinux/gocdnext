@@ -9,10 +9,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Stub kubectl: log argv, print a marker to stdout, exit with ${MOCK_RC:-0}.
+export MODE_LOG="$TMP/mode.log"
+# Stub kubectl: log argv, record the mode of $KUBECONFIG (so we can assert the
+# entrypoint created it 0600 from the start), print a marker, exit ${MOCK_RC:-0}.
 cat >"$TMP/kubectl" <<'EOF'
 #!/usr/bin/env bash
 printf 'kubectl %s\n' "$*" >>"$TMP_LOG"
+if [ -n "${KUBECONFIG:-}" ] && [ -e "${KUBECONFIG}" ]; then
+    stat -c '%a %n' "${KUBECONFIG}" >>"$MODE_LOG" 2>/dev/null || true
+fi
 echo "MOCK_KUBECTL_RAN"
 exit "${MOCK_RC:-0}"
 EOF
@@ -62,5 +67,47 @@ MOCK_RC=1 PLUGIN_CONTINUE_ON_ERROR=nope PLUGIN_COMMAND="logs x" run 1 "'nope' �
 
 echo "== 6. missing PLUGIN_COMMAND → exit 2 (unchanged) =="
 PLUGIN_COMMAND="" run 2 "no command → 2" --
+
+echo "== 7. KUBECONFIG is a FRESH 0600 file, for file / base64 / literal =="
+KCDIR="$TMP/kc"; mkdir -p "$KCDIR"
+cat >"$KCDIR/kubeconfig.yaml" <<'YAML'
+apiVersion: v1
+kind: Config
+clusters: [{cluster: {server: https://example.invalid:6443}, name: smoke}]
+contexts: [{context: {cluster: smoke, user: smoke}, name: smoke-ctx}]
+current-context: smoke-ctx
+users: [{name: smoke, user: {token: fake}}]
+YAML
+KC_B64="$(base64 -w0 "$KCDIR/kubeconfig.yaml")"
+KC_LIT="$(cat "$KCDIR/kubeconfig.yaml")"
+# Assert the materialised kubeconfig is 0600, a FRESH path each run (a reused
+# inode keeps its old mode and masks a regression), and ANCHORED under
+# /tmp/gocdnext-kubeconfig. We set a HOSTILE TMPDIR ($TMP, a non-/tmp dir a job
+# could control, e.g. a persisted workspace volume) precisely to prove the anchor
+# beats it — a bare `mktemp` would have put the secret in $TMPDIR. Pre-umask 000
+# so a mode-weakening regression surfaces. Each dest is removed after asserting.
+PREV_DEST=""
+check_mode() { # check_mode <desc> <PLUGIN_KUBECONFIG value>
+    : >"$MODE_LOG"
+    ( umask 000
+      PLUGIN_KUBECONFIG="$2" PLUGIN_COMMAND="get pods" MOCK_RC=0 TMPDIR="$TMP" \
+        TMP_LOG="$TMP/kubectl.log" PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh" >/dev/null 2>&1 )
+    local line mode path; line="$(tail -n1 "$MODE_LOG" 2>/dev/null)"
+    mode="${line%% *}"; path="${line#* }"
+    if [ "$mode" != "600" ]; then echo "FAIL: $1 kubeconfig mode is '${mode}', want 600"; fails=1; return; fi
+    case "$path" in
+        /tmp/gocdnext-kubeconfig.??????*) : ;;
+        *) echo "FAIL: $1 kubeconfig at '${path}', not anchored under /tmp/gocdnext-kubeconfig. (TMPDIR could redirect it)"; fails=1; rm -f "$path" 2>/dev/null; return ;;
+    esac
+    if [ -n "$PREV_DEST" ] && [ "$path" = "$PREV_DEST" ]; then
+        echo "FAIL: $1 reused the previous dest ${path} (not a fresh mktemp)"; fails=1; rm -f "$path" 2>/dev/null; return
+    fi
+    PREV_DEST="$path"
+    echo "PASS: $1 kubeconfig is 0600 at a fresh $path"
+    rm -f "$path" 2>/dev/null   # don't leave the test's kubeconfigs in /tmp
+}
+check_mode "file"    "$KCDIR/kubeconfig.yaml"
+check_mode "base64"  "$KC_B64"
+check_mode "literal" "$KC_LIT"
 
 if [ "$fails" = 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; exit 1; fi

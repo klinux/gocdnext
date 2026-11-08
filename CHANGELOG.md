@@ -10,6 +10,37 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **kubectl plugin → kubectl v1.37.2 + alpine 3.24.4, stdlib CRITICAL cleared;
+  download now checksum-verified + architecture-aware.** The published `:v1` built
+  on the now-EOL `alpine:3.20` and `curl`'d kubectl v1.31.1 (built on an old Go →
+  **CVE-2025-68121**) **with no integrity check**, hardcoded amd64. Bumped kubectl
+  to **v1.37.2** (latest stable, patched Go), pinned the base `alpine:3.24.4` +
+  `apk upgrade`, and the download is now **architecture-aware (`TARGETARCH`,
+  amd64/arm64)** and **verified against the official dl.k8s.io sha256**. (The
+  published `:v1` stays `linux/amd64` — `plugins.yml` publishes amd64 fleet-wide;
+  this Dockerfile builds correctly for arm64 once multi-arch publishing returns.)
+  Trivy `--pkg-types os,library` (DB
+  2026-11-07): **0 CRITICAL**; HIGH **40 → 3** (`x/net`/`x/text` in the kubectl
+  binary — upstream-bound, gate-tracked). NB: kubectl is supported within ±1 minor
+  of the API server; core verbs work across a wider range, and operators needing an
+  exact match derive this image and re-pin kubectl. **Two entrypoint fixes the new
+  smoke exposed:** (1) base64-kubeconfig detection used a byte-window grep that
+  could never match `apiVersion` (and would miss keys behind a leading comment),
+  so a valid base64 `kubeconfig:` was silently written as literal and broke — now
+  the decoded file is validated as a whole by `kubectl config view --kubeconfig`;
+  (2) the kubeconfig (tokens/certs) was written to a FIXED path (`/tmp/gocdnext-
+  kubeconfig`) and `chmod 0600`'d afterward — but a preexisting/permissive file at
+  that path keeps its mode (redirection inherits the existing inode's mode), so
+  "0600 from the first byte" wasn't guaranteed. It's now materialised into a fresh
+  `mktemp` file (0600, unique) **anchored to `/tmp`** (`mktemp
+  /tmp/gocdnext-kubeconfig.XXXXXX` — a bare `mktemp` honours `$TMPDIR`, which a job
+  could point at a persisted `/workspace` volume and leak the tokens/certs),
+  written via redirection (not `cp`, which copies the source's mode), so the
+  private mode holds with no window and no path reuse. New real `smoke_test.sh` (fully offline):
+  asserts v1.37.2, a missing command exits 2, `kubectl kustomize` renders, `create
+  --dry-run=client` emits an object while a `kind`-less manifest fails client-side,
+  and base64 (incl. behind a long comment), literal, and file kubeconfigs all
+  round-trip through `config current-context`. Opts into `no_cache: true`. (#356)
 - **buf plugin → bufbuild/buf 1.75.0 + alpine 3.24.4, OpenSSL/Go CRITICALs
   cleared.** The published `:v1` used `bufbuild/buf:1.47`: the binary was built on
   an old Go + grpc (**CVE-2025-68121**, **CVE-2026-33186**) on an Alpine carrying
