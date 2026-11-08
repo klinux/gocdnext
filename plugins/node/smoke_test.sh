@@ -36,6 +36,19 @@ for maj in 20 22 24; do
   echo "$out" | grep -qE "^v${maj}\." || die "node v${maj} not on PATH in bash -lc" "$out"
 done
 
+# 1b. the npm-bundled node-tar in EVERY baked major is >= 7.5.19 — the removed
+#     CVE-2026-59873. node 20/22 shipped npm 10.x (tar 6.2.1 / 7.5.11, both
+#     vulnerable) and were bumped to npm 11.19.1 (tar 7.5.22); node 24 already
+#     had it. Read the version straight from each relocated npm so a future base
+#     re-pin that regresses tar fails HERE. (version sort: dates/semver are not
+#     zero-padded, so the 7.5.19 floor must sort first.)
+for maj in 20 22 24; do
+  tv="$(docker run --rm --entrypoint node "${IMG}" \
+        -p "require('/opt/node/node-${maj}/lib/node_modules/npm/node_modules/tar/package.json').version" 2>&1)"
+  [ "$(printf '%s\n7.5.19\n' "$tv" | sort -V | head -1)" = "7.5.19" ] \
+    || die "node-${maj}: npm-bundled tar ${tv} is < 7.5.19 (CVE-2026-59873)"
+done
+
 # NOTE: always CAPTURE the plug output then grep the string — never
 # `plug | grep -q`. grep -q closes the pipe on first match, the still-
 # writing `docker run` takes SIGPIPE and exits 141, and `set -o pipefail`

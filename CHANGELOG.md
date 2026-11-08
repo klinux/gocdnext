@@ -10,6 +10,22 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **node plugin → npm 11.19.1 in the node 20/22 builders, 2 `tar` CRITICALs
+  cleared; bases pinned by digest.** The published `:v3` baked node 20/22/24,
+  and the npm bundled with node 20 (10.8.2) and node 22 (10.9.8) carried
+  `node-tar` 6.2.1 / 7.5.11 — both < 7.5.19 and vulnerable to
+  **CVE-2026-59873**. node 24 was already clean (npm 11.19.1 / tar 7.5.22), so
+  the node 20 and 22 builder stages are bumped to that **same** npm 11.19.1,
+  which bundles tar 7.5.22; pinning the identical npm keeps the npm↔tar API
+  aligned (npm 11 expects tar 7, so surgically swapping only tar would cross
+  tar's 6→7 break under npm 10). All five bases (node 20/22/24-bookworm-slim,
+  `oven/bun:1.4.0-slim`, `debian:bookworm-slim`) are now pinned by digest, and
+  the final stage runs `apt-get upgrade`. Trivy `--ignore-unfixed --pkg-types
+  os,library` (DB 2026-11-07): **0 CRITICAL** (was 2). Residual HIGH are
+  npm-bundled JS deps (brace-expansion, undici, minimatch, …) — upstream-bound,
+  gate-tracked; the unfixed-in-bookworm OS findings (sqlite3, linux-libc-dev)
+  stay for the separate trixie migration. The smoke now asserts the npm-bundled
+  `tar` is ≥ 7.5.19 in all three majors. Opts into `no_cache: true`. (#364)
 - **semgrep plugin → semgrep 1.184.0 (alpine 3.23.8, Python 3.12), 3 CRITICALs
   cleared by the upstream bump.** The published `:v1` (`semgrep/semgrep:1.96.0` on
   alpine 3.20.3) carried the OS OpenSSL `libcrypto3`/`libssl3` **CVE-2026-31789**
