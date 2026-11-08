@@ -21,17 +21,26 @@ fi
 # through env vars is brittle; operators who store the config
 # as base64 in a secret get a straight decode path.
 if [ -n "${PLUGIN_KUBECONFIG:-}" ]; then
-    dest=/tmp/gocdnext-kubeconfig
+    # The config holds tokens/certs, so it MUST be 0600 from the first byte.
+    # mktemp gives a FRESH, unique, 0600 file — a fixed path could preexist
+    # permissive (and redirection/cp into an existing inode inherit its mode, so
+    # neither umask nor chmod-after reliably closes the window). The template is
+    # ANCHORED to /tmp: a bare `mktemp` honours $TMPDIR, which a job could point at
+    # /workspace (a persisted/artifacted volume), leaking the tokens/certs out of
+    # the container. Then write with REDIRECTION (not `cp`, which copies the SOURCE
+    # file's mode) so the 0600 mktemp set is preserved. entrypoint_test.sh asserts
+    # the result is 0600 at a fresh /tmp path.
+    dest="$(mktemp /tmp/gocdnext-kubeconfig.XXXXXX)"
     if [ -f "${PLUGIN_KUBECONFIG}" ]; then
-        cp "${PLUGIN_KUBECONFIG}" "${dest}"
+        cat "${PLUGIN_KUBECONFIG}" >"${dest}"
     elif echo "${PLUGIN_KUBECONFIG}" | base64 -d >"${dest}" 2>/dev/null \
-         && head -c 7 "${dest}" | grep -q 'apiVersion\|kind:'; then
-        : # decoded ok and looks like YAML
+         && kubectl config view --kubeconfig "${dest}" >/dev/null 2>&1; then
+        : # the base64 DECODED to a kubeconfig kubectl itself accepts (validated
+          # over the whole file, not a byte-window heuristic).
     else
         # Treat as literal YAML — covers the inline case.
         printf '%s' "${PLUGIN_KUBECONFIG}" >"${dest}"
     fi
-    chmod 0600 "${dest}"
     export KUBECONFIG="${dest}"
 fi
 
