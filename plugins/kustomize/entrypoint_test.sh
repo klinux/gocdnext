@@ -57,8 +57,14 @@ cat >"$TMP/kubectl" <<EOF
 #!/usr/bin/env bash
 args="\$*"
 printf '%s\n' "\$args" >> "$TMP/kubectl.log"
+# Record the mode+path of the materialised kubeconfig so the test can assert it's
+# a fresh, 0600, /tmp-anchored file (the kubeconfig security invariant).
+if [ -n "\${KUBECONFIG:-}" ] && [ -e "\${KUBECONFIG}" ]; then
+    stat -c '%a %n' "\${KUBECONFIG}" >> "$TMP/kcmode.log" 2>/dev/null || true
+fi
 case "\$args" in *"-f -"*) cat > "$TMP/kubectl.stdin" ;; esac
 case "\$args" in
+    "config view"*) exit 0 ;;
     "get namespace"*) [ "\${NS_EXISTS:-0}" = 1 ] && exit 0 || exit 1 ;;
     "rollout status"*) [ "\${ROLLOUT_FAIL:-0}" = 1 ] && exit 1 || exit 0 ;;
 esac
@@ -67,7 +73,7 @@ EOF
 chmod +x "$TMP/kubectl"
 
 run() { PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh"; }
-reset() { : >"$TMP/kustomize.log"; : >"$TMP/kubectl.log"; : >"$TMP/kubectl.stdin"; }
+reset() { : >"$TMP/kustomize.log"; : >"$TMP/kubectl.log"; : >"$TMP/kubectl.stdin"; : >"$TMP/kcmode.log"; }
 fail() {
     echo "FAIL: $1"
     echo "--- kustomize.log ---"; cat "$TMP/kustomize.log" 2>/dev/null
@@ -253,5 +259,38 @@ EOF
     printf '%s' "$out" | grep -q "omitted (envsubst enabled" || fail "missing the omitted-render notice"
     grep -q "$secret" "$TMP/kubectl.stdin" || fail "apply didn't receive the resolved manifest"
 fi
+
+# ── N. kubeconfig is materialised 0600 at a FRESH, /tmp-anchored path, for
+#       file / base64 / literal — never a job-controlled $TMPDIR, never reused ──
+cat >"$TMP/kc.yaml" <<'EOF'
+apiVersion: v1
+kind: Config
+clusters: [{cluster: {server: https://example.invalid:6443}, name: smoke}]
+contexts: [{context: {cluster: smoke, user: smoke}, name: smoke-ctx}]
+current-context: smoke-ctx
+users: [{name: smoke, user: {token: fake}}]
+EOF
+KC_B64="$(base64 -w0 "$TMP/kc.yaml")"
+KC_LIT="$(cat "$TMP/kc.yaml")"
+PREV_KC=""
+check_kc() { # check_kc <desc> <PLUGIN_KUBECONFIG value>
+    reset
+    ( umask 000
+      PLUGIN_PATH="$TMP/overlay" PLUGIN_KUBECONFIG="$2" NS_EXISTS=1 TMPDIR="$TMP" \
+        PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh" >/dev/null 2>&1 )
+    local line mode path; line="$(tail -n1 "$TMP/kcmode.log" 2>/dev/null)"
+    mode="${line%% *}"; path="${line#* }"
+    [ "$mode" = "600" ] || fail "kubeconfig($1): mode '${mode}', want 600"
+    case "$path" in
+        /tmp/gocdnext-kubeconfig.??????*) : ;;
+        *) rm -f "$path" 2>/dev/null; fail "kubeconfig($1): at '${path}', not anchored under /tmp/gocdnext-kubeconfig. (TMPDIR could redirect the secret)" ;;
+    esac
+    [ -n "$PREV_KC" ] && [ "$path" = "$PREV_KC" ] && { rm -f "$path" 2>/dev/null; fail "kubeconfig($1): reused previous dest ${path} (not a fresh mktemp)"; }
+    PREV_KC="$path"; rm -f "$path" 2>/dev/null
+    echo "  kubeconfig($1): 0600 at a fresh $path"
+}
+check_kc "file"    "$TMP/kc.yaml"
+check_kc "base64"  "$KC_B64"
+check_kc "literal" "$KC_LIT"
 
 echo "PASS: kustomize entrypoint"
