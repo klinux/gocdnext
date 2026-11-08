@@ -43,6 +43,13 @@ runep PLUGIN_COMMAND="list" PLUGIN_NAMESPACE="apps"
 grep -qx "helm --namespace apps list" "$TMP/helm.log" || bad "namespace not prepended"
 grep -qx "helm --namespace apps list" "$TMP/helm.log" && pass "namespace prepended"
 
+echo "== 3b. word-split does NOT glob-expand against the workspace =="
+: >"$TMP/helm.log"
+mkdir -p "$TMP/ws"; : >"$TMP/ws/a.yaml"; : >"$TMP/ws/b.yaml"
+runep PLUGIN_WORKING_DIR="$TMP/ws" PLUGIN_COMMAND="get values *"
+if grep -qxF "helm get values *" "$TMP/helm.log"; then pass "glob not expanded (literal *)"
+else bad "glob expanded — helm.log: $(cat "$TMP/helm.log")"; fi
+
 echo "== 4. kubeconfig materialised 0600, fresh /tmp path, correct content =="
 cat >"$TMP/kc.yaml" <<'YAML'
 apiVersion: v1

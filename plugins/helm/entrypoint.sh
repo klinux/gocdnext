@@ -46,5 +46,10 @@ if [ -n "${PLUGIN_NAMESPACE:-}" ]; then
     ns_args+=("--namespace" "${PLUGIN_NAMESPACE}")
 fi
 
-# shellcheck disable=SC2086
-exec helm "${ns_args[@]}" ${PLUGIN_COMMAND}
+# Word-split WITHOUT glob expansion: a bare, unquoted ${PLUGIN_COMMAND} would also
+# expand `*`, `?`, `[...]` against the workspace, silently rewriting args (e.g. a
+# `--set` value or a path) from whatever files happen to be present. read -a splits
+# on IFS only. (Whitespace inside a single arg still isn't supported — the contract
+# says drop to a plain `script:` for that.)
+read -r -a command_args <<< "${PLUGIN_COMMAND}"
+exec helm "${ns_args[@]}" "${command_args[@]}"

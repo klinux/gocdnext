@@ -16,10 +16,18 @@ convention that minor bumps may carry breaking changes until 1.0).
   **CVE-2025-68121** + **CVE-2026-33186**) **with no integrity check**, amd64-only.
   Bumped helm to **v3.22.1** (go1.26.9), pinned the base `alpine:3.24.4` + `apk
   upgrade`, and the download is now **architecture-aware** (`TARGETARCH`
-  amd64/arm64) and **verified against the get.helm.sh sha256**. Trivy `--pkg-types
-  os,library` (DB 2026-11-07): **0 CRITICAL**; HIGH **→ 2** (`x/net` + stdlib in
-  the binary — upstream-bound, gate-tracked). Pinned Helm 3 (security fixes to
-  2027-02-10); the Helm 4 migration is tracked in #349. **Shared kubeconfig fix**
+  amd64/arm64) and **verified against the get.helm.sh sha256**. **Also installs
+  helm-diff** (`v3.15.15`, pinned + checksum-verified + architecture-aware, into
+  `HELM_PLUGINS`) — the advertised `diff upgrade` command is an **external plugin**
+  that **wasn't in the image**, so it failed with `unknown command "diff"`; the
+  smoke now proves `helm diff` is recognized. Trivy `--pkg-types os,library` (DB
+  2026-11-07): **0 CRITICAL**; HIGH **→ 17** (`x/net` + stdlib across helm and the
+  helm-diff binary, which is built on an older Go — all upstream-bound,
+  gate-tracked). **Security fix:** `${PLUGIN_COMMAND}` was word-split **unquoted**,
+  so a `*`/`?`/`[…]` would also glob-expand against the workspace and silently
+  rewrite args — now split with `read -a` (word-split without globbing). Pinned
+  Helm 3 (security fixes to 2027-02-10); the Helm 4 migration is tracked in #349.
+  **Shared kubeconfig fix**
   (this plugin mirrors kubectl/kustomize): the base64 detection used a byte-window
   grep and the token/cert config was written to a fixed `/tmp` path then `chmod`'d
   — now it's materialised into a fresh `mktemp /tmp/gocdnext-kubeconfig.XXXXXX`
