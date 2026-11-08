@@ -31,10 +31,11 @@ DIR="${PLUGIN_DIR:-.}"
 [ -d "${DIR}" ] || fail "scan dir '${DIR}' not found in the workspace"
 REPORT="${PLUGIN_REPORT_FILE:-osv-report.${FORMAT}}"
 
-set -- scan source --recursive --format "${FORMAT}" --output "${REPORT}" "${DIR}"
+# --output-file (osv-scanner v2.4+): --output is deprecated and warns at runtime.
+set -- scan source --recursive --format "${FORMAT}" --output-file "${REPORT}" "${DIR}"
 if [ -n "${PLUGIN_CONFIG:-}" ]; then
     [ -f "${PLUGIN_CONFIG}" ] || fail "config '${PLUGIN_CONFIG}' not found in the workspace"
-    set -- scan source --recursive --config "${PLUGIN_CONFIG}" --format "${FORMAT}" --output "${REPORT}" "${DIR}"
+    set -- scan source --recursive --config "${PLUGIN_CONFIG}" --format "${FORMAT}" --output-file "${REPORT}" "${DIR}"
 fi
 
 echo "==> osv-scanner source scan (dir=${DIR} format=${FORMAT} fail-on=${FAIL_ON} report=${REPORT})"

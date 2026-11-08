@@ -1,5 +1,10 @@
 name: osv-scanner
 category: security
+# Refreshes OS packages via `apk upgrade` at build time, so it MUST build from
+# scratch — otherwise the registry build cache re-imports a stale OS layer on a
+# release that didn't touch the Dockerfile. Consumed by the `nocache` step in
+# plugins.yml.
+no_cache: true
 description: >
   Dependency vulnerability scan (SCA) with Google's osv-scanner —
   reads lockfiles across ecosystems (go.mod, package-lock.json,
