@@ -31,7 +31,9 @@
 # with those deps patched. Runtime base alpine:3.20 (EOL 2026-04-01) -> 3.24.4
 # (pinned) + apk upgrade. yq bumped v4.44.3 -> v4.54.2 (old yq was built on an
 # old Go: stdlib CVE-2025-68121) and now verified by sha256. Trivy on the built
-# image: 0 CRITICAL.
+# image (DB 2026-11-07): 0 CRITICAL (goal 4 -> 0). 27 HIGH remain in the nuclei
+# binary (stdlib/kin-openapi/grpc/go-git/x-net/…) — v3.11.1 is the latest upstream
+# release, so they are upstream-bound; the weekly Trivy gate tracks them.
 ARG NUCLEI_VERSION=v3.11.1
 
 FROM projectdiscovery/nuclei:v3.11.1@sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb AS nuclei
@@ -39,6 +41,10 @@ FROM projectdiscovery/nuclei:v3.11.1@sha256:582d5546902e67052097cb2d07296c642d50
 FROM alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4
 ARG NUCLEI_VERSION=v3.11.1
 ARG NUCLEI_TEMPLATES_REF=v10.4.5
+# Immutable pin: the exact commit the v10.4.5 tag points at. A Git tag is movable,
+# and with no_cache:true every release re-resolves it — verify the clone landed on
+# this commit and fail loud if the tag was re-pointed.
+ARG NUCLEI_TEMPLATES_COMMIT=e5a0fba09e7e9a2838f9aa0c0bd2cb30ce18c202
 ARG YQ_VERSION=v4.54.2
 ARG TARGETARCH=amd64
 
@@ -69,6 +75,9 @@ COPY --from=nuclei /usr/local/bin/nuclei /usr/local/bin/nuclei
 ENV NUCLEI_TEMPLATES_DIR=/opt/nuclei-templates
 RUN git clone --depth 1 --branch "${NUCLEI_TEMPLATES_REF}" \
       https://github.com/projectdiscovery/nuclei-templates /opt/nuclei-templates \
+ && got="$(git -C /opt/nuclei-templates rev-parse HEAD)" \
+ && [ "${got}" = "${NUCLEI_TEMPLATES_COMMIT}" ] \
+      || { echo "templates tag ${NUCLEI_TEMPLATES_REF} resolved to ${got}, expected ${NUCLEI_TEMPLATES_COMMIT} (tag re-pointed?)" >&2; exit 1; } \
  && rm -rf /opt/nuclei-templates/.git \
  && test -n "$(ls -A /opt/nuclei-templates 2>/dev/null)" \
       || { echo "templates not baked into /opt/nuclei-templates" >&2; exit 1; }
@@ -76,7 +85,8 @@ RUN git clone --depth 1 --branch "${NUCLEI_TEMPLATES_REF}" \
 LABEL org.opencontainers.image.title="gocdnext-plugin-nuclei" \
       org.opencontainers.image.description="DAST baseline scanner (Nuclei) → SARIF" \
       gocdnext.nuclei.version="${NUCLEI_VERSION}" \
-      gocdnext.nuclei.templates="${NUCLEI_TEMPLATES_REF}"
+      gocdnext.nuclei.templates="${NUCLEI_TEMPLATES_REF}" \
+      gocdnext.nuclei.templates_commit="${NUCLEI_TEMPLATES_COMMIT}"
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-nuclei
 RUN chmod +x /usr/local/bin/gocdnext-nuclei
