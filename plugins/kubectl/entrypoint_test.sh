@@ -80,10 +80,12 @@ users: [{name: smoke, user: {token: fake}}]
 YAML
 KC_B64="$(base64 -w0 "$KCDIR/kubeconfig.yaml")"
 KC_LIT="$(cat "$KCDIR/kubeconfig.yaml")"
-# Assert the materialised kubeconfig is 0600 AND a fresh mktemp path (never a
-# fixed, reusable one — a reused inode keeps its old mode and masks a regression).
-# Pre-umask 000 so a mode-weakening regression surfaces instead of hiding. TMPDIR
-# points mktemp at the test's tempdir, so nothing leaks to the host /tmp.
+# Assert the materialised kubeconfig is 0600, a FRESH path each run (a reused
+# inode keeps its old mode and masks a regression), and ANCHORED under
+# /tmp/gocdnext-kubeconfig. We set a HOSTILE TMPDIR ($TMP, a non-/tmp dir a job
+# could control, e.g. a persisted workspace volume) precisely to prove the anchor
+# beats it — a bare `mktemp` would have put the secret in $TMPDIR. Pre-umask 000
+# so a mode-weakening regression surfaces. Each dest is removed after asserting.
 PREV_DEST=""
 check_mode() { # check_mode <desc> <PLUGIN_KUBECONFIG value>
     : >"$MODE_LOG"
@@ -94,16 +96,15 @@ check_mode() { # check_mode <desc> <PLUGIN_KUBECONFIG value>
     mode="${line%% *}"; path="${line#* }"
     if [ "$mode" != "600" ]; then echo "FAIL: $1 kubeconfig mode is '${mode}', want 600"; fails=1; return; fi
     case "$path" in
-        */gocdnext-kubeconfig|/tmp/*) : ;;  # tolerate /tmp location, but...
+        /tmp/gocdnext-kubeconfig.??????*) : ;;
+        *) echo "FAIL: $1 kubeconfig at '${path}', not anchored under /tmp/gocdnext-kubeconfig. (TMPDIR could redirect it)"; fails=1; rm -f "$path" 2>/dev/null; return ;;
     esac
-    if [ "$path" = "/tmp/gocdnext-kubeconfig" ]; then
-        echo "FAIL: $1 used the fixed reusable path ${path} (inode reuse masks mode regressions)"; fails=1; return
-    fi
     if [ -n "$PREV_DEST" ] && [ "$path" = "$PREV_DEST" ]; then
-        echo "FAIL: $1 reused the previous dest ${path} (not a fresh mktemp)"; fails=1; return
+        echo "FAIL: $1 reused the previous dest ${path} (not a fresh mktemp)"; fails=1; rm -f "$path" 2>/dev/null; return
     fi
     PREV_DEST="$path"
-    echo "PASS: $1 kubeconfig is 0600 at a fresh path ($path)"
+    echo "PASS: $1 kubeconfig is 0600 at a fresh $path"
+    rm -f "$path" 2>/dev/null   # don't leave the test's kubeconfigs in /tmp
 }
 check_mode "file"    "$KCDIR/kubeconfig.yaml"
 check_mode "base64"  "$KC_B64"

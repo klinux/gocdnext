@@ -24,10 +24,13 @@ if [ -n "${PLUGIN_KUBECONFIG:-}" ]; then
     # The config holds tokens/certs, so it MUST be 0600 from the first byte.
     # mktemp gives a FRESH, unique, 0600 file — a fixed path could preexist
     # permissive (and redirection/cp into an existing inode inherit its mode, so
-    # neither umask nor chmod-after reliably closes the window). Then write with
-    # REDIRECTION (not `cp`, which copies the SOURCE file's mode) so the 0600
-    # mktemp set is preserved. entrypoint_test.sh asserts the result is 0600.
-    dest="$(mktemp)"
+    # neither umask nor chmod-after reliably closes the window). The template is
+    # ANCHORED to /tmp: a bare `mktemp` honours $TMPDIR, which a job could point at
+    # /workspace (a persisted/artifacted volume), leaking the tokens/certs out of
+    # the container. Then write with REDIRECTION (not `cp`, which copies the SOURCE
+    # file's mode) so the 0600 mktemp set is preserved. entrypoint_test.sh asserts
+    # the result is 0600 at a fresh /tmp path.
+    dest="$(mktemp /tmp/gocdnext-kubeconfig.XXXXXX)"
     if [ -f "${PLUGIN_KUBECONFIG}" ]; then
         cat "${PLUGIN_KUBECONFIG}" >"${dest}"
     elif echo "${PLUGIN_KUBECONFIG}" | base64 -d >"${dest}" 2>/dev/null \

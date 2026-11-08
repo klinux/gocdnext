@@ -32,8 +32,11 @@ convention that minor bumps may carry breaking changes until 1.0).
   kubeconfig`) and `chmod 0600`'d afterward — but a preexisting/permissive file at
   that path keeps its mode (redirection inherits the existing inode's mode), so
   "0600 from the first byte" wasn't guaranteed. It's now materialised into a fresh
-  `mktemp` file (0600, unique) written via redirection (not `cp`, which copies the
-  source's mode), so the private mode holds with no window and no path reuse. New real `smoke_test.sh` (fully offline):
+  `mktemp` file (0600, unique) **anchored to `/tmp`** (`mktemp
+  /tmp/gocdnext-kubeconfig.XXXXXX` — a bare `mktemp` honours `$TMPDIR`, which a job
+  could point at a persisted `/workspace` volume and leak the tokens/certs),
+  written via redirection (not `cp`, which copies the source's mode), so the
+  private mode holds with no window and no path reuse. New real `smoke_test.sh` (fully offline):
   asserts v1.37.2, a missing command exits 2, `kubectl kustomize` renders, `create
   --dry-run=client` emits an object while a `kind`-less manifest fails client-side,
   and base64 (incl. behind a long comment), literal, and file kubeconfigs all
