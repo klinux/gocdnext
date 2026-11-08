@@ -24,21 +24,45 @@
 #   PLUGIN_INTERACTSH     (optional)  "true" to enable OAST (default off).
 #   PLUGIN_INTERACTSH_SERVER (optional) custom OAST server (needs interactsh:true).
 #   PLUGIN_OUTPUT         (optional)  SARIF path (default nuclei.sarif).
-ARG NUCLEI_VERSION=v3.3.2
+#
+# nuclei bumped v3.3.2 -> v3.11.1 (pinned by digest): v3.3.2 was built on Go
+# 1.21.13 and bundled vulnerable deps (stdlib CVE-2025-68121, go-git
+# CVE-2025-21613, kin-openapi GHSA-r277-6w6q-xmqw); v3.11.1 is built on go1.26.5
+# with those deps patched. Runtime base alpine:3.20 (EOL 2026-04-01) -> 3.24.4
+# (pinned) + apk upgrade. yq bumped v4.44.3 -> v4.54.2 (old yq was built on an
+# old Go: stdlib CVE-2025-68121) and now verified by sha256. Trivy on the built
+# image (DB 2026-11-07): 0 CRITICAL (goal 4 -> 0). 27 HIGH remain in the nuclei
+# binary (stdlib/kin-openapi/grpc/go-git/x-net/…) — v3.11.1 is the latest upstream
+# release, so they are upstream-bound; the weekly Trivy gate tracks them.
+ARG NUCLEI_VERSION=v3.11.1
 
-FROM projectdiscovery/nuclei:${NUCLEI_VERSION} AS nuclei
+FROM projectdiscovery/nuclei:v3.11.1@sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb AS nuclei
 
-FROM alpine:3.20
-ARG NUCLEI_VERSION=v3.3.2
+FROM alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4
+ARG NUCLEI_VERSION=v3.11.1
 ARG NUCLEI_TEMPLATES_REF=v10.4.5
-ARG YQ_VERSION=v4.44.3
+# Immutable pin: the exact commit the v10.4.5 tag points at. A Git tag is movable,
+# and with no_cache:true every release re-resolves it — verify the clone landed on
+# this commit and fail loud if the tag was re-pointed.
+ARG NUCLEI_TEMPLATES_COMMIT=e5a0fba09e7e9a2838f9aa0c0bd2cb30ce18c202
+ARG YQ_VERSION=v4.54.2
 ARG TARGETARCH=amd64
 
 # bash (entrypoint), curl (preflight), jq (fail-on gate), yq (spec rewrite),
-# git (pinned templates clone).
-RUN apk add --no-cache bash curl jq git ca-certificates \
+# git (pinned templates clone). apk upgrade refreshes the OS set (the FROM digest
+# pins the base layer, not the upgraded set; the weekly Trivy gate catches drift).
+# yq is downloaded from a GitHub release and verified against a pinned sha256
+# (matches yq's published checksums) — a floating download is a supply-chain hole.
+RUN apk upgrade --no-cache \
+ && apk add --no-cache bash curl jq git ca-certificates \
+ && case "${TARGETARCH}" in \
+      amd64) YQ_SHA=44c7759059b4910827a0059a2757b22001e59360cdecdb2ef8dedc4b6c7e9f32 ;; \
+      arm64) YQ_SHA=bd44211dcd29a5f0eb701d4b7eb5ccd0cfff3bd3966cb4f7f9bd5b13701d997e ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
  && wget -qO /usr/local/bin/yq \
       "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${TARGETARCH}" \
+ && echo "${YQ_SHA}  /usr/local/bin/yq" | sha256sum -c - \
  && chmod +x /usr/local/bin/yq
 
 COPY --from=nuclei /usr/local/bin/nuclei /usr/local/bin/nuclei
@@ -51,6 +75,9 @@ COPY --from=nuclei /usr/local/bin/nuclei /usr/local/bin/nuclei
 ENV NUCLEI_TEMPLATES_DIR=/opt/nuclei-templates
 RUN git clone --depth 1 --branch "${NUCLEI_TEMPLATES_REF}" \
       https://github.com/projectdiscovery/nuclei-templates /opt/nuclei-templates \
+ && got="$(git -C /opt/nuclei-templates rev-parse HEAD)" \
+ && [ "${got}" = "${NUCLEI_TEMPLATES_COMMIT}" ] \
+      || { echo "templates tag ${NUCLEI_TEMPLATES_REF} resolved to ${got}, expected ${NUCLEI_TEMPLATES_COMMIT} (tag re-pointed?)" >&2; exit 1; } \
  && rm -rf /opt/nuclei-templates/.git \
  && test -n "$(ls -A /opt/nuclei-templates 2>/dev/null)" \
       || { echo "templates not baked into /opt/nuclei-templates" >&2; exit 1; }
@@ -58,7 +85,8 @@ RUN git clone --depth 1 --branch "${NUCLEI_TEMPLATES_REF}" \
 LABEL org.opencontainers.image.title="gocdnext-plugin-nuclei" \
       org.opencontainers.image.description="DAST baseline scanner (Nuclei) → SARIF" \
       gocdnext.nuclei.version="${NUCLEI_VERSION}" \
-      gocdnext.nuclei.templates="${NUCLEI_TEMPLATES_REF}"
+      gocdnext.nuclei.templates="${NUCLEI_TEMPLATES_REF}" \
+      gocdnext.nuclei.templates_commit="${NUCLEI_TEMPLATES_COMMIT}"
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-nuclei
 RUN chmod +x /usr/local/bin/gocdnext-nuclei
