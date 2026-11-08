@@ -1,5 +1,10 @@
 name: semgrep
 category: security
+# Refreshes OS packages via `apk upgrade` at build time, so it MUST build from
+# scratch — otherwise the registry build cache re-imports a stale OS layer on a
+# release that didn't touch the Dockerfile. Consumed by the `nocache` step in
+# plugins.yml.
+no_cache: true
 description: >
   SAST scan with semgrep — the de-facto OSS static analyzer
   (registry packs like p/golang, p/owasp-top-ten, or your own rule
