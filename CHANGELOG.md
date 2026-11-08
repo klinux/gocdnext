@@ -10,6 +10,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **osv-scanner plugin → osv-scanner v2.7.0 + Go 1.27 + alpine 3.24.4, CRITICAL
+  cleared.** The published `:v1` built `osv-scanner@v2.0.0` with `golang:1.25` on
+  `alpine:3.21`: the binary bundled grpc v1.71.0 (**CVE-2026-33186**, CRITICAL)
+  and the OS carried OpenSSL/musl/zlib HIGHs. Bumped osv-scanner to **v2.7.0**
+  (via `go install`, content-addressed by the Go checksum DB; grpc ≥1.79.3),
+  builder to **golang:1.27** (pinned by digest), and base to **alpine:3.24.4**
+  (pinned) + `apk upgrade`. Trivy `--pkg-types os,library` (DB 2026-11-07): **0
+  CRITICAL**; HIGH **62 → 1** (only `golang.org/x/net`, upstream-bound — v2.7.0 is
+  the latest release — tracked by the gate). New real `smoke_test.sh`: asserts the
+  binary is v2.7.0, a no-lockfile workspace is a clean pass with a parser-valid
+  empty SARIF (offline), and a lockfile pinning a known-vulnerable `lodash` is
+  detected (fail-on=any → exit 1 with findings in the SARIF; fail-on=none → exit 0
+  report-only, findings retained). Opts into `no_cache: true`. (#353)
 - **nuclei plugin → nuclei v3.11.1 + yq v4.54.2 + alpine 3.24.4, 4 CRITICALs
   cleared.** The published `:v1` bundled `projectdiscovery/nuclei:v3.3.2` (built
   on Go 1.21.13) carrying stdlib CVE-2025-68121, go-git CVE-2025-21613, and
