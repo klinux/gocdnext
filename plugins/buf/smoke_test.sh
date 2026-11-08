@@ -35,12 +35,15 @@ cleanup() {
   fi
   docker image rm -f "$IMG" >/dev/null 2>&1 || true
   rm -rf "$WC" "$WV" "$WB" "$WG" 2>/dev/null || true
+  leftover=0
   for d in "$WC" "$WV" "$WB" "$WG"; do
-    if [ -d "$d" ]; then
-      echo "WARN: cleanup could not fully remove ${d}" >&2
-      [ "$SMOKE_OK" = 1 ] && { echo "FAIL: smoke passed but left files behind" >&2; exit 1; }
-    fi
+    [ -d "$d" ] && { echo "WARN: cleanup could not fully remove ${d}" >&2; leftover=1; }
   done
+  if docker image inspect "$IMG" >/dev/null 2>&1; then
+    echo "WARN: smoke image ${IMG} was not removed" >&2; leftover=1
+  fi
+  [ "$leftover" = 1 ] && [ "$SMOKE_OK" = 1 ] && { echo "FAIL: smoke passed but left state behind" >&2; exit 1; }
+  return 0
 }
 trap cleanup EXIT
 die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2" | tail -40; }; exit 1; }
@@ -104,21 +107,37 @@ set -e
 [ "$RC" -ne 0 ] || die "breaking: expected a non-zero exit for a deleted field, got 0" "$OUT"
 grep -qiE 'was deleted|previously present' <<<"$OUT" || die "breaking: buf did not report the deleted field (git/safe.directory/word-split?)" "$OUT"
 
-echo "==> generate runs a local (offline) plugin from buf.gen.yaml"
+echo "==> generate runs a local (offline) plugin and WRITES its output"
 cfg "$WG"; proto "$WG" 'string thing_id = 1;'
-# a noop protoc plugin: consume the CodeGeneratorRequest, emit an empty (valid)
-# CodeGeneratorResponse — proves the generate pipeline end to end, offline.
-printf '#!/bin/sh\ncat >/dev/null\n' >"$WG/noop-plugin"; chmod +x "$WG/noop-plugin"
+# A local protoc plugin that discards the CodeGeneratorRequest and emits a valid
+# CodeGeneratorResponse carrying ONE file (gen-marker.txt = "buf-generate-ok"),
+# hand-encoded as protobuf. buf must actually run it AND consume its output — so
+# the generated file appearing under gen/ proves the whole pipeline, offline. A
+# noop plugin (exit 0, no output) would pass even if buf ignored the plugins
+# entry; a written, correct file cannot.
+cat >"$WG/emit-plugin" <<'SH'
+#!/bin/sh
+cat >/dev/null
+name="gen-marker.txt"; content="buf-generate-ok"
+# CodeGeneratorResponse.File{ name=field1, content=field15 }, wrapped in
+# CodeGeneratorResponse.file=field15.
+file=$(printf '\x0a%b%s\x7a%b%s' "$(printf '\\x%02x' ${#name})" "$name" "$(printf '\\x%02x' ${#content})" "$content")
+printf '\x7a%b%s' "$(printf '\\x%02x' ${#file})" "$file"
+SH
+chmod +x "$WG/emit-plugin"
 cat >"$WG/buf.gen.yaml" <<'YAML'
 version: v2
 plugins:
-  - local: ./noop-plugin
+  - local: ./emit-plugin
     out: gen
 YAML
 set +e
 OUT="$(docker run --rm --network none -v "$WG:/workspace" -w /workspace -e PLUGIN_COMMAND="generate" "$IMG" 2>&1)"; RC=$?
 set -e
 [ "$RC" -eq 0 ] || die "generate: expected exit 0 with a local plugin, got $RC" "$OUT"
+gen_content="$(docker run --rm --network none -v "$WG:/w" --entrypoint cat "$IMG" /w/gen/gen-marker.txt 2>/dev/null || true)"
+[ "$gen_content" = "buf-generate-ok" ] \
+  || die "generate: the local plugin's output file is missing/wrong (buf ignored the plugins entry?) — got '${gen_content}'" "$OUT"
 
 SMOKE_OK=1
 echo "PASS: buf smoke"
