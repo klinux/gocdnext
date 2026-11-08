@@ -21,19 +21,51 @@
 #
 # Same kubeconfig discovery as helm/kubectl plugins so operators juggle
 # one convention. `gettext` provides envsubst for PLUGIN_ENVSUBST.
-FROM alpine:3.20
+# Base alpine:3.20 (EOL 2026-04-01) -> 3.24.4 (pinned) + apk upgrade. Both tools
+# bumped off an old Go (Go-stdlib CVE-2025-68121): kustomize 5.4.3 -> 5.8.3,
+# kubectl v1.31.1 -> v1.37.2 (both on a patched Go). Both downloads are now
+# architecture-aware (TARGETARCH amd64/arm64) and VERIFIED against the upstream
+# sha256 (kustomize checksums.txt / dl.k8s.io .sha256) — the old `curl` had no
+# integrity check and hardcoded amd64. NOTE: plugins.yml publishes `:v1`
+# linux/amd64 only (fleet-wide); this Dockerfile builds correctly for arm64 once
+# that is enabled. kubectl skew: supported within +/-1 minor of the API server.
+FROM alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4
+ARG TARGETARCH=amd64
 
-ENV KUSTOMIZE_VERSION=5.4.3
-ENV KUBECTL_VERSION=v1.31.1
+ENV KUSTOMIZE_VERSION=5.8.3
+ENV KUBECTL_VERSION=v1.37.2
+# helm is REQUIRED for `enable_helm` (kustomize build --enable-helm inflates
+# helmCharts: entries by shelling out to `helm`). v3.22.1 is the latest Helm 3,
+# built on go1.26.9 (patched). Kustomize 5.8.1+ works with Helm 3 OR 4; Helm 3 is
+# a TEMPORARY pin (its security fixes run to 2027-02-10) — the Helm 4 migration is
+# tracked in #349.
+ENV HELM_VERSION=v3.22.1
 
-RUN apk add --no-cache bash ca-certificates curl gettext \
-    && curl -sSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
-       | tar -xz -C /tmp \
-    && mv /tmp/kustomize /usr/local/bin/kustomize \
-    && chmod +x /usr/local/bin/kustomize \
-    && curl -sSL -o /usr/local/bin/kubectl \
-       "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
-    && chmod +x /usr/local/bin/kubectl
+RUN apk upgrade --no-cache && apk add --no-cache bash ca-certificates curl gettext \
+    && case "${TARGETARCH}" in \
+         amd64) KUST_SHA=cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61; \
+                KCTL_SHA=c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4; \
+                HELM_SHA=896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea ;; \
+         arm64) KUST_SHA=9867b76482cfc6d25b546abc1d2b5a32bd137505aba640649b4b378f64f6d68f; \
+                KCTL_SHA=fcc16f63186659d9722014b7e02d5fdd2d4e669cb8c0ab66365d7d3b8ba03509; \
+                HELM_SHA=4c29e286b279d170fa048ddfc3e4e83dcd069ca9c52102766ba672d7149e694d ;; \
+         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
+    && curl -fSL -o /tmp/kustomize.tgz \
+         "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_${TARGETARCH}.tar.gz" \
+    && echo "${KUST_SHA}  /tmp/kustomize.tgz" | sha256sum -c - \
+    && tar -xz -C /usr/local/bin -f /tmp/kustomize.tgz kustomize \
+    && rm /tmp/kustomize.tgz && chmod +x /usr/local/bin/kustomize \
+    && curl -fSL -o /usr/local/bin/kubectl \
+         "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+    && echo "${KCTL_SHA}  /usr/local/bin/kubectl" | sha256sum -c - \
+    && chmod +x /usr/local/bin/kubectl \
+    && curl -fSL -o /tmp/helm.tgz \
+         "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH}.tar.gz" \
+    && echo "${HELM_SHA}  /tmp/helm.tgz" | sha256sum -c - \
+    && tar -xz -C /tmp -f /tmp/helm.tgz "linux-${TARGETARCH}/helm" \
+    && mv "/tmp/linux-${TARGETARCH}/helm" /usr/local/bin/helm \
+    && rm -rf /tmp/helm.tgz "/tmp/linux-${TARGETARCH}" && chmod +x /usr/local/bin/helm
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-kustomize
 RUN chmod +x /usr/local/bin/gocdnext-kustomize
