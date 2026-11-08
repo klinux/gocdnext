@@ -9,7 +9,7 @@ category: lint
 no_cache: true
 description: >
   Run buf CLI commands — lint, breaking, generate, format.
-  Wraps bufbuild/buf:1.47 with git + ca-certificates so
+  Wraps bufbuild/buf:1.75.0 with git + ca-certificates so
   `breaking --against` references work out of the box.
 
 inputs:
