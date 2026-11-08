@@ -267,6 +267,14 @@ EOF
     grep -q "$secret" "$TMP/kubectl.stdin" || fail "apply didn't receive the resolved manifest"
 fi
 
+# ── N0. extra_args is word-split WITHOUT glob expansion (apply action) ──
+reset
+GLOB="$TMP/glob"; mkdir -p "$GLOB"; : >"$GLOB/x.yaml"; : >"$GLOB/y.yaml"
+( cd "$GLOB" && PLUGIN_PATH="$TMP/overlay" PLUGIN_EXTRA_ARGS="*" NS_EXISTS=1 \
+    PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh" >/dev/null 2>&1 )
+grep -Fq -- "-f - *" "$TMP/kubectl.log" || fail "extra_args glob-expanded — kubectl.log: $(cat "$TMP/kubectl.log")"
+echo "  extra_args: not glob-expanded (literal *)"
+
 # ── N. kubeconfig is materialised 0600 at a FRESH, /tmp-anchored path, with the
 #       CORRECT content, for file / base64 / base64-behind-comment / literal ──
 cat >"$TMP/kc.yaml" <<'EOF'

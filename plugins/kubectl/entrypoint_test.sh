@@ -110,4 +110,11 @@ check_mode "file"    "$KCDIR/kubeconfig.yaml"
 check_mode "base64"  "$KC_B64"
 check_mode "literal" "$KC_LIT"
 
+echo "== 8. PLUGIN_COMMAND is word-split WITHOUT glob expansion =="
+: >"$TMP/kubectl.log"
+GLOB="$TMP/glob"; mkdir -p "$GLOB"; : >"$GLOB/a.yaml"; : >"$GLOB/b.yaml"
+( cd "$GLOB" && PLUGIN_COMMAND="get *" PATH="$TMP:$PATH" TMP_LOG="$TMP/kubectl.log" bash "$HERE/entrypoint.sh" >/dev/null 2>&1 )
+if grep -qxF "kubectl get *" "$TMP/kubectl.log"; then echo "PASS: no glob expansion (literal *)"
+else echo "FAIL: glob expanded — kubectl.log: $(cat "$TMP/kubectl.log")"; fails=1; fi
+
 if [ "$fails" = 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; exit 1; fi

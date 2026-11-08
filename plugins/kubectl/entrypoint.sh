@@ -62,6 +62,11 @@ case "$(printf '%s' "${PLUGIN_CONTINUE_ON_ERROR:-}" | tr '[:upper:]' '[:lower:]'
     true | 1 | yes | on) continue_on_error=1 ;;
 esac
 
+# `set -f` disables pathname (glob) expansion: an unquoted ${PLUGIN_COMMAND}
+# would otherwise expand `*`/`?`/`[...]` against the workspace and silently
+# rewrite args. Word-splitting (the intended behaviour) still applies.
+set -f
+
 if [ "${continue_on_error}" = 1 ]; then
     # shellcheck disable=SC2086
     kubectl "${ns_args[@]}" ${PLUGIN_COMMAND} && rc=0 || rc=$?

@@ -33,5 +33,9 @@ echo "==> buf ${PLUGIN_COMMAND}"
 
 # Word-split intentionally: `breaking --against ref` is three
 # args. Whitespace inside a single arg → drop to plain `script:`.
+# `set -f` disables pathname (glob) expansion first: an unquoted
+# ${PLUGIN_COMMAND} would otherwise expand `*`/`?`/`[...]` against the
+# workspace and silently rewrite args. Word-splitting still applies.
+set -f
 # shellcheck disable=SC2086
 exec buf ${PLUGIN_COMMAND}
