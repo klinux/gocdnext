@@ -20,13 +20,30 @@
 # Same kubeconfig discovery as the kubectl plugin so operators
 # don't juggle two different conventions between the two halves
 # of their deploy stage.
-FROM alpine:3.20
+# Base alpine:3.20 (EOL 2026-04-01) -> 3.24.4 (pinned) + apk upgrade. helm bumped
+# v3.16.2 -> v3.22.1: v3.16.2 was built on an old Go + grpc (Go-stdlib
+# CVE-2025-68121, grpc CVE-2026-33186); v3.22.1 is built on go1.26.9. The download
+# is now architecture-aware (TARGETARCH amd64/arm64) and VERIFIED against the
+# get.helm.sh sha256 — the old `curl` had no integrity check and hardcoded amd64.
+# NOTE: plugins.yml publishes `:v1` linux/amd64 only (fleet-wide); this Dockerfile
+# builds correctly for arm64 once that is enabled. Pinned Helm 3 (security fixes to
+# 2027-02-10); the Helm 4 migration is tracked in #349.
+FROM alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4
+ARG TARGETARCH=amd64
+ENV HELM_VERSION=v3.22.1
 
-RUN apk add --no-cache bash ca-certificates curl git \
-    && curl -sSL https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz \
-       | tar -xz -C /tmp \
-    && mv /tmp/linux-amd64/helm /usr/local/bin/helm \
-    && rm -rf /tmp/linux-amd64 \
+RUN apk upgrade --no-cache && apk add --no-cache bash ca-certificates curl git \
+    && case "${TARGETARCH}" in \
+         amd64) HELM_SHA=896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea ;; \
+         arm64) HELM_SHA=4c29e286b279d170fa048ddfc3e4e83dcd069ca9c52102766ba672d7149e694d ;; \
+         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
+    && curl -fSL -o /tmp/helm.tgz \
+         "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH}.tar.gz" \
+    && echo "${HELM_SHA}  /tmp/helm.tgz" | sha256sum -c - \
+    && tar -xz -C /tmp -f /tmp/helm.tgz "linux-${TARGETARCH}/helm" \
+    && mv "/tmp/linux-${TARGETARCH}/helm" /usr/local/bin/helm \
+    && rm -rf /tmp/helm.tgz "/tmp/linux-${TARGETARCH}" \
     && chmod +x /usr/local/bin/helm
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-helm
