@@ -8,6 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Changed
+
+- **python plugin → uv 0.13.7, 1 CRITICAL cleared.** The published `:v1` pinned
+  `uv==0.5.5`, which carried **GHSA-hq85-5cpj-mr62** (CRITICAL): uv's bundled CA
+  store trusted an emSign root whose intermediate CA keys are compromised, fixed
+  in uv 0.13.4. Bumped to **0.13.7** (latest). The plugin only uses uv's stable
+  surface (`uv sync`, `--frozen`, `--extra`/`--all-extras`, `uv run`), unchanged
+  across the jump; `poetry`/`pip` untouched. Trivy `--ignore-unfixed --pkg-types
+  os,library` (DB 2026-11-07): **0 CRITICAL** (was 1). New real `smoke_test.sh`:
+  asserts uv is 0.13.7, then runs the plugin's uv manager end to end — `uv sync`
+  (no lockfile) installs a real dependency and `uv run` executes against it, and
+  a committed `uv.lock` is honoured via `uv sync --frozen` — plus a failing user
+  command still propagates its exit code.
+
 ## v0.127.0 — 2026-11-09
 
 ### Changed
