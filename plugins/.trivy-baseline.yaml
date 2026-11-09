@@ -239,17 +239,18 @@ exceptions:
     justification: >-
       Client-side use-after-free when a server changes its host key during key
       re-exchange (OpenSSH < 10.4), reachable from a hostile or forged SSH server
-      OR an active man-in-the-middle. Debian marks trixie "no-dsa" and bookworm
-      "postponed" (Minor issue) — no fixed openssh in the supported releases; the
-      first fix is unstable (upstream 10.4p1-1, Debian sid 10.6p2). The ansible
-      wrapper currently sets ANSIBLE_HOST_KEY_CHECKING=False, so a pinned host key
-      does NOT gate the path and "trusted inventory" alone is insufficient.
+      OR an active man-in-the-middle; treat it as a client-side memory-safety
+      flaw, not DoS-only (upstream does not bound the impact). Debian marks trixie
+      "no-dsa" and bookworm "postponed" (Minor issue) — no fixed openssh in the
+      supported releases; the first Debian fixed version is unstable 1:10.4p1-1
+      (upstream 10.4p1), current sid is 1:10.6p2-1. The ansible wrapper currently
+      sets ANSIBLE_HOST_KEY_CHECKING=False, so a pinned host key does NOT gate the
+      path and "trusted inventory" alone is insufficient.
     mitigation: >-
       Issue #370 tracks supporting a pinned known_hosts and removing the
       unconditional ANSIBLE_HOST_KEY_CHECKING=False. Until then, restrict the
       plugin to hosts on private/trusted networks with no public or untrusted SSH
-      endpoints. Client-side UAF only. Weekly re-scan; lapses the instant Debian
-      ships a fixed openssh.
+      endpoints. Weekly re-scan; lapses the instant Debian ships a fixed openssh.
     advisory: https://security-tracker.debian.org/tracker/CVE-2026-60002
     upstream_issue: https://www.openssh.org/releasenotes.html#10.4p1
     approved_pr: 371
