@@ -43,12 +43,28 @@
 #                       tests. "false" skips it — use when a
 #                       prior job already warmed node_modules
 #                       (via gocdnext/node + `cache:`).
-FROM mcr.microsoft.com/playwright:v1.50.0-noble
+# Pinned by digest (v1.50.0-noble). The playwright version is deliberately kept:
+# it must match the browsers baked into the image (chromium-1155 etc.), so a bump
+# is a browser/API change, not a CVE fix. The only CRITICALs are node-tar
+# (CVE-2026-59873): the image's npm 10.9.2 bundles tar 6.2.1 and, via its
+# cacache/node-gyp deps, tar 7.4.3 — all < 7.5.19. npm is bumped to 11.19.1 (the
+# same npm the node plugin standardised on), which bundles a single deduped tar
+# 7.5.22, clearing all three. npm 11 needs node ^20.17.0 || >=22.9.0; this image
+# ships node 22.13.1.
+FROM mcr.microsoft.com/playwright:v1.50.0-noble@sha256:e46352b075b3c97e226ad9ed27d6999dbc6e7f021ba94b30d833136fcee349f1
 
-RUN apt-get update && apt-get install -y --no-install-recommends bash git ca-certificates \
+# apt-get upgrade refreshes OS packages fixed since the base digest was cut (the
+# digest pins the layer; the weekly Trivy gate catches drift — hence
+# no_cache:true).
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends bash git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Image ships with Node 20 + npm. Enable corepack so pnpm + yarn
+# node-tar CVE-2026-59873: npm 10.9.2's bundled tar (6.2.1 + 7.4.3 under
+# cacache/node-gyp) is vulnerable. Bump to npm 11.19.1 (node 22.13.1 satisfies
+# its engines), which bundles a single deduped tar 7.5.22.
+RUN npm install -g npm@11.19.1
+
+# Image ships with Node 22 + npm. Enable corepack so pnpm + yarn
 # resolve without a second `npm install -g`.
 RUN corepack enable
 

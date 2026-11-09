@@ -12,6 +12,13 @@ cd "${PLUGIN_WORKING_DIR:-.}"
 # when set — some CI configs pin the path explicitly.
 export PLAYWRIGHT_JUNIT_OUTPUT_NAME="${PLAYWRIGHT_JUNIT_OUTPUT_NAME:-test-results/junit.xml}"
 
+# The HTML reporter defaults to `open: 'on-failure'`, which starts
+# `playwright show-report` as a blocking web server. In a non-interactive
+# job container that never returns — the job hangs forever on the first
+# failing test. Force the report to disk only; it's pulled as an artifact,
+# never served. Overridable for the rare operator who sets it explicitly.
+export PLAYWRIGHT_HTML_OPEN="${PLAYWRIGHT_HTML_OPEN:-never}"
+
 # Detect the package manager from the lockfile on disk. Same
 # priority GitHub Actions and Vercel use. Falls back to npm
 # when nothing's locked — Playwright tests without package.json
