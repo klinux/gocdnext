@@ -19,6 +19,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-playwright:smoke-$$"
+CNAME="pwsmoke-$$"   # fixed name so a timed-out run's container can be reaped
 # @playwright/test MUST match the browsers baked in the image (chromium-1155 =
 # playwright 1.50) or the runner would try to download a browser (offline fail).
 PW_VERSION="1.50.0"
@@ -31,6 +32,7 @@ cleanup() {
       -c 'for d in /a /b; do rm -rf "$d"/* "$d"/.[!.]* "$d"/..?* 2>/dev/null || true; done' \
       >/dev/null 2>&1 || true
   fi
+  docker rm -f "$CNAME" >/dev/null 2>&1 || true
   docker image rm -f "$IMG" >/dev/null 2>&1 || true
   rm -rf "$WOK" "$WBAD" 2>/dev/null || true
   leftover=0
@@ -65,7 +67,11 @@ test('renders with baked chromium', async ({ page }) => {
 });
 TS
 }
-run() { d="$1"; shift; set +e; OUT="$(docker run --rm --network host -v "$d:/workspace" -w /workspace "$@" "$IMG" 2>&1)"; RC=$?; set -e; }
+# Hard 120s wall-clock cap: if a hang regresses (e.g. the html reporter goes back
+# to open:on-failure and serves a blocking show-report), `timeout` returns 124 so
+# the smoke fails HERE instead of wedging CI until its global timeout. The
+# container is named so a timed-out, --rm-stranded one gets reaped in cleanup.
+run() { d="$1"; shift; docker rm -f "$CNAME" >/dev/null 2>&1 || true; set +e; OUT="$(timeout 120 docker run --rm --name "$CNAME" --network host -v "$d:/workspace" -w /workspace "$@" "$IMG" 2>&1)"; RC=$?; set -e; }
 
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
@@ -92,10 +98,11 @@ grep -q '1 passed' <<<"$OUT" || die "passing project: playwright did not report 
 [ -f "$WOK/test-results/junit.xml" ] || die "JUnit report not written at test-results/junit.xml" "$OUT"
 grep -q '<testsuites' "$WOK/test-results/junit.xml" || die "JUnit report is not valid JUnit XML" "$OUT"
 
-echo "==> a FAILING test makes the job exit non-zero (no false green)"
+echo "==> a FAILING test exits 1 within the cap (no false green, no hang)"
 project "$WBAD" "WRONG"             # test expects 'WRONG' but the page says 'gocdnext' -> fails
 run "$WBAD"
-[ "$RC" -ne 0 ] || die "failing project: expected a non-zero exit, got 0 (false green)" "$OUT"
+[ "$RC" -ne 124 ] || die "failing project: hit the 120s cap — the show-report hang regressed (PLAYWRIGHT_HTML_OPEN)" "$OUT"
+[ "$RC" -eq 1 ] || die "failing project: expected playwright's normal failure exit 1, got $RC" "$OUT"
 grep -q '1 failed' <<<"$OUT" || die "failing project: playwright did not report a failure" "$OUT"
 
 SMOKE_OK=1

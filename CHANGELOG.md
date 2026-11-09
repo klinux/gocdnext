@@ -24,8 +24,12 @@ convention that minor bumps may carry breaking changes until 1.0).
   3). New real `smoke_test.sh`: asserts npm is 11.19.1 and every bundled tar is
   ≥ 7.5.19, then actually runs `playwright test` with the baked chromium — a
   passing project writes JUnit at the pinned `test-results/junit.xml`, and a
-  failing test exits non-zero (no false green). Opts into `no_cache: true`.
-  (#365)
+  failing test exits 1 within a hard time cap (no false green, no hang). Also
+  hardens the entrypoint: the default `html` reporter runs `open: 'on-failure'`,
+  which starts a **blocking** `show-report` server that would hang a
+  non-interactive job on the first failing test — the entrypoint now forces
+  `PLAYWRIGHT_HTML_OPEN=never` (override-respecting), writing the report to disk
+  for the artifact instead of serving it. Opts into `no_cache: true`. (#365)
 - **node plugin → npm 11.19.1 in the node 20/22 builders, 2 `tar` CRITICALs
   cleared; bases pinned by digest.** The published `:v3` baked node 20/22/24,
   and the npm bundled with node 20 (10.8.2) and node 22 (10.9.8) carried
