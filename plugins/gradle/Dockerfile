@@ -26,7 +26,7 @@
 #                                   serve every supported toolchain
 #                                   without per-JDK image variants.
 #
-# Ships Gradle 8.10 CLI as wrapper fallback. Real projects almost
+# Ships Gradle 8.14.6 CLI as wrapper fallback. Real projects almost
 # always ship `./gradlew` which pins the exact version they need;
 # the CLI matters only on legacy projects without a wrapper.
 ARG BASE_IMAGE=ghcr.io/klinux/gocdnext-plugin-jdk-base:v1
@@ -37,8 +37,15 @@ FROM ${BASE_IMAGE}
 # The sha is from https://services.gradle.org/distributions/
 # gradle-${GRADLE_VERSION}-bin.zip.sha256 at release time —
 # Gradle never republishes a tagged release.
-ARG GRADLE_VERSION=8.10
-ARG GRADLE_SHA256=5b9c5eb3f9fc2c94abaea57d90bd78747ca117ddbbf96c859d3741181a12bf2a
+# Gradle 8.14.6 (latest 8.x) bundles bouncycastle bcpg/bcprov/bcutil 1.85, which
+# clears CVE-2025-14813 (bcprov < 1.80.2) and CVE-2026-8763 (bcprov < 1.85) that
+# the old 8.10's bundled BC 1.78.1 carried. These jars are referenced by exact
+# filename in Gradle's internal module registry, so swapping the jar in place
+# breaks startup — a version bump is the only working fix. Staying on 8.x (not
+# jumping to 9.x) avoids a major behaviour change for the legacy wrapperless
+# projects this fallback CLI serves.
+ARG GRADLE_VERSION=8.14.6
+ARG GRADLE_SHA256=7988ed071b2a07900e2ec715fca15c6ab72bce6db433af301fa7fa7e9407bd24
 RUN curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/g.zip && \
     echo "${GRADLE_SHA256}  /tmp/g.zip" | sha256sum -c - && \
     unzip -q /tmp/g.zip -d /opt && \
