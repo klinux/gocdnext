@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.127.0 — 2026-11-09
+
 ### Changed
 
 - **sonar plugin → Gradle 8.14.6, 2 bouncycastle CRITICALs cleared; OS HIGHs
