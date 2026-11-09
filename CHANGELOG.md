@@ -10,6 +10,23 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **sonar plugin → Gradle 8.14.6, 2 bouncycastle CRITICALs cleared; OS HIGHs
+  patched.** The image bundles a Gradle CLI (one of its three scanner
+  front-ends) that shipped 8.10, whose vendored bouncycastle suite
+  `bcpg`/`bcprov`/`bcutil` 1.78.1 carried **CVE-2025-14813** and
+  **CVE-2026-8763** (both in `bcprov`) — same root cause and fix as the `gradle`
+  plugin: bump to 8.14.6 (bundles the BC suite at 1.85), since Gradle resolves
+  these jars by exact filename and an in-place swap breaks startup. The
+  `maven:3.9-eclipse-temurin-21` base's apt layer now runs `apt-get upgrade`
+  (opts into `no_cache: true`), clearing the OpenSSL/`libssl3`, `apt`/`libapt`
+  and `libbrotli` HIGHs. Trivy `--ignore-unfixed --pkg-types os,library` (DB
+  2026-11-07): **0 CRITICAL** (was 2); HIGH 7 → 2 (bundled `guava`
+  CVE-2026-102554 DoS in the gradle + maven distributions, upstream-bound). New
+  real `smoke_test.sh`: asserts the BC suite is a single version ≥ 1.85 with no
+  1.78.1 survivor, that all three front-ends (gradle 8.14.6 / sonar-scanner /
+  maven) still report versions, that the bundled gradle PGP-signs a file for real
+  (exercising `bcpg`+`bcprov` with a per-run disposable key), and that the
+  entrypoint fails fast (exit 2) with no token.
 - **gradle plugin → Gradle 8.14.6, 2 bouncycastle CRITICALs cleared.** The
   bundled Gradle CLI (wrapper fallback) shipped 8.10, whose vendored
   bouncycastle suite `bcpg`/`bcprov`/`bcutil` 1.78.1 carried **CVE-2025-14813**
