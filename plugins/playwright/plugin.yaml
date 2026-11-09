@@ -1,5 +1,10 @@
 name: playwright
 category: quality
+# Refreshes OS packages via `apt-get upgrade` and bumps npm at build time, so it
+# MUST build from scratch — otherwise the registry build cache re-imports a stale
+# OS/npm layer on a release that didn't touch the Dockerfile. Consumed by the
+# `nocache` step in plugins.yml.
+no_cache: true
 description: >
   Run Playwright end-to-end tests with Chromium + Firefox +
   WebKit pre-installed (via Microsoft's official image — saves
