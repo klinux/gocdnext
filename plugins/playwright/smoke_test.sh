@@ -27,12 +27,15 @@ WOK="$(mktemp -d)"   # passing project
 WBAD="$(mktemp -d)"  # failing project
 SMOKE_OK=0
 cleanup() {
+  # Kill any stuck run container FIRST: a timed-out one still holds $WOK/$WBAD
+  # mounted, so the mount-cleaning container below would otherwise race a live
+  # writer on the same dirs.
+  docker rm -f "$CNAME" >/dev/null 2>&1 || true
   if docker image inspect "$IMG" >/dev/null 2>&1; then
     docker run --rm --entrypoint bash -v "$WOK:/a" -v "$WBAD:/b" "$IMG" \
       -c 'for d in /a /b; do rm -rf "$d"/* "$d"/.[!.]* "$d"/..?* 2>/dev/null || true; done' \
       >/dev/null 2>&1 || true
   fi
-  docker rm -f "$CNAME" >/dev/null 2>&1 || true
   docker image rm -f "$IMG" >/dev/null 2>&1 || true
   rm -rf "$WOK" "$WBAD" 2>/dev/null || true
   leftover=0
@@ -67,11 +70,14 @@ test('renders with baked chromium', async ({ page }) => {
 });
 TS
 }
-# Hard 120s wall-clock cap: if a hang regresses (e.g. the html reporter goes back
-# to open:on-failure and serves a blocking show-report), `timeout` returns 124 so
-# the smoke fails HERE instead of wedging CI until its global timeout. The
-# container is named so a timed-out, --rm-stranded one gets reaped in cleanup.
-run() { d="$1"; shift; docker rm -f "$CNAME" >/dev/null 2>&1 || true; set +e; OUT="$(timeout 120 docker run --rm --name "$CNAME" --network host -v "$d:/workspace" -w /workspace "$@" "$IMG" 2>&1)"; RC=$?; set -e; }
+# Hard 120s wall-clock cap. If a hang regresses (e.g. the html reporter goes back
+# to open:on-failure and serves a blocking show-report), the smoke fails HERE
+# instead of wedging CI until its global timeout. --kill-after escalates to
+# SIGKILL 10s after SIGTERM so a process that ignores TERM is still a hard cap:
+# TERM-stop surfaces as RC=124, a forced KILL as RC=137 — both are watchdog
+# fires. The container is named so a timed-out, --rm-stranded one gets reaped in
+# cleanup.
+run() { d="$1"; shift; docker rm -f "$CNAME" >/dev/null 2>&1 || true; set +e; OUT="$(timeout --kill-after=10s 120s docker run --rm --name "$CNAME" --network host -v "$d:/workspace" -w /workspace "$@" "$IMG" 2>&1)"; RC=$?; set -e; }
 
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
@@ -101,7 +107,10 @@ grep -q '<testsuites' "$WOK/test-results/junit.xml" || die "JUnit report is not 
 echo "==> a FAILING test exits 1 within the cap (no false green, no hang)"
 project "$WBAD" "WRONG"             # test expects 'WRONG' but the page says 'gocdnext' -> fails
 run "$WBAD"
-[ "$RC" -ne 124 ] || die "failing project: hit the 120s cap — the show-report hang regressed (PLAYWRIGHT_HTML_OPEN)" "$OUT"
+case "$RC" in
+  124) die "failing project: watchdog SIGTERM at 120s — the show-report hang regressed (PLAYWRIGHT_HTML_OPEN)" "$OUT" ;;
+  137) die "failing project: watchdog SIGKILL after 120s+10s (ignored SIGTERM) — hang regressed (PLAYWRIGHT_HTML_OPEN)" "$OUT" ;;
+esac
 [ "$RC" -eq 1 ] || die "failing project: expected playwright's normal failure exit 1, got $RC" "$OUT"
 grep -q '1 failed' <<<"$OUT" || die "failing project: playwright did not report a failure" "$OUT"
 
