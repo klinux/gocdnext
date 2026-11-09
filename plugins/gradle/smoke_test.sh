@@ -2,7 +2,7 @@
 # Real smoke for the gradle plugin's IMAGE. Builds the pinned image and runs it
 # end to end so the bouncycastle suite swap (CVE-2025-14813 + CVE-2026-8763)
 # fails HERE, before publish. Proves:
-#   - the bundled BC suite (bcpg/bcprov/bcutil) is 1.86 and version-matched, no
+#   - the bundled BC suite (bcpg/bcprov/bcutil) is a single version >= 1.85, no
 #     1.78.1 jar survives — the exact jars Gradle loads for PGP/signing;
 #   - the swapped crypto is actually FUNCTIONAL, not merely present: the plugin
 #     runs a real `gradle` build that applies the core `signing` plugin and
@@ -116,18 +116,20 @@ run() { d="$1"; shift; docker rm -f "$CNAME" >/dev/null 2>&1 || true; set +e; OU
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
 
-echo "==> bouncycastle suite is 1.86, version-matched, no 1.78.1 (CVE-2025-14813 + CVE-2026-8763 cleared)"
+echo "==> bouncycastle suite is a single version >= 1.85, no 1.78.1 (CVE-2025-14813 + CVE-2026-8763 cleared)"
 BCS="$(docker run --rm --network none --entrypoint sh "$IMG" -c 'ls -1 /opt/gradle/lib/plugins/ 2>/dev/null | grep -E "^bc(pg|prov|util)-jdk18on-[0-9]"')" \
   || die "could not list bouncycastle jars" "$BCS"
 [ "$(printf '%s\n' "$BCS" | grep -c .)" -eq 3 ] || die "expected exactly 3 BC jars (bcpg/bcprov/bcutil)" "$BCS"
-printf '%s\n' "$BCS" | grep -q -- '-1.78.1.jar' && die "a vulnerable BC 1.78.1 jar survived the swap" "$BCS"
-while IFS= read -r jar; do
-  [ -z "$jar" ] && continue
-  v="$(printf '%s\n' "$jar" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
-  [ -n "$v" ] || die "could not parse version from '$jar'" "$BCS"
-  [ "$(printf '%s\n1.85\n' "$v" | sort -V | head -1)" = "1.85" ] \
-    || die "BC jar ${jar} is < 1.85 (CVE-2026-8763)" "$BCS"
-done <<<"$BCS"
+printf '%s\n' "$BCS" | grep -q -- '-1.78.1.jar' && die "a vulnerable BC 1.78.1 jar survived" "$BCS"
+# BC ships bcpg/bcprov/bcutil together and they must match; a mixed suite (e.g. a
+# stray older bcpg left behind) is unsupported and could reintroduce a CVE. Each
+# jar name carries exactly one version, so collapse to the unique set and require
+# EXACTLY ONE, then require that single version to clear the floor (>= 1.85).
+UNIQ_VERS="$(printf '%s\n' "$BCS" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -u)"
+[ "$(printf '%s\n' "$UNIQ_VERS" | grep -c .)" -eq 1 ] \
+  || die "BC suite is version-mismatched: $(printf '%s ' $UNIQ_VERS)" "$BCS"
+[ "$(printf '%s\n1.85\n' "$UNIQ_VERS" | sort -V | head -1)" = "1.85" ] \
+  || die "BC suite ${UNIQ_VERS} is < 1.85 (CVE-2026-8763)" "$BCS"
 
 echo "==> plugin runs a real 'gradle' build that PGP-signs a file (exercises bcpg+bcprov)"
 project_sign "$WOK"
