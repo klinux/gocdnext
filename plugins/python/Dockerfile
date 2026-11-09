@@ -33,8 +33,14 @@ RUN apt-get update \
 
 # Pinned versions — pip upgrades, poetry/uv stable. Keep these
 # explicit so a silent upstream bump doesn't surprise CI.
+#
+# uv 0.5.5 → 0.13.7: 0.5.5 carried GHSA-hq85-5cpj-mr62 (CRITICAL) — its bundled
+# CA store trusted an emSign root whose intermediate CA keys are compromised;
+# fixed in 0.13.4. The plugin only uses uv's stable surface (`uv sync`,
+# `--frozen`, `--extra`/`--all-extras`, `uv run`), which is unchanged across the
+# jump; the smoke exercises a real `uv sync` + `uv run` to prove it.
 RUN pip install --no-cache-dir --upgrade pip==24.3.1 \
-    && pip install --no-cache-dir uv==0.5.5 poetry==1.8.4
+    && pip install --no-cache-dir uv==0.13.7 poetry==1.8.4
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-python
 RUN chmod +x /usr/local/bin/gocdnext-python
