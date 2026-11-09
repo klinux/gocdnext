@@ -85,7 +85,11 @@
 FROM maven:3.9-eclipse-temurin-21
 
 # --- system deps -------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# apt-get upgrade refreshes OS packages fixed since the base digest was cut
+# (OpenSSL/libssl3, apt/libapt, libbrotli HIGHs) — the base is Ubuntu-based and
+# mutable, so the plugin opts into no_cache:true to avoid re-importing a stale
+# apt layer on a release that doesn't touch this Dockerfile.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         ca-certificates git curl unzip jq \
     && rm -rf /var/lib/apt/lists/*
 
@@ -109,13 +113,19 @@ RUN curl -fsSL -o /tmp/scanner.zip \
     && rm /tmp/scanner.zip
 ENV PATH="/opt/sonar-scanner/bin:${PATH}"
 
-# --- Gradle 8.10 (matches the gocdnext/gradle plugin) -----------
+# --- Gradle 8.14.6 (matches the gocdnext/gradle plugin) ---------
 # Same pin pattern as scanner-cli — default SHA256 is the
 # canonical checksum from
 # services.gradle.org/distributions/gradle-${VERSION}-bin.zip.sha256.
 # Bumping VERSION requires bumping SHA256.
-ARG GRADLE_VERSION=8.10
-ARG GRADLE_SHA256=5b9c5eb3f9fc2c94abaea57d90bd78747ca117ddbbf96c859d3741181a12bf2a
+#
+# 8.10 bundled bouncycastle bcpg/bcprov/bcutil 1.78.1, whose bcprov carried
+# CVE-2025-14813 and CVE-2026-8763 (both CRITICAL). Gradle references these jars
+# by exact filename in its internal module registry, so swapping the jar breaks
+# startup — the fix is a version bump. 8.14.6 (latest 8.x) bundles the BC suite
+# at 1.85, clearing both; staying on 8.x avoids the 9.x major behaviour change.
+ARG GRADLE_VERSION=8.14.6
+ARG GRADLE_SHA256=7988ed071b2a07900e2ec715fca15c6ab72bce6db433af301fa7fa7e9407bd24
 RUN curl -fsSL -o /tmp/gradle.zip \
         "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
     && echo "${GRADLE_SHA256}  /tmp/gradle.zip" | sha256sum -c - \
