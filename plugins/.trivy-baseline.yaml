@@ -165,3 +165,96 @@ exceptions:
     owner: klinux
     approved_at: "2026-11-07"
     expires: "2027-02-05"
+
+  # --- os-no-fix: OS-package CRITICALs with no fix in the supported Debian
+  # release scanned. Signed off per-CVE (klinux) after review of the Debian
+  # security tracker. The gate lapses each the instant Trivy reports a fixed
+  # version (e.g. when a plugin migrates to a release that carries the fix).
+  - targets: [codecov, gradle, gravitee, jdk-base, lighthouse-ci, maven, node]
+    cve: CVE-2023-45853
+    package: zlib1g
+    installed: "1:1.2.13.dfsg-1"
+    fixed_version: ""
+    origin: debian
+    result_class: os-pkgs
+    class: os-no-fix
+    justification: >-
+      CVE-2023-45853 is in MiniZip (contrib/minizip). Debian does NOT build
+      minizip into the zlib1g binary (security-tracker marks bookworm "ignored":
+      "contrib/minizip not built and src:zlib not producing binary packages", and
+      the bookworm package file list ships no minizip), so zipOpenNewFileInZip4_64
+      is absent from the shipped package. No fixed zlib1g exists in bookworm (the
+      supported release scanned); the fix lands only in trixie (zlib 1.3).
+    mitigation: >-
+      Planned trixie migrations for node/codecov/gravitee/lighthouse-ci ship zlib
+      1.3 and auto-lapse this exception for them; gradle/jdk-base/maven stay on
+      bookworm where the vulnerable minizip code is not built. Weekly gate
+      re-scan; lapses the instant Trivy reports a fixed version.
+    advisory: https://security-tracker.debian.org/tracker/CVE-2023-45853
+    upstream_issue: https://github.com/madler/zlib/pull/843
+    approved_pr: 371
+    owner: klinux
+    risk_accepted_by: klinux
+    approved_at: "2026-11-09"
+    expires: "2027-02-07"
+
+  - targets: [lighthouse-ci]
+    cve: CVE-2026-6653
+    package: libxml2
+    installed: "2.9.14+dfsg-1.3~deb12u6"
+    fixed_version: ""
+    origin: debian
+    result_class: os-pkgs
+    class: os-no-fix
+    justification: >-
+      Use-after-free in xmlParseInternalSubset -> denial of service. Debian marks
+      bookworm "postponed" (Minor issue; fix only in libxml2 2.11.0) and trixie
+      "no-dsa" (Minor issue) — no fixed libxml2 in either supported release; the
+      first Debian-fixed build is unstable 2.14.5+dfsg-0.1 (2.15.4 is current
+      sid). Lighthouse-ci accepts arbitrary operator-supplied URLs/configs and
+      bundles Chromium that processes potentially hostile web content (noted in
+      the plugin Dockerfile), so the input is NOT assumed benign.
+    mitigation: >-
+      Documented impact is DoS; the accepted risk is the unavailability of a
+      single ephemeral CI job (no data or integrity impact). Targets must be
+      operator-controlled URLs/configurations. Trixie migration does NOT clear it
+      (trixie is also no-dsa). Weekly re-scan; lapses the instant Debian ships a
+      fixed libxml2.
+    advisory: https://security-tracker.debian.org/tracker/CVE-2026-6653
+    upstream_issue: https://gitlab.gnome.org/GNOME/libxml2/-/work_items/1058
+    approved_pr: 371
+    owner: klinux
+    risk_accepted_by: klinux
+    approved_at: "2026-11-09"
+    expires: "2026-12-09"
+
+  - targets: [ansible]
+    cve: CVE-2026-60002
+    package: openssh-client
+    installed: "1:10.0p1-7+deb13u4"
+    fixed_version: ""
+    origin: debian
+    result_class: os-pkgs
+    class: os-no-fix
+    justification: >-
+      Client-side use-after-free when a server changes its host key during key
+      re-exchange (OpenSSH < 10.4), reachable from a hostile or forged SSH server
+      OR an active man-in-the-middle; treat it as a client-side memory-safety
+      flaw, not DoS-only (upstream does not bound the impact). Debian marks trixie
+      "no-dsa" and bookworm "postponed" (Minor issue) — no fixed openssh in the
+      supported releases; the first Debian fixed version is unstable 1:10.4p1-1
+      (upstream 10.4p1), current sid is 1:10.6p2-1. The ansible wrapper currently
+      sets ANSIBLE_HOST_KEY_CHECKING=False, so a pinned host key does NOT gate the
+      path and "trusted inventory" alone is insufficient.
+    mitigation: >-
+      Issue #370 tracks supporting a pinned known_hosts and removing the
+      unconditional ANSIBLE_HOST_KEY_CHECKING=False. Until then, restrict the
+      plugin to hosts on private/trusted networks with no public or untrusted SSH
+      endpoints. Weekly re-scan; lapses the instant Debian ships a fixed openssh.
+    advisory: https://security-tracker.debian.org/tracker/CVE-2026-60002
+    upstream_issue: https://www.openssh.org/releasenotes.html#10.4p1
+    approved_pr: 371
+    owner: klinux
+    risk_accepted_by: klinux
+    approved_at: "2026-11-09"
+    expires: "2026-12-09"
