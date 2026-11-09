@@ -10,6 +10,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **gradle plugin → Gradle 8.14.6, 2 bouncycastle CRITICALs cleared.** The
+  bundled Gradle CLI (wrapper fallback) shipped 8.10, whose vendored
+  bouncycastle suite `bcpg`/`bcprov`/`bcutil` 1.78.1 carried **CVE-2025-14813**
+  and **CVE-2026-8763** (both in `bcprov`). Gradle references these jars by exact
+  filename in its internal module registry, so swapping the jar in place breaks
+  startup — the fix is a version bump. Gradle 8.14.6 (latest 8.x) bundles the BC
+  suite at 1.85, which clears both; staying on 8.x avoids the 9.x major-version
+  behaviour change for the legacy wrapperless projects this fallback serves. Real
+  projects ship `./gradlew` and are unaffected. Trivy `--ignore-unfixed
+  --pkg-types os,library` (DB 2026-11-07): **0 CRITICAL** (was 2); HIGH 10 → 1
+  (bundled `guava` DoS CVE-2026-102554, upstream-bound). New real
+  `smoke_test.sh`: asserts the BC suite is ≥ 1.85 with no 1.78.1 survivor, then
+  runs a real `gradle` build that applies the core `signing` plugin and PGP-signs
+  a file (exercising `bcpg`+`bcprov`, not just checking the jar is present) with a
+  per-run disposable key, and a failing build exits 1 within a watchdog cap.
 - **playwright plugin → npm 11.19.1, 3 `tar` CRITICALs cleared; base pinned by
   digest.** The published `:v1` (`mcr.microsoft.com/playwright:v1.50.0-noble`)
   shipped npm 10.9.2 whose bundled `node-tar` — 6.2.1 directly and 7.4.3 under

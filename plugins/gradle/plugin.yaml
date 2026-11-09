@@ -4,7 +4,7 @@ description: >
   Run Gradle tasks — build, test, publish, etc. Prefers
   `./gradlew` when the project ships a wrapper (Gradle's
   best-practice path since the wrapper pins the exact version);
-  falls back to the bundled `gradle` 8.10 otherwise. Daemon off
+  falls back to the bundled `gradle` 8.14.6 otherwise. Daemon off
   by default — CI containers are ephemeral so the daemon rarely
   earns its keep. `--build-cache` / `--parallel` are OPT-IN
   (default off) so legacy projects don't break silently; flip
