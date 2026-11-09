@@ -170,7 +170,7 @@ exceptions:
   # release scanned. Signed off per-CVE (klinux) after review of the Debian
   # security tracker. The gate lapses each the instant Trivy reports a fixed
   # version (e.g. when a plugin migrates to a release that carries the fix).
-  - targets: [codecov, gradle, gravitee, jdk-base, lighthouse-ci, maven, node]
+  - targets: [gradle, gravitee, jdk-base, lighthouse-ci, maven, node]
     cve: CVE-2023-45853
     package: zlib1g
     installed: "1:1.2.13.dfsg-1"

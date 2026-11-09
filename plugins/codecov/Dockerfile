@@ -32,9 +32,13 @@
 # musl OR debian-slim glibc). Installing via pip from python:slim
 # bypasses that path entirely and gives us a `codecov` entrypoint
 # that runs natively for both amd64 and arm64.
-FROM python:3.12-slim-bookworm
+# Debian trixie (13): bookworm's zlib1g (CVE-2023-45853) and libsqlite3-0
+# (CVE-2025-7458) have no fix in bookworm — the fixes land in trixie (zlib 1.3,
+# newer sqlite). Pinned by digest; the apt layer runs `apt-get upgrade` for
+# trixie security backports, so the plugin opts into no_cache: true.
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         bash ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
