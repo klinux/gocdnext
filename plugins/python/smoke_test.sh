@@ -68,11 +68,21 @@ echo "==> build plugin image (--no-cache, same Dockerfile/context as the officia
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
 
 echo "==> uv is 0.13.7 and poetry/python are present"
-TOOLS="$(docker run --rm --network none --entrypoint sh "$IMG" -c 'uv --version; poetry --version; python --version')" \
-  || die "tool version probe failed" "$TOOLS"
-grep -qE '^uv 0\.13\.7( |$)' <<<"$TOOLS" || die "uv is not 0.13.7" "$TOOLS"
-grep -qiE 'poetry'           <<<"$TOOLS" || die "poetry missing" "$TOOLS"
-grep -qE 'Python 3\.12'      <<<"$TOOLS" || die "python 3.12 missing" "$TOOLS"
+# Probe each tool in its OWN container: a single `sh -c 'a; b; c'` returns only
+# c's status, masking a failure of a or b, and a loose substring would match an
+# error line ("poetry: not found" contains "poetry"). Require exit 0 AND a strict
+# version line per tool.
+check_tool() {
+  local label="$1" bin="$2" flag="$3" pat="$4" out rc
+  set +e
+  out="$(docker run --rm --network none --entrypoint "$bin" "$IMG" "$flag" 2>&1)"; rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || die "${label}: '${bin} ${flag}' exited ${rc}" "$out"
+  grep -qE "$pat" <<<"$out" || die "${label}: version line /${pat}/ not found" "$out"
+}
+check_tool "uv"     uv     --version 'uv 0\.13\.7'
+check_tool "poetry" poetry --version 'Poetry \(version 1\.8\.4\)'
+check_tool "python" python --version 'Python 3\.12'
 
 echo "==> uv manager (no lockfile): 'uv sync' installs a real dep; user command imports it"
 printf '%s\n' "$PROJECT_TOML" > "$WOK/pyproject.toml"
@@ -81,17 +91,24 @@ run docker run --rm --name "$CNAME" -v "$WOK:/workspace" -w /workspace \
 [ "$RC" -eq 0 ] || die "uv (no lock): expected exit 0, got $RC" "$OUT"
 grep -q 'UV_OK iniconfig' <<<"$OUT" || die "uv (no lock): dep not importable after sync" "$OUT"
 
-echo "==> uv manager (--frozen): a committed uv.lock is honoured"
-cp "$WOK/pyproject.toml" "$WLK/pyproject.toml"
-# Generate the lockfile with the image's own uv so it matches the resolver, then
-# run with it present -> the entrypoint takes the `uv sync --frozen` branch.
-docker run --rm -v "$WLK:/workspace" -w /workspace --entrypoint uv "$IMG" lock >/dev/null 2>&1 \
-  || die "uv lock failed to produce a lockfile"
-[ -f "$WLK/uv.lock" ] || die "uv.lock was not created"
+echo "==> uv manager (--frozen): the committed uv.lock is used verbatim, stale pyproject ignored"
+# Lock with iniconfig only (image's own uv, under the watchdog + named container).
+printf '%s\n' "$PROJECT_TOML" > "$WLK/pyproject.toml"
+run docker run --rm --name "$CNAME" -v "$WLK:/workspace" -w /workspace --entrypoint uv "$IMG" lock
+[ "$RC" -eq 0 ] || die "uv lock: expected exit 0, got $RC" "$OUT"
+[ -f "$WLK/uv.lock" ] || die "uv.lock was not created" "$OUT"
+LOCK_BEFORE="$(sha256sum "$WLK/uv.lock" | awk '{print $1}')"
+# Now make pyproject deliberately STALE: add a dependency NOT in the lock. A plain
+# `uv sync` would re-resolve and install it + rewrite the lock; `uv sync --frozen`
+# must use the lock verbatim — install only iniconfig, never touch the lock.
+printf '%s\n' "$PROJECT_TOML" | sed 's/"iniconfig==2.0.0"/"iniconfig==2.0.0", "packaging==24.2"/' > "$WLK/pyproject.toml"
 run docker run --rm --name "$CNAME" -v "$WLK:/workspace" -w /workspace \
-  -e PLUGIN_MANAGER=uv -e PLUGIN_COMMAND='uv run python -c "import iniconfig; print(\"UV_FROZEN_OK\")"' "$IMG"
+  -e PLUGIN_MANAGER=uv \
+  -e PLUGIN_COMMAND='.venv/bin/python -c "import iniconfig; import importlib.util as u; assert u.find_spec(\"packaging\") is None, \"FROZEN_LEAK: stale dep was installed\"; print(\"UV_FROZEN_OK\")"' "$IMG"
 [ "$RC" -eq 0 ] || die "uv (--frozen): expected exit 0, got $RC" "$OUT"
-grep -q 'UV_FROZEN_OK' <<<"$OUT" || die "uv (--frozen): frozen sync did not yield a working env" "$OUT"
+grep -q 'UV_FROZEN_OK' <<<"$OUT" || die "uv (--frozen): frozen env missing iniconfig or leaked the stale dep" "$OUT"
+LOCK_AFTER="$(sha256sum "$WLK/uv.lock" | awk '{print $1}')"
+[ "$LOCK_BEFORE" = "$LOCK_AFTER" ] || die "uv (--frozen): the lockfile changed — --frozen re-resolved instead of using it verbatim" "$OUT"
 
 echo "==> a FAILING user command propagates a non-zero exit (no false green, offline)"
 printf '%s\n' "$PROJECT_TOML" > "$WBAD/pyproject.toml"
