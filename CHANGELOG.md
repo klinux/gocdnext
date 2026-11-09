@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Security
+
+- **Plugin Trivy gate — three signed-off `os-no-fix` baseline exceptions.** After
+  the v0.127.0 release re-scan, three OS-package CRITICALs remain with no fix in
+  the supported Debian release scanned, each reviewed against the Debian security
+  tracker and signed off (`risk_accepted_by: klinux`): `zlib1g` CVE-2023-45853 (7
+  plugins — MiniZip not built into the bookworm binary; 90-day window), `libxml2`
+  CVE-2026-6653 (lighthouse-ci — DoS, bookworm `postponed`/trixie `no-dsa`;
+  30-day), and `openssh-client` CVE-2026-60002 (ansible — client-side UAF,
+  bookworm `postponed`/trixie `no-dsa`; 30-day, with #370 tracking pinned
+  `known_hosts`). Each lapses the instant Trivy reports a fixed version. No plugin
+  image change.
+
 ### Changed
 
 - **python plugin → uv 0.13.7, 1 CRITICAL cleared.** The published `:v1` pinned
