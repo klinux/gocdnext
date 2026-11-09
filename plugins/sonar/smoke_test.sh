@@ -106,13 +106,21 @@ UNIQ_VERS="$(printf '%s\n' "$BCS" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort 
   || die "BC suite ${UNIQ_VERS} is < 1.85 (CVE-2026-8763)" "$BCS"
 
 echo "==> the three scanner front-ends survived the bump and report versions"
-TOOLS="$(docker run --rm --network none --entrypoint sh "$IMG" -c '
-  gradle --version 2>/dev/null | grep -i "^Gradle";
-  sonar-scanner --version 2>&1 | grep -iE "scanner" | head -1;
-  mvn --version 2>/dev/null | head -1')" || die "front-end version probe failed" "$TOOLS"
-grep -q 'Gradle 8.14.6' <<<"$TOOLS" || die "bundled gradle is not 8.14.6" "$TOOLS"
-grep -qi 'scanner'       <<<"$TOOLS" || die "sonar-scanner CLI did not report a version" "$TOOLS"
-grep -q 'Apache Maven'   <<<"$TOOLS" || die "maven did not report a version" "$TOOLS"
+# Probe each tool in its OWN container: a single `sh -c 'a; b; c'` returns only
+# c's status, masking a failure of a or b. Require exit 0 AND a strict version
+# line per tool (a bare "scanner" substring would also match an error/config
+# line), so a broken front-end fails here.
+check_tool() {
+  local label="$1" bin="$2" flag="$3" pat="$4" out rc
+  set +e
+  out="$(docker run --rm --network none --entrypoint "$bin" "$IMG" "$flag" 2>&1)"; rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || die "${label}: '${bin} ${flag}' exited ${rc}" "$out"
+  grep -qE "$pat" <<<"$out" || die "${label}: version line /${pat}/ not found" "$out"
+}
+check_tool "gradle"        gradle        --version 'Gradle 8\.14\.6'
+check_tool "sonar-scanner" sonar-scanner --version 'SonarScanner CLI 6\.2\.1\.4610'
+check_tool "maven"         mvn           --version 'Apache Maven 3\.9'
 
 echo "==> bundled gradle runs a real build that PGP-signs a file (exercises bcpg+bcprov)"
 project_sign "$WOK"
@@ -130,9 +138,13 @@ SIG="$(docker run --rm --network none --entrypoint sh -v "$WOK:/w" "$IMG" -c 'he
 printf '%s\n' "$SIG" | grep -q 'BEGIN PGP SIGNATURE' || die "signing project: payload.txt.asc is not a PGP signature" "$SIG"
 
 echo "==> entrypoint fails fast (exit 2) when no token is provided"
-set +e
-OUT="$(docker run --rm --network none -e PLUGIN_PROJECT_KEY=smoke "$IMG" 2>&1)"; RC=$?
-set -e
+# Through the watchdog + named container too: a regression that hangs the
+# entrypoint must fail the smoke (124/137), not wedge it past cleanup's reach.
+run docker run --rm --name "$CNAME" --network none -e PLUGIN_PROJECT_KEY=smoke "$IMG"
+case "$RC" in
+  124) die "no-token: watchdog SIGTERM at 300s — entrypoint hung before the token check" "$OUT" ;;
+  137) die "no-token: watchdog SIGKILL after 300s+15s — entrypoint hung" "$OUT" ;;
+esac
 [ "$RC" -eq 2 ] || die "no-token: expected exit 2, got $RC" "$OUT"
 grep -q 'PLUGIN_TOKEN' <<<"$OUT" || die "no-token: did not explain the missing-token contract" "$OUT"
 
