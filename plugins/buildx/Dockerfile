@@ -45,6 +45,13 @@
 #   GOCDNEXT_LAYER_CACHE_BUCKET   bucket name (required for `bucket`).
 #   GOCDNEXT_LAYER_CACHE_REGION   default us-east-1 (s3) / auto (gcs).
 #   GOCDNEXT_LAYER_CACHE_ENDPOINT explicit endpoint URL; auto-set for gcs.
+#   GOCDNEXT_LAYER_CACHE_USE_PATH_STYLE  "true" to use S3 path-style
+#                                 addressing (opt-in). Needed for MinIO and
+#                                 other S3-compatible stores without
+#                                 bucket.<endpoint> virtual-host DNS. AWS S3,
+#                                 GCS interop, and R2 work with the default
+#                                 virtual-host style — leave unset for them.
+#                                 Any value other than true/false fails fast.
 #   GOCDNEXT_LAYER_CACHE_NAME     cache key, default = PLUGIN_IMAGE.
 #   AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY  credentials (BuildKit's
 #                                 s3 backend reads these regardless of
