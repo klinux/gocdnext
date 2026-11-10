@@ -156,13 +156,20 @@ if [ -S /var/run/docker.sock ]; then
     export TESTCONTAINERS_HOST_OVERRIDE="${TESTCONTAINERS_HOST_OVERRIDE:-host.docker.internal}"
 fi
 
+# Word-split intentionally: `test -c Release` is three args. If an
+# operator needs whitespace inside a single arg, drop back to plain
+# `script:`; this plugin optimises the 90% case. But an UNQUOTED
+# expansion also undergoes pathname (glob) expansion, so a `*`, `?` or
+# `[…]` in the command — e.g. `nuget push bin/Release/*.nupkg` — would be
+# silently rewritten by whatever files sit in the working directory before
+# dotnet sees it. `set -f` disables globbing while leaving word-splitting
+# intact, so the tokens reach dotnet literally. (#361)
+set -f
+
 # Banner so the log shows what's about to run — a cold
 # `dotnet restore` can be silent for many seconds, and a silent
 # log reads like the job is hung.
 echo "==> dotnet ${PLUGIN_COMMAND}"
 
-# Word-split intentionally: `test -c Release` is three args. If an
-# operator needs whitespace inside a single arg, drop back to plain
-# `script:`; this plugin optimises the 90% case.
 # shellcheck disable=SC2086
 exec dotnet ${PLUGIN_COMMAND}
