@@ -93,4 +93,16 @@ if PLUGIN_SERVER="https://argo.test" PLUGIN_AUTH_TOKEN="tok" \
     fail "non-PEM ca_cert was accepted (should exit non-zero)"
 fi
 
+# ── 8. command word-split does NOT glob-expand against the CWD (#361): the
+#       entrypoint does not cd into a workspace, so an unquoted `*`/`?`/`[…]`
+#       token would be rewritten by whatever files sit in the container's
+#       working directory. Run from a dir seeded with decoys and assert a
+#       bare `*` reaches argocd literally (one arg line, exactly `*`). ──
+rm -f "$TMP/args"
+mkdir -p "$TMP/ws"; : >"$TMP/ws/decoy-a.yaml"; : >"$TMP/ws/decoy-b.yaml"
+( cd "$TMP/ws" && PLUGIN_SERVER="https://argo.test" PLUGIN_AUTH_TOKEN="tok" \
+    PLUGIN_COMMAND="app list -o *" run )
+grep -qxF -- '*' "$TMP/args" \
+  || fail "command glob-expanded against the CWD (literal '*' did not reach argocd)"
+
 echo "PASS: argocd entrypoint"

@@ -90,6 +90,15 @@ if [ -n "${PLUGIN_PLUGIN_ENV:-}" ]; then
     extra+=("--plugin-env" "${PLUGIN_PLUGIN_ENV}")
 fi
 
+# PLUGIN_COMMAND is intentionally unquoted (word-split into argv). But an
+# UNQUOTED expansion also undergoes pathname (glob) expansion, so a `*`,
+# `?` or `[…]` in the command — e.g. `app sync -l 'app.kubernetes.io/*'` —
+# would be silently rewritten by whatever files sit in the container's
+# working directory. `set -f` disables globbing while leaving word-splitting
+# intact, so the tokens reach argocd literally. The plugin-env value above
+# is the one piece that must NOT be split (it rides "${extra[@]}" quoted). (#361)
+set -f
+
 # Echo the resolved invocation so the job log shows what actually ran.
 # `argocd app set` is silent on success, so without this a deploy step
 # reads as "nothing happened" (the job finishes in seconds with no
@@ -97,9 +106,8 @@ fi
 # the env, never on argv — so this line is safe to log. Note a CMP
 # `app set` only updates the app's parameters; the rollout itself is
 # Argo's auto-sync reacting to the change.
+# shellcheck disable=SC2086
 echo "==> argocd ${flags[*]} ${PLUGIN_COMMAND} ${extra[*]}"
 
-# PLUGIN_COMMAND is intentionally unquoted (word-split into argv); the
-# plugin-env value above is the one piece that must NOT be split.
 # shellcheck disable=SC2086
 exec argocd "${flags[@]}" ${PLUGIN_COMMAND} "${extra[@]}"
