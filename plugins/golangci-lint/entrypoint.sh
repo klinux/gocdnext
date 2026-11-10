@@ -56,14 +56,20 @@ mkdir -p "${GOLANGCI_LINT_CACHE}" "${GOMODCACHE}" "${GOCACHE}"
 TIMEOUT="${PLUGIN_TIMEOUT:-5m}"
 ARGS="${PLUGIN_ARGS:-./...}"
 
+# Word-split intentionally — a value like "--timeout 5m ./..."
+# becomes three args. Operators with whitespace inside one arg
+# should drop back to plain `script:`. But an UNQUOTED expansion also
+# undergoes pathname (glob) expansion, so a `*`/`?`/`[…]` in ARGS — e.g.
+# a path filter `./pkg/*` — would be silently rewritten by whatever files
+# sit in the working directory before golangci-lint sees it. `set -f`
+# disables globbing while leaving word-splitting intact. (#361)
+set -f
+
 # Banner so the log shows what's about to run — golangci-lint
 # is silent when no issues are found AND stdout is a pipe, which
 # makes a passing run indistinguishable from a hung one. Same
 # pattern as the trivy plugin.
 echo "==> golangci-lint run --timeout ${TIMEOUT} ${ARGS}"
 
-# Word-split intentionally — a value like "--timeout 5m ./..."
-# becomes three args. Operators with whitespace inside one arg
-# should drop back to plain `script:`.
 # shellcheck disable=SC2086
 exec golangci-lint run --timeout "${TIMEOUT}" ${ARGS}
