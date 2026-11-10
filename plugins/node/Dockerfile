@@ -18,18 +18,22 @@
 
 # Per-major node builders — the official images install node + npm +
 # corepack under /usr/local; we relocate each to a versioned path.
-# Pinned by digest (bookworm-slim). node 20 and 22 ship an npm (10.x)
-# whose BUNDLED node-tar (6.2.1 / 7.5.11) is < 7.5.19 and carries
-# CVE-2026-59873, so each is bumped to npm 11.19.1 — the exact npm that
-# node 24 already ships, which bundles tar 7.5.22. Pinning the same npm
-# keeps the npm<->tar API aligned (npm 11 expects tar 7); surgically
-# swapping only tar would cross tar's 6->7 break under npm 10. node 24 is
-# already clean (npm 11.19.1 / tar 7.5.22), so it is left untouched.
-FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS node20
+# Pinned by digest (trixie-slim; see the final stage for the OS-CVE
+# rationale). node 20 and 22 ship an npm (10.x) whose BUNDLED node-tar
+# (6.2.1 / 7.5.11) is < 7.5.19 and carries CVE-2026-59873, so each is
+# bumped to npm 11.19.1 — the exact npm that node 24 already ships, which
+# bundles tar 7.5.22. Pinning the same npm keeps the npm<->tar API aligned
+# (npm 11 expects tar 7); surgically swapping only tar would cross tar's
+# 6->7 break under npm 10. node 24 is already clean (npm 11.19.1 /
+# tar 7.5.22), so it is left untouched. (Only /usr/local is copied out of
+# these stages, so their OS packages never reach the scanned final image;
+# they move to trixie purely to keep node's glibc baseline consistent with
+# the trixie runtime.)
+FROM node:20-trixie-slim@sha256:abfbe12cc943141a0c9e8c0a57d710df1dadd95d35e8662cc02958b284d1f35b AS node20
 RUN npm install -g npm@11.19.1
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS node22
+FROM node:22-trixie-slim@sha256:be1e2a3dc2c4fd68cdfadad2a696a280e0d2749098bee509230174d72fb768c6 AS node22
 RUN npm install -g npm@11.19.1
-FROM node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS node24
+FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS node24
 
 # bun binary source (glibc slim variant to match the debian final stage).
 # Pinned to an EXACT version for reproducibility — bun is not
@@ -39,7 +43,10 @@ FROM node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9
 # from this baked version; an exact-version need is the custom-image path.
 FROM oven/bun:1.4.0-slim@sha256:e0ee68d16ccb9927bf02aa7dd8fd4bf3369ee6d46da04faa72b05ce8bfd135f6 AS bun
 
-FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+# Debian trixie (13): bookworm's libsqlite3-0 (CVE-2025-7458),
+# linux-libc-dev (CVE-2026-99083) and zlib1g (CVE-2023-45853) have no fix in
+# bookworm — all three land in trixie. Pinned by digest.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 # Runtime toolchain every node CI step may touch:
 #   - ca-certificates: TLS to npm/registries + corepack binary fetch.
@@ -50,8 +57,8 @@ FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d
 #     can't cover. openssl ships in the base.
 # apt-get upgrade refreshes OS packages fixed since the base digest was
 # cut (the digest pins the layer; the weekly Trivy gate catches drift —
-# hence no_cache:true). CVEs with no bookworm fix (e.g. sqlite3,
-# linux-libc-dev) stay unfixed here and are tracked for the trixie move.
+# hence no_cache:true). The sqlite3/linux-libc-dev/zlib1g CRITICALs that
+# had no bookworm fix are resolved by the trixie base above.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
       ca-certificates git bash build-essential python3 \
     && rm -rf /var/lib/apt/lists/*
