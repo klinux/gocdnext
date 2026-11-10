@@ -20,9 +20,11 @@ export PLAYWRIGHT_JUNIT_OUTPUT_NAME="${PLAYWRIGHT_JUNIT_OUTPUT_NAME:-test-result
 export PLAYWRIGHT_HTML_OPEN="${PLAYWRIGHT_HTML_OPEN:-never}"
 
 # Detect the package manager from the lockfile on disk. Same
-# priority GitHub Actions and Vercel use. Falls back to npm
-# when nothing's locked — Playwright tests without package.json
-# would be a config bug, so we don't cover that branch.
+# priority GitHub Actions and Vercel use. Falls back to npm when a
+# package.json exists without a lockfile. With no package.json at
+# all it returns "none" and the caller skips dependency
+# installation; the mock entrypoint_test uses that path to isolate
+# argv dispatch from a real install.
 detect_manager() {
     if [ -f "pnpm-lock.yaml" ]; then echo pnpm; return; fi
     if [ -f "yarn.lock" ]; then echo yarn; return; fi
@@ -74,6 +76,15 @@ else
 fi
 
 cmd="${PLUGIN_COMMAND:-test}"
+
+# PLUGIN_EXTRA_ARGS is word-split intentionally so an operator can pass
+# several flags in one input ("--workers=2 --retries=1"). But an UNQUOTED
+# expansion also undergoes pathname (glob) expansion, so a `*`/`?`/`[…]` in
+# the extra args — e.g. a test filter `tests/*.spec.ts` — would be silently
+# rewritten by whatever files sit in the working directory before playwright
+# sees it. `set -f` disables globbing while leaving word-splitting intact. The
+# quoted "${cmd}" / "${args[@]}" are unaffected. (#361)
+set -f
 
 echo "==> npx playwright ${cmd} ${args[*]} ${PLUGIN_EXTRA_ARGS:-}"
 # shellcheck disable=SC2086
