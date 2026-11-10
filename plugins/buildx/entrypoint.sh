@@ -80,6 +80,32 @@ case "${USE_PATH_STYLE}" in
         ;;
 esac
 
+# Credential shape for the bucket cache (#335). A PARTIAL credential silently
+# changes the identity used: when only one of the pair is set, the
+# shared-credentials file isn't written and BuildKit's SDK falls back to the
+# IMDS/default chain (a DIFFERENT principal) instead of failing — before this
+# rework the partial key reached the SDK and failed loudly. Require the pair to
+# be all-or-nothing, and reject a session token without it. The fully-absent case
+# is allowed here (default chain / IRSA is a separate follow-up); the gcs backend
+# separately requires the HMAC pair further down.
+if [ "${PLUGIN_CACHE:-}" = "bucket" ]; then
+    _cred_ak="${AWS_ACCESS_KEY_ID:-}"
+    _cred_sk="${AWS_SECRET_ACCESS_KEY:-}"
+    _cred_tok="${AWS_SESSION_TOKEN:-}"
+    if [ -n "${_cred_ak}" ] && [ -z "${_cred_sk}" ]; then
+        echo "gocdnext/buildx: AWS_ACCESS_KEY_ID is set without AWS_SECRET_ACCESS_KEY — set both or neither (a partial key silently falls back to the SDK default chain)" >&2
+        exit 2
+    fi
+    if [ -z "${_cred_ak}" ] && [ -n "${_cred_sk}" ]; then
+        echo "gocdnext/buildx: AWS_SECRET_ACCESS_KEY is set without AWS_ACCESS_KEY_ID — set both or neither (a partial key silently falls back to the SDK default chain)" >&2
+        exit 2
+    fi
+    if [ -n "${_cred_tok}" ] && { [ -z "${_cred_ak}" ] || [ -z "${_cred_sk}" ]; }; then
+        echo "gocdnext/buildx: AWS_SESSION_TOKEN is set without the AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY pair" >&2
+        exit 2
+    fi
+fi
+
 # Wait for the Docker daemon before issuing any `docker run` /
 # `docker buildx` against it. The agent's k8s engine adds a DinD
 # sidecar when the YAML job declares `docker: true`, and DinD takes
@@ -442,7 +468,12 @@ if [ -z "${cache_to}" ] && [ -z "${cache_from}" ]; then
                     # placeholder that keeps BuildKit's s3 client happy
                     # without imposing a fake region on the operator.
                     region="${GOCDNEXT_LAYER_CACHE_REGION:-auto}"
-                    if [ -z "${AWS_ACCESS_KEY_ID:-}${AWS_SECRET_ACCESS_KEY:-}" ]; then
+                    # Require the pair explicitly — a concatenation test
+                    # (`-z "${AK}${SK}"`) would accept a single key. (The
+                    # all-or-nothing partial-credential guard up top already
+                    # rejects a lone key, but gcs additionally forbids the
+                    # fully-absent/default-chain case, so assert the pair here.)
+                    if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
                         echo "gocdnext/buildx: cache: gcs backend requires AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (GCS HMAC keys); declare them in the job's secrets: or runner profile" >&2
                         exit 2
                     fi

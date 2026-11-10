@@ -163,6 +163,40 @@ grep -q "AWS_SHARED_CREDENTIALS_FILE=/etc/gocdnext/aws-credentials" "$TMP/all.lo
     || fail "bucket/no-token: credentials file not staged"
 echo "OK: buildx cache:bucket stages creds with NO session token (set -e regression, #335)"
 
+# Partial credentials must FAIL FAST with EXIT 2, before any docker call (#335):
+# a half-set pair, or a session token without the pair, would otherwise drop both
+# and fall back to the SDK default chain (a different identity) instead of
+# erroring. The mock docker logs every call to all.log, so an empty all.log
+# proves the guard ran ahead of the daemon wait.
+part_run() { # single env assignment as $1
+  : >"$TMP/all.log"
+  env PLUGIN_IMAGE="img.example.com/org/app" PLUGIN_TAGS="1.0.0" PLUGIN_CONTEXT="$TMP" \
+      PLUGIN_CACHE="bucket" GOCDNEXT_LAYER_CACHE_BUCKET="test-bucket" \
+      "$1" PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh" >/dev/null 2>&1
+}
+for ce in "AWS_ACCESS_KEY_ID=AKIAEXAMPLEPUBLICID" \
+          "AWS_SECRET_ACCESS_KEY=${SECRET_SENTINEL}" \
+          "AWS_SESSION_TOKEN=${TOKEN_SENTINEL}"; do
+  part_run "$ce"; rc=$?
+  [ "$rc" = 2 ] || fail "partial cred [$ce]: expected exit 2, got $rc"
+  [ -s "$TMP/all.log" ] && fail "partial cred [$ce]: a docker command ran before the guard"
+done
+echo "OK: buildx cache:bucket rejects partial credentials with exit 2, pre-docker (#335)"
+
+# Positive control: the FULLY-ABSENT trio on the s3 backend must PROCEED to the
+# builder — the default chain stays allowed (the guard rejects partial, not
+# empty). Prove the self-managed builder was created and no creds-file path was set.
+: >"$TMP/all.log"
+env PLUGIN_IMAGE="img.example.com/org/app" PLUGIN_TAGS="1.0.0" PLUGIN_CONTEXT="$TMP" \
+    PLUGIN_CACHE="bucket" GOCDNEXT_LAYER_CACHE_BUCKET="test-bucket" \
+    PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh" >/dev/null 2>&1 \
+    || fail "no-credentials (default chain) should proceed, not fail"
+grep -q "create --rm --privileged --name gocdnext-buildkitd" "$TMP/all.log" \
+    || fail "no-credentials: self-managed builder was not created (default chain not allowed)"
+grep -q "AWS_SHARED_CREDENTIALS_FILE" "$TMP/all.log" \
+    && fail "no-credentials: a credentials-file path was set despite no creds"
+echo "OK: buildx cache:bucket allows the default chain when no creds are set (#335)"
+
 # gcs (S3-interop) backend: checksum opt-out is preserved — as NON-secret env on
 # the builder container — while the secret still never hits an argv.
 run_bucket "$TMP/bucket-gcs.log" GOCDNEXT_LAYER_CACHE_BACKEND="gcs" \
