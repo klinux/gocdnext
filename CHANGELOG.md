@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Changed
+
+- **codecov plugin → Debian trixie base, 2 OS CRITICALs cleared.** Migrated from
+  `python:3.12-slim-bookworm` to `python:3.12-slim-trixie` (pinned by digest).
+  bookworm had no fix for `zlib1g` CVE-2023-45853 or `libsqlite3-0`
+  CVE-2025-7458; trixie ships the fixed `zlib1g` 1.3 and `libsqlite3-0` 3.46.
+  The apt layer now runs `apt-get upgrade` (opts into `no_cache: true`).
+  codecov-cli stays 10.3.0. Trivy `--ignore-unfixed --pkg-types os,library` (DB
+  2026-11-07): **0 CRITICAL** (was 2). The zlib1g `os-no-fix` baseline exception
+  drops `codecov` from its target list (the finding is now fixed, not excepted).
+  New real `smoke_test.sh`: asserts the base is trixie with the fixed zlib/sqlite
+  versions, codecov-cli runs on trixie's Python (10.3.0), the CLI assembles a real
+  request and reaches the Codecov ingest API (failing only at the network, not on
+  startup/args), and the entrypoint fails fast without a token.
+
 ### Security
 
 - **Plugin Trivy gate — three signed-off `os-no-fix` baseline exceptions.** After
