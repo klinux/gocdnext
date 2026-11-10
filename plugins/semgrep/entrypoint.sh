@@ -21,6 +21,15 @@ fi
 CONFIG="${PLUGIN_CONFIG:-p/default}"
 REPORT="${PLUGIN_REPORT_FILE:-semgrep.sarif}"
 
+# Disable pathname (glob) expansion for the two unquoted loop-splits below
+# (`for c in ${CONFIG}` and `for p in ${PLUGIN_PATHS}`). The splitting on
+# IFS=', ' is intentional — one --config / one path per entry — but an
+# unquoted expansion ALSO globs, so a `*`/`?`/`[…]` in config or paths (e.g.
+# `paths: "src/*.py"`) would be silently rewritten by the workspace contents
+# before semgrep sees it. `set -f` leaves word-splitting intact. Nothing after
+# this relies on globbing (`semgrep "$@"` and the jq args are all quoted). (#361)
+set -f
+
 # Each comma/space-separated entry becomes its own --config flag —
 # semgrep merges multiple rule sources natively.
 set -- --sarif --output "${REPORT}" --metrics=off
