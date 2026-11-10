@@ -3,11 +3,14 @@
 # implements it; select-node.sh does the version switch.
 #
 # v3 vs v2:
-#   - Bakes node 20 + 22 + 24 (maintained majors) in ONE image, selected
-#     at runtime by select-node.sh from the project's engines.node /
-#     .nvmrc / .node-version (or the node-version: input) — a pure PATH
-#     switch, no runtime download. Same "one image, select the version"
-#     convention as jdk-base (Temurin 11/17/21/25) and dotnet (SDK 8/10).
+#   - Bakes node 20 + 22 + 24 in ONE image, selected at runtime by
+#     select-node.sh from the project's engines.node / .nvmrc /
+#     .node-version (or the node-version: input) — a pure PATH switch, no
+#     runtime download. Same "one image, select the version" convention as
+#     jdk-base (Temurin 11/17/21/25) and dotnet (SDK 8/10). As of 2026-11
+#     node 20 is EOL (2026-04-30) and 22/24 are both Maintenance LTS; the
+#     current Active LTS is node 26. Refreshing the baked set to a current
+#     major (ideally node 26) is tracked in #373.
 #   - Adds bun as a first-class manager (corepack can't manage bun, so
 #     the binary is baked from oven/bun).
 #   - Base moves alpine → debian-slim (glibc): matches the node:24 base
@@ -90,9 +93,9 @@ RUN for d in /opt/node/node-*; do \
 # selected node major.
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
-# Default to node 22 (current Active LTS; v2 parity). A job that somehow
-# runs without sourcing select-node.sh still boots a working node —
-# fail-closed to working, like jdk-base's default JAVA_HOME.
+# Default to node 22 (Maintenance LTS; kept as the default for v2 parity).
+# A job that somehow runs without sourcing select-node.sh still boots a
+# working node — fail-closed to working, like jdk-base's default JAVA_HOME.
 ENV PATH=/opt/node/node-22/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 COPY select-node.sh /usr/local/bin/select-node.sh
