@@ -1,1 +1,9 @@
+# graviteeio-cli: klinux-maintained fork (Apache-2.0). requirements.txt is
+# hash-locked and compiled on the IMAGE's Python — regenerate on Python 3.12
+# (#341 ported the plugin off EOL 3.9):
+#   pip-compile --allow-unsafe --generate-hashes -o requirements.txt requirements.in
+# NB: the fork still declares the dead `asyncio` backport (asyncio==3.4.3) in its
+# install_requires, so pip-compile pins it here. It is INERT on 3.12 — stdlib
+# asyncio shadows it on sys.path. Dropping it would require rebuilding the fork
+# wheel; tracked as hygiene, not a functional issue.
 graviteeio-cli @ https://github.com/klinux/gravitee-cli/releases/download/v0.4.1/graviteeio_cli-0.4.1-py3-none-any.whl
