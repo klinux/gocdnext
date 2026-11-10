@@ -29,6 +29,19 @@ DIND_IMAGE="docker:24.0.9-dind@sha256:9b17a9f25adf17b88d0a013b4f00160754adf4b07c
 # Must match DEFAULT_BUILDKIT_IMAGE in entrypoint.sh — we FROM it so the real
 # builder runs the pinned BuildKit, only with our test CA appended.
 BUILDKIT="moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe"
+# S3-compatible store for the `cache: bucket` scenario (#335). adobe/s3mock — a
+# purpose-built in-memory S3 mock (floating tag, same spirit as registry:2 below;
+# minio/minio is not pullable through this CI's Docker Hub mirror). Like MinIO in
+# this topology it publishes no bucket.<host> virtual-host DNS, so it answers
+# ONLY path-style requests — which the plugin emits only on the opt-in knob,
+# making GOCDNEXT_LAYER_CACHE_USE_PATH_STYLE=true load-bearing here. It pre-creates
+# the bucket via initialBuckets and ignores request auth, so the AWS creds we pass
+# are pure no-leak sentinels: they must NEVER reach the buildkitd argv/Config.Env.
+S3MOCK_IMAGE="adobe/s3mock:latest"
+S3_AK="gocdnextsmokeak"
+S3_SK="SENTINELsmokeSECRETpw8chars"
+S3_TOKEN="SENTINELsmokeSESSIONtoken"
+BUCKET="bxcache"
 W="$(mktemp -d)"
 cleanup() {
   docker rm -f "$DIND" >/dev/null 2>&1 || true
@@ -106,5 +119,116 @@ echo "==> build #2 — must reuse the exported cache (CACHED)"
 set +e; O2="$(run_plugin)"; R2=$?; set -e
 [ "$R2" -eq 0 ] || die "second build failed (rc=$R2)" "$O2"
 grep -qi "CACHED" <<<"$O2" || die "second build did not reuse the registry cache" "$O2"
+
+# ---------------------------------------------------------------------------
+# #335: cache: bucket → self-managed BuildKit, AWS creds off argv/Config.Env,
+# path-style S3 round-trip against MinIO. Everything store-side lives inside
+# dind; the self-managed buildkitd (spawned by the plugin via DOCKER_HOST=dind)
+# reaches MinIO through the dind bridge gateway, exactly like the registry.
+DD() { docker exec "$DIND" docker "$@"; }  # the dind daemon's own docker CLI
+
+echo "==> S3-compatible store (adobe/s3mock) inside dind, published on the dind host (:9090)"
+DD run -d --name s3mock -p 9090:9090 \
+  -e "initialBuckets=$BUCKET" "$S3MOCK_IMAGE" >/dev/null || die "could not start s3mock"
+for _ in $(seq 1 30); do
+  DD run --rm "curlimages/curl:8.11.0" -sf "http://$GIP:9090/" >/dev/null 2>&1 && break
+  sleep 1
+done
+DD run --rm "curlimages/curl:8.11.0" -sf "http://$GIP:9090/" >/dev/null 2>&1 \
+  || die "s3mock never became ready"
+# Create the bucket explicitly (path-style PUT) — the initialBuckets env is
+# version-dependent and didn't take on :latest. s3mock ignores request auth.
+DD run --rm "curlimages/curl:8.11.0" -sf -X PUT "http://$GIP:9090/$BUCKET" >/dev/null 2>&1 \
+  || die "could not create the S3 bucket"
+DD run --rm "curlimages/curl:8.11.0" -sf "http://$GIP:9090/$BUCKET/?list-type=2" >/dev/null 2>&1 \
+  || die "bucket not reachable after creation"
+
+bucket_env=(
+  -e PLUGIN_CACHE="bucket"
+  -e GOCDNEXT_LAYER_CACHE_BUCKET="$BUCKET"
+  -e GOCDNEXT_LAYER_CACHE_ENDPOINT="http://$GIP:9090"
+  -e GOCDNEXT_LAYER_CACHE_REGION="us-east-1"
+  -e GOCDNEXT_LAYER_CACHE_USE_PATH_STYLE="true"
+  -e AWS_ACCESS_KEY_ID="$S3_AK"
+  -e AWS_SECRET_ACCESS_KEY="$S3_SK"
+)
+no_bk_left() { [ -z "$(DD ps -aq --filter name=gocdnext-buildkitd 2>/dev/null)" ]; }
+
+# --- Run A: no-leak (live inspect) + session token in the creds file + mirror
+#     wiring + forced-failure cleanup. A session token makes MinIO auth moot,
+#     and `RUN false` fails the build deterministically — the point is to catch
+#     the self-managed buildkitd ALIVE, inspect it, then prove teardown.
+echo "==> [bucket] Run A: creds off argv/Config.Env + session token + cleanup-on-failure"
+no_bk_left || die "a stray gocdnext-buildkitd existed before Run A"
+mkdir -p "$W/ctxA"; printf 'FROM alpine:3.20\nRUN sleep 6 && false\n' > "$W/ctxA/Dockerfile"
+docker run --rm --network "$NET" -e DOCKER_HOST=tcp://dind:2375 \
+  -v "$W/ctxA:/workspace" -w /workspace \
+  -e PLUGIN_IMAGE="$REF/bxbucket" -e PLUGIN_TAGS="a" -e PLUGIN_PUSH="false" \
+  -e PLUGIN_MIRROR="mirror.invalid" \
+  "${bucket_env[@]}" -e AWS_SESSION_TOKEN="$S3_TOKEN" \
+  "$IMG" >"$W/runA.log" 2>&1 &
+PIDA=$!
+
+bk=""
+for _ in $(seq 1 150); do
+  bk="$(DD ps --filter name=gocdnext-buildkitd --format '{{.Names}}' 2>/dev/null | head -1 || true)"
+  [ -n "$bk" ] && break
+  sleep 0.2
+done
+[ -n "$bk" ] || { cat "$W/runA.log"; die "self-managed buildkitd never appeared"; }
+
+ENVJSON="$(DD inspect "$bk" --format '{{json .Config.Env}}' 2>/dev/null || true)"
+ARGVJSON="$(DD inspect "$bk" --format '{{.Path}} {{json .Args}} {{json .Config.Cmd}} {{json .Config.Entrypoint}}' 2>/dev/null || true)"
+grep -qF "$S3_SK" <<<"$ENVJSON"  && { kill "$PIDA" 2>/dev/null||true; die "SECRET leaked into buildkitd Config.Env" "$ENVJSON"; }
+grep -qF "$S3_TOKEN" <<<"$ENVJSON" && { kill "$PIDA" 2>/dev/null||true; die "SESSION TOKEN leaked into buildkitd Config.Env" "$ENVJSON"; }
+grep -qF "$S3_SK" <<<"$ARGVJSON" && { kill "$PIDA" 2>/dev/null||true; die "SECRET leaked onto buildkitd argv" "$ARGVJSON"; }
+grep -qF "$S3_TOKEN" <<<"$ARGVJSON" && { kill "$PIDA" 2>/dev/null||true; die "SESSION TOKEN leaked onto buildkitd argv" "$ARGVJSON"; }
+grep -q "AWS_SHARED_CREDENTIALS_FILE=/etc/gocdnext/aws-credentials" <<<"$ENVJSON" \
+  || die "AWS_SHARED_CREDENTIALS_FILE not set on buildkitd" "$ENVJSON"
+grep -q "AWS_REQUEST_CHECKSUM_CALCULATION=when_required" <<<"$ENVJSON" \
+  || die "checksum opt-out (non-AWS endpoint) not set on buildkitd" "$ENVJSON"
+# The credentials FILE carries the secret + session token, mode 0600.
+MODE="$(DD exec "$bk" stat -c '%a' /etc/gocdnext/aws-credentials 2>/dev/null || true)"
+[ "$MODE" = "600" ] || die "credentials file is not 0600 (got '${MODE}')"
+CREDS="$(DD exec "$bk" cat /etc/gocdnext/aws-credentials 2>/dev/null || true)"
+grep -q "aws_secret_access_key = $S3_SK" <<<"$CREDS" || die "secret missing from the credentials file"
+grep -q "aws_session_token = $S3_TOKEN" <<<"$CREDS" || die "session token missing from the credentials file"
+# Mirror config was copied in and wired via --config.
+grep -q "/etc/gocdnext/buildkitd.toml" <<<"$ARGVJSON" || die "buildkitd.toml not wired via --config" "$ARGVJSON"
+DD exec "$bk" cat /etc/gocdnext/buildkitd.toml 2>/dev/null | grep -q "mirror.invalid" \
+  || die "mirror config not present in the staged buildkitd.toml"
+
+set +e; wait "$PIDA"; RA=$?; set -e
+[ "$RA" -ne 0 ] || { cat "$W/runA.log"; die "Run A was supposed to fail (RUN false) but exited 0"; }
+no_bk_left || die "buildkitd was NOT cleaned up after a forced failure"
+grep -qF "$S3_SK" "$W/runA.log" && die "secret leaked into the plugin stdout"
+grep -qF "$S3_TOKEN" "$W/runA.log" && die "session token leaked into the plugin stdout"
+echo "OK: [bucket] creds off argv+Config.Env, session token staged in 0600 file, cleanup on failure"
+
+# --- Run B: real path-style S3 cache round-trip against MinIO (success path).
+echo "==> [bucket] Run B: path-style S3 cache export (#1) then CACHED (#2)"
+mkdir -p "$W/ctxB"; printf 'FROM alpine:3.20\nRUN echo bucketcache > /m\n' > "$W/ctxB/Dockerfile"
+run_bucket_build() {
+  docker run --rm --network "$NET" -e DOCKER_HOST=tcp://dind:2375 \
+    -v "$W/ctxB:/workspace" -w /workspace \
+    -e PLUGIN_IMAGE="$REF/bxbucket" -e PLUGIN_TAGS="b" -e PLUGIN_PUSH="false" \
+    "${bucket_env[@]}" \
+    "$IMG" 2>&1
+}
+set +e; OB1="$(run_bucket_build)"; RB1=$?; set -e
+[ "$RB1" -eq 0 ] || die "bucket build #1 failed (rc=$RB1)" "$OB1"
+no_bk_left || die "buildkitd was NOT cleaned up after a successful build #1"
+# The export must have actually written cache objects to the bucket (path-style
+# ListObjectsV2 — proof the opt-in style reached a real store, not just the argv).
+LISTXML="$(DD run --rm "curlimages/curl:8.11.0" -s "http://$GIP:9090/$BUCKET/?list-type=2" 2>/dev/null || true)"
+grep -q "<Key>" <<<"$LISTXML" || die "build #1 exported nothing to the bucket (no objects listed)" "$OB1
+--- list ---
+$LISTXML"
+
+set +e; OB2="$(run_bucket_build)"; RB2=$?; set -e
+[ "$RB2" -eq 0 ] || die "bucket build #2 failed (rc=$RB2)" "$OB2"
+grep -qi "CACHED" <<<"$OB2" || die "build #2 did not import the path-style S3 cache (no CACHED)" "$OB2"
+no_bk_left || die "buildkitd was NOT cleaned up after a successful build #2"
+echo "OK: [bucket] path-style S3 round-trip — build #1 exported, build #2 CACHED, cleanup on success"
 
 echo "PASS: buildx smoke"
