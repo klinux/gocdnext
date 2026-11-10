@@ -24,9 +24,11 @@ cat >"$TMP/go" <<'EOF'
   echo "GOCACHE=${GOCACHE:-<unset>}"
   echo "PWD=$(pwd)"
   echo "ARGS=$*"
-  # Also record argv one-per-line so a test can assert exact boundaries;
-  # ARGS=$* alone collapses them (a `*` glob-expanded into N files looks
-  # the same joined as a literal `*` would not).
+  # Also record argv one-per-line so a test can assert the EXACT vector
+  # (order + count + boundaries). ARGS=$* joins the args, so it can't prove
+  # the boundaries — it would miss the whole command arriving as a single
+  # arg (`"build ./..."` vs `build` `./...`), which is the failure mode the
+  # word-split/glob cases guard against.
   for a in "$@"; do echo "ARG=$a"; done
 } >> "$LOG"
 exit 0
@@ -99,8 +101,8 @@ check "$TMP/8.log" "^GOMODCACHE=$TMP/abs-mod\$" "absolute GOMODCACHE override sh
 # 9. word-split does NOT glob-expand against the working dir (#361): a `*`
 # token must reach go as a literal arg, not be rewritten into the .go files
 # sitting in the working dir (which would inflate the argv vector). Assert the
-# EXACT vector [build, *.go] — ARGS=$* alone can't tell a literal `*` from a
-# glob expansion.
+# EXACT vector [build, *.go] — proving order, count and boundaries, not just
+# that the tokens are present somewhere.
 mkdir -p "$TMP/ws/globws"; : >"$TMP/ws/globws/main_a.go"; : >"$TMP/ws/globws/main_b.go"
 run "$TMP/9.log" PLUGIN_WORKING_DIR="globws" PLUGIN_COMMAND="build *.go"
 assert_argv "$TMP/9.log" build '*.go' \
