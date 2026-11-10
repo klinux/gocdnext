@@ -80,6 +80,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **gitleaks plugin — allowlist-paths no longer glob-expand against the
+  workspace.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet
+  #380, go #381, gradle #382, semgrep #383). The allowlist tokeniser split the
+  input with an unquoted `for raw_token in ${input}` (IFS comma/space), so a
+  `*`/`?`/`[…]` token glob-expanded against the workspace **before** the
+  per-token validation — turning a charset-invalid input like
+  `allowlist-paths: "*"` (which must be rejected, exit 2) into the workspace's
+  real, charset-valid filenames, silently allowlisting whatever sat in the dir.
+  `set -f` before the split; the IFS word-splitting still applies. Ships a new
+  `entrypoint_test.sh` (the plugin had only a smoke): unknown scan_mode, valid
+  allowlist → runtime TOML (useDefault + one entry per path) via `--config`,
+  traversal rejection, and the #361 case (decoy files + `allowlist-paths='*'`
+  must exit 2). Verified via negative control: without the fix the `*` expands
+  to the decoy names and the scan runs.
+
 - **semgrep plugin — config and paths no longer glob-expand against the
   workspace.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet
   #380, go #381, gradle #382). Two unquoted loop-splits built the argv — `for c

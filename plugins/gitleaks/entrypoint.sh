@@ -86,6 +86,14 @@ build_allowlist_config() {
   # portable across bash 4/5 and don't rely on `mapfile`.
   local raw_token cleaned
   local IFS=$',\n\t '
+  # Disable pathname (glob) expansion for the unquoted ${input} split below.
+  # Splitting on IFS (comma/newline/tab/space) is intended — one allowlist
+  # entry per token — but an UNQUOTED expansion also globs, so a `*`/`?`/`[…]`
+  # token would expand against the workspace BEFORE the validation below. That
+  # silently turns a charset-INVALID input (which must be rejected, exit 2) into
+  # real filenames that pass the charset check — allowlisting whatever happens
+  # to sit in the dir. `set -f` leaves the IFS word-splitting intact. (#361)
+  set -f
   for raw_token in ${input}; do
     [ -z "${raw_token}" ] && continue
     cleaned="${raw_token}"
