@@ -80,6 +80,15 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **dotnet plugin — command args no longer glob-expand against the working dir.**
+  #361 sweep (after aws-cli #377, gcloud #378, argocd #379). `exec dotnet
+  ${PLUGIN_COMMAND}` word-split the command **unquoted**, so a `*`/`?`/`[…]` token
+  (e.g. `nuget push bin/Release/*.nupkg`) also underwent pathname expansion
+  against the working directory. `set -f` before the dispatch; word-splitting
+  still applies. Ships a new `entrypoint_test.sh` (the plugin had none): required
+  command, word-split dispatch, working-dir honored, unknown-SDK fail-loud, and
+  the glob regression (literal `*` reaches dotnet).
+
 - **argocd plugin — command args no longer glob-expand against the CWD.**
   #361 sweep (after aws-cli #377, gcloud #378). The wrapper word-split
   `${PLUGIN_COMMAND}` **unquoted** in `exec argocd "${flags[@]}" ${PLUGIN_COMMAND}
