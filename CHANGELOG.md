@@ -80,6 +80,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **gradle plugin — command and extra args no longer glob-expand against the
+  workspace.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet
+  #380, go #381). The `exec` had **two** user-controlled unquoted expansions —
+  `${PLUGIN_COMMAND}` and `${extra_args}` (`PLUGIN_ARGS`) — so a `*`/`?`/`[…]` in
+  either (e.g. `build *.jar`, a task filter) underwent pathname expansion against
+  the workspace. `set -f` before the exec; word-splitting still applies (empty
+  tri-state flags still disappear, the plugin-built flags carry no globs).
+  `smoke_test.sh` gains two regression cases — one per expansion — using a stub
+  `./gradlew` that reports its real argv (the entrypoint's own `==>` banner is
+  double-quoted, so it can't witness a glob); each asserts the literal `*.txt`
+  reaches gradle and the decoy workspace files do not. Verified against the real
+  image with `set -f` stripped: both expand to the decoy filenames.
+
 - **go plugin — command args no longer glob-expand against the working dir.**
   #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet #380). `exec go
   ${PLUGIN_COMMAND}` word-split the command **unquoted**, so a `*`/`?`/`[…]` token

@@ -22,6 +22,7 @@ IMG="gocdnext-plugin-gradle:smoke-$$"
 CNAME="gradlesmoke-$$"   # fixed name so a timed-out run's container can be reaped
 WOK="$(mktemp -d)"       # passing (signing) project
 WBAD="$(mktemp -d)"      # failing project
+WGLOB="$(mktemp -d)"     # #361 argv-probe project (glob non-expansion)
 SMOKE_OK=0
 
 cleanup() {
@@ -30,14 +31,14 @@ cleanup() {
   # writer on the same dirs.
   docker rm -f "$CNAME" >/dev/null 2>&1 || true
   if docker image inspect "$IMG" >/dev/null 2>&1; then
-    docker run --rm --entrypoint bash -v "$WOK:/a" -v "$WBAD:/b" "$IMG" \
-      -c 'for d in /a /b; do rm -rf "$d"/* "$d"/.[!.]* "$d"/..?* 2>/dev/null || true; done' \
+    docker run --rm --entrypoint bash -v "$WOK:/a" -v "$WBAD:/b" -v "$WGLOB:/c" "$IMG" \
+      -c 'for d in /a /b /c; do rm -rf "$d"/* "$d"/.[!.]* "$d"/..?* 2>/dev/null || true; done' \
       >/dev/null 2>&1 || true
   fi
   docker image rm -f "$IMG" >/dev/null 2>&1 || true
-  rm -rf "$WOK" "$WBAD" 2>/dev/null || true
+  rm -rf "$WOK" "$WBAD" "$WGLOB" 2>/dev/null || true
   leftover=0
-  for d in "$WOK" "$WBAD"; do
+  for d in "$WOK" "$WBAD" "$WGLOB"; do
     [ -d "$d" ] && { echo "WARN: cleanup could not fully remove ${d}" >&2; leftover=1; }
   done
   docker image inspect "$IMG" >/dev/null 2>&1 && { echo "WARN: smoke image not removed" >&2; leftover=1; }
@@ -93,6 +94,25 @@ tasks.register('gocdnextSign') {
 }
 G
 }
+
+# #361 argv probe: a stub `./gradlew` that prints the argv it was ACTUALLY
+# exec'd with (the entrypoint prefers ./gradlew when executable). This is the
+# only trustworthy witness of a glob — the entrypoint's own `==>` banner is
+# double-quoted, so it prints `*` literally whether or not the real exec
+# expanded it. Seed the dir with decoy files a `*` would match.
+project_argv_probe() {
+  local d="$1"
+  cat >"$d/gradlew" <<'G'
+#!/bin/sh
+echo GRADLEW_ARGV_BEGIN
+for a in "$@"; do printf 'ARG=%s\n' "$a"; done
+echo GRADLEW_ARGV_END
+G
+  chmod +x "$d/gradlew"
+  : >"$d/decoy-a.txt"; : >"$d/decoy-b.txt"
+}
+# Extract the stub's received argv (one arg per line) from the last run's OUT.
+probe_argv() { awk '/GRADLEW_ARGV_BEGIN/{f=1;next} /GRADLEW_ARGV_END/{f=0} f'; }
 
 # A failing project: a task that throws, to prove non-zero propagation.
 project_fail() {
@@ -151,6 +171,27 @@ case "$RC" in
 esac
 [ "$RC" -eq 1 ] || die "failing project: expected gradle's build-failure exit 1, got $RC" "$OUT"
 grep -q 'BUILD FAILED' <<<"$OUT" || die "failing project: gradle did not report BUILD FAILED" "$OUT"
+
+# ── #361: neither PLUGIN_COMMAND nor extra args glob-expand against the
+#    workspace. Two UNQUOTED expansions in the exec (`${PLUGIN_COMMAND}` and
+#    `${extra_args}`), so each is covered in its own run. The stub gradlew
+#    reports the real argv; decoy-a.txt/decoy-b.txt would appear as separate
+#    args if a `*` expanded. ──
+project_argv_probe "$WGLOB"
+
+echo "==> #361: a glob in PLUGIN_COMMAND reaches gradle literally (not workspace files)"
+run "$WGLOB" -e PLUGIN_COMMAND='build *.txt'
+[ "$RC" -eq 0 ] || die "argv probe (command): expected exit 0, got $RC" "$OUT"
+AV="$(probe_argv <<<"$OUT")"
+grep -qxF 'ARG=*.txt' <<<"$AV" || die "PLUGIN_COMMAND glob-expanded against the workspace (literal '*.txt' did not reach gradle)" "$AV"
+grep -qxF 'ARG=decoy-a.txt' <<<"$AV" && die "PLUGIN_COMMAND glob-expanded (decoy filename leaked into argv)" "$AV"
+
+echo "==> #361: a glob in PLUGIN_ARGS (extra args) reaches gradle literally"
+run "$WGLOB" -e PLUGIN_COMMAND='build' -e PLUGIN_ARGS='*.txt'
+[ "$RC" -eq 0 ] || die "argv probe (args): expected exit 0, got $RC" "$OUT"
+AV="$(probe_argv <<<"$OUT")"
+grep -qxF 'ARG=*.txt' <<<"$AV" || die "PLUGIN_ARGS glob-expanded against the workspace (literal '*.txt' did not reach gradle)" "$AV"
+grep -qxF 'ARG=decoy-a.txt' <<<"$AV" && die "PLUGIN_ARGS glob-expanded (decoy filename leaked into argv)" "$AV"
 
 SMOKE_OK=1
 echo "PASS: gradle smoke"
