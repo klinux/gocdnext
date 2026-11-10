@@ -34,7 +34,12 @@ if [ -n "${PLUGIN_PROJECT:-}" ]; then
     project_args+=("--project" "${PLUGIN_PROJECT}")
 fi
 
-# Intentional word-splitting: "run deploy x --image y" → 4 args.
+# Intentional word-splitting: "run deploy x --image y" → 4 args. But an
+# UNQUOTED expansion also undergoes pathname (glob) expansion, so a `*`,
+# `?` or `[…]` in the command would be silently rewritten by whatever
+# files sit in the workspace. `set -f` disables globbing while leaving
+# word-splitting intact, so the tokens reach gcloud literally. (#361)
+set -f
 # shellcheck disable=SC2086
 echo "==> gcloud ${PLUGIN_COMMAND} ${project_args[*]:-}"
 # shellcheck disable=SC2086
