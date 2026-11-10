@@ -23,7 +23,12 @@ if [ -n "${PLUGIN_PROFILE:-}" ]; then
 fi
 
 # Word-splitting PLUGIN_COMMAND is intentional: users write
-# "s3 cp a b --recursive" and expect the cli to see 4 tokens.
+# "s3 cp a b --recursive" and expect the cli to see 4 tokens. But an
+# UNQUOTED expansion also undergoes pathname (glob) expansion, so a `*`,
+# `?` or `[…]` in the command would be silently rewritten by whatever
+# files sit in the workspace. `set -f` disables globbing while leaving
+# word-splitting intact, so the tokens reach aws literally. (#361)
+set -f
 # shellcheck disable=SC2086
 echo "==> aws ${PLUGIN_COMMAND}"
 # shellcheck disable=SC2086
