@@ -80,6 +80,16 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **golangci-lint plugin — run args no longer glob-expand against the working
+  dir.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet #380,
+  go #381, gradle #382, semgrep #383, gitleaks #384). `exec golangci-lint run
+  --timeout "${TIMEOUT}" ${ARGS}` word-split `${ARGS}` **unquoted**, so a
+  `*`/`?`/`[…]` in args (e.g. a path filter `./pkg/*`) also underwent pathname
+  expansion against the working directory. `set -f` before the dispatch; word-
+  splitting still applies. `entrypoint_test.sh` gains a glob regression case
+  asserting the exact argv vector `[run, --timeout, 5m, *.go]` (the stub now also
+  logs argv one-per-line, since `ARGS=$*` joins the args).
+
 - **gitleaks plugin — allowlist-paths no longer glob-expand against the
   workspace.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet
   #380, go #381, gradle #382, semgrep #383). The allowlist tokeniser split the
