@@ -31,10 +31,13 @@
 # Debian slim (not alpine) because the entrypoint is bash. Ported off EOL
 # Python 3.9 (EOL 2025-10-31, #341) to Python 3.12 on Debian trixie (13). The
 # gio fork was built for CPython 3.7–3.9 but runs clean on 3.12: it imports,
-# `apim apis definition generate`/`lint` return errors(0), and its only async
-# code (apis ls — unused by this plugin) relies on asyncio.get_event_loop(),
-# which is deprecated but not removed in 3.12. The fork still declares the dead
-# `asyncio` BACKPORT (asyncio==3.4.3) as a dep, so it is installed, but it is
+# `apim apis definition generate`/`lint` return errors(0), and its async code
+# path — `apim apis list`, which the entrypoint runs on EVERY invocation to
+# resolve the API id by name (ls.py -> api_async.py: asyncio.get_event_loop +
+# run_until_complete + a ThreadPoolExecutor) — works on 3.12: get_event_loop is
+# deprecated but not removed. The smoke exercises that command against a mock
+# Management API. The fork still declares the dead `asyncio` BACKPORT
+# (asyncio==3.4.3) as a dep, so it is installed, but it is
 # INERT: stdlib asyncio is ahead of site-packages on sys.path, so `import
 # asyncio` resolves to /usr/local/lib/python3.12/asyncio, not the backport.
 #
