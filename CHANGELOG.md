@@ -10,6 +10,22 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **lighthouse-ci plugin → Debian trixie base, 3 OS CRITICALs cleared.** Migrated
+  the base from `node:22-bookworm-slim` to `node:22-trixie-slim` (pinned by
+  digest). bookworm had no fix for `libsqlite3-0` CVE-2025-7458, `glib`
+  CVE-2026-58016 or `zlib1g` CVE-2023-45853; trixie ships all three fixed
+  (debian 13.7: libsqlite3-0 `3.46.1`, libglib2.0-0t64 `2.84.4-3~deb13u5`,
+  zlib1g `1:1.3...`). Chromium + LHCI 0.16.0 unchanged. Trivy
+  `--severity HIGH,CRITICAL --scanners vuln --pkg-types os,library` (gate args,
+  DB 2026-11-07): **1 CRITICAL** (`libxml2` CVE-2026-6653) — unchanged, `no-dsa`
+  on trixie, and already signed off in the baseline. The `zlib1g` `os-no-fix`
+  exception drops `lighthouse-ci` from its target list; the `libxml2` exception's
+  `installed` is updated to the exact trixie version
+  (`2.12.7+dfsg+really2.9.14-2.1+deb13u3`, part of the gate identity). The gate
+  comparator confirms **0 failures** against the trixie scan. `smoke_test.sh`
+  gains an OS-base probe (dpkg version compare: trixie 13.x with the fixed
+  zlib/sqlite/glib) on top of the existing collect/assert gating coverage.
+
 - **node plugin → Debian trixie base, OS CRITICALs cleared.** Migrated the v3
   multi-version image (node 20/22/24 + bun) from bookworm to trixie: the three
   node builder stages to `node:{20,22,24}-trixie-slim` and the final runtime to
