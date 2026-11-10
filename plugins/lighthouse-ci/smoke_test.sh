@@ -45,6 +45,29 @@ die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2" |
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
 
+# 0. base is trixie and the OS packages this migration clears carry the fix.
+#    bookworm had no fix for libsqlite3-0 (CVE-2025-7458), glib
+#    (CVE-2026-58016) or zlib1g (CVE-2023-45853); trixie ships all three fixed.
+#    (libxml2 CVE-2026-6653 is "no-dsa" on trixie too, so it is NOT guarded here
+#    — it stays signed off in plugins/.trivy-baseline.yaml.) Compare with dpkg,
+#    NOT a regex: Debian versions don't sort lexically. Floors = first trixie
+#    fixed version per the Debian security tracker: zlib1g >= 1:1.3,
+#    libsqlite3-0 >= 3.46, libglib2.0-0t64 >= 2.84.4-3~deb13u5.
+osv="$(docker run --rm --network none --entrypoint sh "$IMG" -c '
+  printf "debian %s\n" "$(cat /etc/debian_version)"
+  z="$(dpkg-query -W -f="\${Version}" zlib1g)"
+  s="$(dpkg-query -W -f="\${Version}" libsqlite3-0)"
+  g="$(dpkg-query -W -f="\${Version}" libglib2.0-0t64)"
+  printf "zlib1g %s\n" "$z"; printf "libsqlite3-0 %s\n" "$s"; printf "libglib2.0-0t64 %s\n" "$g"
+  dpkg --compare-versions "$z" ge "1:1.3"              && echo ZLIB_FIXED   || echo ZLIB_UNFIXED
+  dpkg --compare-versions "$s" ge "3.46"               && echo SQLITE_FIXED || echo SQLITE_UNFIXED
+  dpkg --compare-versions "$g" ge "2.84.4-3~deb13u5"   && echo GLIB_FIXED   || echo GLIB_UNFIXED
+')" || die "OS probe failed" "$osv"
+grep -qE '^debian 13\.' <<<"$osv" || die "base is not Debian trixie (13.x)" "$osv"
+grep -qx 'ZLIB_FIXED'   <<<"$osv" || die "zlib1g does not carry the CVE-2023-45853 fix (>= 1:1.3)" "$osv"
+grep -qx 'SQLITE_FIXED' <<<"$osv" || die "libsqlite3-0 does not carry the CVE-2025-7458 fix (>= 3.46)" "$osv"
+grep -qx 'GLIB_FIXED'   <<<"$osv" || die "libglib2.0-0t64 does not carry the CVE-2026-58016 fix (>= 2.84.4-3~deb13u5)" "$osv"
+
 CHROME_FLAGS="--no-sandbox --headless=new --disable-dev-shm-usage --disable-gpu"
 
 # make_case <dir> <assertions-json>: a workspace with a static page + an
