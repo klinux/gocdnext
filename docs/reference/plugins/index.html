@@ -2758,7 +2758,7 @@
 <td><code dir="auto">upload-token</code></td>
 <td>no</td>
 <td>—</td>
-<td>Build token for a self-hosted LHCI server. Pipe via secrets:.</td>
+<td>Build token for a self-hosted LHCI server. Pipe via secrets:. Passed to lhci through the LHCI_TOKEN env var, so it never appears on the process argv or in the job log.</td>
 </tr>
 <tr>
 <td><code dir="auto">assertions</code></td>
