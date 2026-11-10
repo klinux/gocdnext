@@ -37,15 +37,22 @@ run() { set +e; OUT="$(timeout --kill-after=15s 300s "$@" 2>&1)"; RC=$?; set -e;
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
 
-echo "==> base is trixie and the migrated OS packages are the fixed versions"
-OSV="$(docker run --rm --network none --entrypoint sh "$IMG" -c \
-  'cat /etc/debian_version; dpkg-query -W -f="\${Package} \${Version}\n" zlib1g libsqlite3-0')" \
-  || die "OS probe failed" "$OSV"
-grep -qE '^13\.' <<<"$OSV" || die "base is not Debian trixie (13.x)" "$OSV"
-# zlib 1.3 carries the CVE-2023-45853 fix; bookworm shipped 1:1.2.13 (unfixed).
-grep -qE 'zlib1g 1:1\.3' <<<"$OSV" || die "zlib1g is not the fixed 1.3 line" "$OSV"
-# bookworm's libsqlite3-0 was 3.40.x (CVE-2025-7458); trixie ships 3.46+.
-grep -qE 'libsqlite3-0 3\.4[6-9]|libsqlite3-0 3\.[5-9]' <<<"$OSV" || die "libsqlite3-0 is not a fixed (>=3.46) version" "$OSV"
+echo "==> base is trixie and the migrated OS packages carry the fix (real version compare)"
+# Use dpkg --compare-versions, not a regex: Debian versions don't sort lexically
+# (e.g. "3.5" < "3.46"), so a regex floor would false-pass a lower version. The
+# fix floors are zlib1g >= 1:1.3 (CVE-2023-45853; bookworm shipped 1:1.2.13) and
+# libsqlite3-0 >= 3.46 (CVE-2025-7458; bookworm shipped 3.40.x).
+OSV="$(docker run --rm --network none --entrypoint sh "$IMG" -c '
+  printf "debian %s\n" "$(cat /etc/debian_version)"
+  z="$(dpkg-query -W -f="\${Version}" zlib1g)"
+  s="$(dpkg-query -W -f="\${Version}" libsqlite3-0)"
+  printf "zlib1g %s\n" "$z"; printf "libsqlite3-0 %s\n" "$s"
+  dpkg --compare-versions "$z" ge "1:1.3" && echo ZLIB_FIXED || echo ZLIB_UNFIXED
+  dpkg --compare-versions "$s" ge "3.46"  && echo SQLITE_FIXED || echo SQLITE_UNFIXED
+')" || die "OS probe failed" "$OSV"
+grep -qE '^debian 13\.' <<<"$OSV" || die "base is not Debian trixie (13.x)" "$OSV"
+grep -qx 'ZLIB_FIXED'   <<<"$OSV" || die "zlib1g does not carry the CVE-2023-45853 fix (>= 1:1.3)" "$OSV"
+grep -qx 'SQLITE_FIXED' <<<"$OSV" || die "libsqlite3-0 does not carry the CVE-2025-7458 fix (>= 3.46)" "$OSV"
 
 echo "==> codecov-cli runs on trixie python (version 10.3.0)"
 run docker run --rm --name "$CNAME" --network none --entrypoint codecov "$IMG" --version
