@@ -61,8 +61,14 @@ case "${target}" in
             exit 2
         fi
         upload_args+=(--serverBaseUrl="${PLUGIN_UPLOAD_SERVER_BASE_URL}")
+        # The build token is a secret. Hand it to LHCI via the LHCI_TOKEN
+        # env var (the CLI maps LHCI_* env through yargs' .env('LHCI') to the
+        # upload `token` option) instead of a --token flag, so it never lands
+        # on the child's argv (readable via ps / /proc/<pid>/cmdline) and never
+        # reaches the `==> lhci upload ...` log line below. The server base URL
+        # stays a flag — it is not a secret.
         if [ -n "${PLUGIN_UPLOAD_TOKEN:-}" ]; then
-            upload_args+=(--token="${PLUGIN_UPLOAD_TOKEN}")
+            export LHCI_TOKEN="${PLUGIN_UPLOAD_TOKEN}"
         fi
         ;;
     *)
