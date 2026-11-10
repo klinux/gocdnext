@@ -10,6 +10,25 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **gravitee plugin → Python 3.12 on Debian trixie (off EOL 3.9), OS CRITICALs
+  cleared.** Resolves #341. Migrated from `python:3.9-slim-bookworm` (3.9 EOL
+  2025-10-31) to `python:3.12-slim-trixie` (pinned by digest). The
+  `klinux/gravitee-cli` fork (built for CPython 3.7–3.9) runs clean on 3.12:
+  `gio apim apis definition generate`/`lint` return `errors(0)`, and its only
+  async code (`apis ls`, unused by this plugin) uses `asyncio.get_event_loop()`,
+  deprecated but not removed in 3.12. `requirements.txt` regenerated hash-locked
+  on 3.12 (`pip install --require-hashes`); gio stays 0.4.1, yq stays v4.54.2.
+  The fork still declares the dead `asyncio` backport (`asyncio==3.4.3`) so it is
+  installed, but it is **inert** — stdlib `asyncio` shadows it on `sys.path`
+  (the smoke now asserts this). bookworm had no fix for `libsqlite3-0`
+  CVE-2025-7458 or `zlib1g` CVE-2023-45853; trixie ships both fixed (debian
+  13.7). Trivy (gate args, DB 2026-11-07): **0 CRITICAL**; residual HIGH are
+  unfixed trixie base OS libs (util-linux family etc.), reported in `observe`.
+  The `zlib1g` `os-no-fix` baseline exception drops `gravitee` from its target
+  list; the gate comparator confirms **0 failures**. `smoke_test.sh` gains an
+  OS-base probe (dpkg version compare: trixie 13.x with fixed zlib/sqlite) and a
+  stdlib-asyncio-not-shadowed assertion.
+
 - **lighthouse-ci plugin → Debian trixie base, 3 OS CRITICALs cleared.** Migrated
   the base from `node:22-bookworm-slim` to `node:22-trixie-slim` (pinned by
   digest). bookworm had no fix for `libsqlite3-0` CVE-2025-7458, `glib`

@@ -170,7 +170,7 @@ exceptions:
   # release scanned. Signed off per-CVE (klinux) after review of the Debian
   # security tracker. The gate lapses each the instant Trivy reports a fixed
   # version (e.g. when a plugin migrates to a release that carries the fix).
-  - targets: [gradle, gravitee, jdk-base, maven]
+  - targets: [gradle, jdk-base, maven]
     cve: CVE-2023-45853
     package: zlib1g
     installed: "1:1.2.13.dfsg-1"
@@ -187,10 +187,10 @@ exceptions:
       supported release scanned); the fix lands only in trixie (zlib 1.3).
     mitigation: >-
       Trixie migrations ship zlib 1.3 and drop their plugin from this target
-      list as they land (codecov, node and lighthouse-ci already migrated);
-      gravitee is the remaining planned migration, while gradle/jdk-base/maven
-      stay on bookworm where the vulnerable minizip code is not built. Weekly
-      gate re-scan; lapses the instant Trivy reports a fixed version.
+      list as they land (codecov, node, lighthouse-ci and gravitee migrated);
+      the remaining gradle/jdk-base/maven stay on bookworm where the vulnerable
+      minizip code is not built. Weekly gate re-scan; lapses the instant Trivy
+      reports a fixed version.
     advisory: https://security-tracker.debian.org/tracker/CVE-2023-45853
     upstream_issue: https://github.com/madler/zlib/pull/843
     approved_pr: 371
