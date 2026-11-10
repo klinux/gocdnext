@@ -31,6 +31,9 @@
 #                       server you run internally.
 #   PLUGIN_UPLOAD_TOKEN (optional)  build token when
 #                       upload-target=lhci. Pipe via secrets:.
+#                       Handed to lhci via the LHCI_TOKEN env var
+#                       (not a --token flag), so it never lands on
+#                       the child's argv or in the build log.
 #   PLUGIN_ASSERTIONS   (optional)  "on" toggles `lhci assert`
 #                       after collect — uses the assertion
 #                       config from lighthouserc. Default "on"

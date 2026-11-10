@@ -7,6 +7,10 @@
 #   - `lhci collect` drives the bundled Chromium headless and writes a report,
 #   - `lhci assert` actually gates: passes on a satisfiable budget, FAILS the job
 #     on a breached one.
+#   - `upload-target=lhci` hands the build token to the SHIPPED lhci 0.16.0 via
+#     the LHCI_TOKEN env var (#339): the token never appears on argv or in the
+#     job output, and LHCI reaches the "connect to the server" stage — proving
+#     the env channel is honoured by the real binary, not just the unit mock.
 #
 # Convention-named so plugins.yml runs it as a PRE-PUBLISH gate. Needs docker
 # (Chromium runs headless with --no-sandbox as root in the container). Trap
@@ -16,8 +20,16 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-lighthouse-ci:smoke-$$"
 W="$(mktemp -d)"
+CLHCI="gocdnext-lhci-smoke-$$"   # named so cleanup can fail-closed remove it
+# Distinctive token value: if a copy of it survives anywhere in the job output
+# or on argv, it is unmistakably the leak we are testing for.
+TOKEN_SENTINEL="SENTINELlhciSMOKEtoken7a1c"
 SMOKE_OK=0
 cleanup() {
+  # Fail-closed: kill the named lhci-upload container FIRST, in case a watchdog
+  # SIGKILL left it running (--rm then can't fire). Only then touch the image
+  # and workspace.
+  docker rm -f "$CLHCI" >/dev/null 2>&1 || true
   # LHCI runs as root in the container and leaves root-owned files (incl.
   # dotdirs like .lighthouseci) under $W. Remove them from INSIDE the image —
   # with --entrypoint sh so the command actually runs, and before deleting the
@@ -121,6 +133,51 @@ run fail
 # LHCI actually evaluated (and failed) it.
 grep -q "first-contentful-paint" <<<"$OUT" \
   || die "expected lhci assert to report the breached first-contentful-paint assertion" "$OUT"
+
+# 3. upload-target=lhci: the build token reaches the SHIPPED lhci binary via the
+#    LHCI_TOKEN env var (#339) — not argv, not the job log. We point the upload
+#    at an unreachable server (127.0.0.1:9, the discard port) under --network
+#    none so the only thing that can happen is an immediate connection refusal.
+#    What we assert:
+#      * lhci gets PAST the token guard (NO "Must provide token") and fails on
+#        the CONNECTION — only possible if it read the token from LHCI_TOKEN,
+#        since nothing is passed on argv;
+#      * the token sentinel appears NOWHERE in stdout/stderr (the `==> lhci
+#        upload ...` banner and LHCI's own logging are both clean);
+#      * the exit is the exact functional failure (1), not a watchdog kill.
+#    The sentinel is handed to `docker run` by env NAME only (-e PLUGIN_UPLOAD_
+#    TOKEN with the value exported just for that command), so it never lands on
+#    this script's own argv either.
+make_case lhci '{}'
+set +e
+OUT="$(PLUGIN_UPLOAD_TOKEN="$TOKEN_SENTINEL" timeout --kill-after=10s 60s \
+  docker run --rm --network none --name "$CLHCI" \
+    -v "$W/lhci:/workspace" -w /workspace \
+    -e PLUGIN_UPLOAD_TARGET=lhci \
+    -e PLUGIN_UPLOAD_SERVER_BASE_URL=http://127.0.0.1:9 \
+    -e PLUGIN_ASSERTIONS=off \
+    -e PLUGIN_UPLOAD_TOKEN \
+    "$IMG" 2>&1)"; RC=$?
+set -e
+case "$RC" in
+  124) die "lhci upload hung (watchdog timeout 60s fired) — expected a fast connection refusal" "$OUT" ;;
+  137) die "lhci upload had to be SIGKILLed (watchdog --kill-after) — it hung" "$OUT" ;;
+  1)   ;; # the exact functional exit observed: upload failed on the connection
+  0)   die "lhci upload exited 0 against an unreachable server — unexpected" "$OUT" ;;
+  *)   die "lhci upload exited with unexpected code $RC (expected 1)" "$OUT" ;;
+esac
+# Got past the token requirement (so LHCI_TOKEN was honoured)...
+grep -qi "Must provide token" <<<"$OUT" \
+  && die "lhci still demands a token — LHCI_TOKEN was not honoured by the shipped binary" "$OUT"
+# ...and failed on the connection to the unreachable server.
+grep -qi "ECONNREFUSED" <<<"$OUT" \
+  || die "expected a connection-refused error from the unreachable lhci server" "$OUT"
+# The token never surfaced in any output.
+grep -qF "$TOKEN_SENTINEL" <<<"$OUT" \
+  && die "build-token sentinel leaked into the lhci upload output" "$OUT"
+# The upload banner ran but carried no token.
+grep -q "lhci upload" <<<"$OUT" || die "upload stage did not run for upload-target=lhci" "$OUT"
+docker rm -f "$CLHCI" >/dev/null 2>&1 || true
 
 SMOKE_OK=1
 echo "PASS: lighthouse-ci smoke"

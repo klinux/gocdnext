@@ -80,6 +80,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **lighthouse-ci plugin — self-hosted LHCI build token no longer lands on
+  process argv or in the build log.** Resolves #339. For `upload-target=lhci` the
+  plugin passed the secret build token as `lhci upload --token=<value>`, which
+  put it on the `lhci` child's argv (readable via `ps` / `/proc/<pid>/cmdline`)
+  and — because the wrapper echoes `==> lhci upload ${upload_args[*]}` before
+  exec — printed it verbatim into the job log. The token now rides the
+  `LHCI_TOKEN` environment variable, which `@lhci/cli` maps to the upload `token`
+  option through yargs' `.env('LHCI')`, so it reaches no argv and no log line;
+  `--serverBaseUrl` stays a flag (not a secret). The env channel is scoped to the
+  `lhci` target only. No change to the contract — `upload-token:` is still piped
+  via `secrets:`; this only removes the argv/log exposure of a value that was
+  already a secret env input. `entrypoint_test.sh` (new) uses a mock `lhci` to
+  prove the token is absent from the upload argv and the echoed banner but
+  reaches the child via `LHCI_TOKEN` (negative-control-verified), that a non-lhci
+  target never exports it, and that the validation exits (unknown target,
+  missing server-base-url) leak nothing; `smoke_test.sh` runs the shipped
+  lhci 0.16.0 against an unreachable server (`127.0.0.1:9`, `--network none`,
+  watchdog) and proves the binary gets **past** the token guard (no "Must provide
+  token") and fails on the connection — i.e. it read the token from the env — with
+  the token sentinel absent from all output.
+
 - **buildx plugin — AWS layer-cache credentials no longer land on process argv
   or in the builder's `Config.Env`.** Resolves #335. For `cache: bucket` the
   plugin configured the S3 cache secret by passing `docker buildx create

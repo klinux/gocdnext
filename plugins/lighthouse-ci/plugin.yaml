@@ -48,7 +48,8 @@ inputs:
     required: false
     description: >
       Build token for a self-hosted LHCI server. Pipe via
-      secrets:.
+      secrets:. Passed to lhci through the LHCI_TOKEN env var,
+      so it never appears on the process argv or in the job log.
   assertions:
     required: false
     default: "on"
