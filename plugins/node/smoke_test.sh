@@ -27,6 +27,30 @@ plug() {
 mkfix() { local d="${WORK}/$1"; mkdir -p "$d"; printf '%s' "$2" >"$d/package.json"; echo "$d"; }
 die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2"; }; exit 1; }
 
+# 0. base is trixie and the THREE OS packages the migration targets carry the
+#    fix. This is the whole reason for the bookworm->trixie move: libsqlite3-0
+#    (CVE-2025-7458), linux-libc-dev (CVE-2026-99083) and zlib1g
+#    (CVE-2023-45853) have no bookworm fix. Compare with dpkg, NOT a regex:
+#    Debian versions don't sort lexically (e.g. "3.5" < "3.46"), so a regex
+#    floor would false-pass a lower version. Floors (first trixie fixed
+#    version): zlib1g >= 1:1.3 (bookworm shipped 1:1.2.13), libsqlite3-0 >= 3.46
+#    (bookworm shipped 3.40.x), linux-libc-dev >= 6.12.115-2 (CVE-2026-99083;
+#    per the Debian security tracker, pulled in via build-essential -> libc6-dev).
+osv="$(docker run --rm --network none --entrypoint sh "${IMG}" -c '
+  printf "debian %s\n" "$(cat /etc/debian_version)"
+  z="$(dpkg-query -W -f="\${Version}" zlib1g)"
+  s="$(dpkg-query -W -f="\${Version}" libsqlite3-0)"
+  l="$(dpkg-query -W -f="\${Version}" linux-libc-dev)"
+  printf "zlib1g %s\n" "$z"; printf "libsqlite3-0 %s\n" "$s"; printf "linux-libc-dev %s\n" "$l"
+  dpkg --compare-versions "$z" ge "1:1.3"     && echo ZLIB_FIXED       || echo ZLIB_UNFIXED
+  dpkg --compare-versions "$s" ge "3.46"      && echo SQLITE_FIXED     || echo SQLITE_UNFIXED
+  dpkg --compare-versions "$l" ge "6.12.115-2" && echo LINUX_LIBC_FIXED || echo LINUX_LIBC_UNFIXED
+')" || die "OS probe failed" "$osv"
+grep -qE '^debian 13\.'      <<<"$osv" || die "base is not Debian trixie (13.x)" "$osv"
+grep -qx 'ZLIB_FIXED'        <<<"$osv" || die "zlib1g does not carry the CVE-2023-45853 fix (>= 1:1.3)" "$osv"
+grep -qx 'SQLITE_FIXED'      <<<"$osv" || die "libsqlite3-0 does not carry the CVE-2025-7458 fix (>= 3.46)" "$osv"
+grep -qx 'LINUX_LIBC_FIXED'  <<<"$osv" || die "linux-libc-dev does not carry the CVE-2026-99083 fix (>= 6.12.115-2)" "$osv"
+
 # 1. node major selected from engines.node AND actually on PATH inside the
 #    `bash -lc` the entrypoint execs (the /etc/profile-reset bug).
 for maj in 20 22 24; do

@@ -10,6 +10,23 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **node plugin → Debian trixie base, OS CRITICALs cleared.** Migrated the v3
+  multi-version image (node 20/22/24 + bun) from bookworm to trixie: the three
+  node builder stages to `node:{20,22,24}-trixie-slim` and the final runtime to
+  `debian:trixie-slim` (all pinned by digest). bookworm had no fix for
+  `libsqlite3-0` CVE-2025-7458, `linux-libc-dev` CVE-2026-99083 or `zlib1g`
+  CVE-2023-45853; trixie ships the fixed versions (debian 13.7: zlib1g
+  `1:1.3...`, libsqlite3-0 `3.46.1`, linux-libc-dev `6.12.116`). The node
+  binaries are unchanged (only `/usr/local` is copied out of the builders); the
+  npm 11.19.1 bump for the node-tar CVE-2026-59873 (node 20/22) is retained.
+  Trivy `--ignore-unfixed --pkg-types os,library` (DB 2026-11-07): **0 CRITICAL**;
+  residual HIGH are node-runtime-bundled libs (`undici`, `brace-expansion`),
+  unchanged by the base move. The zlib1g `os-no-fix` baseline exception drops
+  `node` from its target list. `smoke_test.sh` gains an OS-base probe (dpkg
+  version compare: trixie 13.x with the fixed zlib/sqlite) on top of the existing
+  version-selection / npm-tar / bun / corepack coverage. Node 20 is EOL
+  (2026-04-30); replacement tracked in #373.
+
 - **codecov plugin → Debian trixie base, 2 OS CRITICALs cleared.** Migrated from
   `python:3.12-slim-bookworm` to `python:3.12-slim-trixie` (pinned by digest).
   bookworm had no fix for `zlib1g` CVE-2023-45853 or `libsqlite3-0`
