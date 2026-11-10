@@ -80,6 +80,15 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **argocd plugin — command args no longer glob-expand against the CWD.**
+  #361 sweep (after aws-cli #377, gcloud #378). The wrapper word-split
+  `${PLUGIN_COMMAND}` **unquoted** in `exec argocd "${flags[@]}" ${PLUGIN_COMMAND}
+  "${extra[@]}"`, so a `*`/`?`/`[…]` token (e.g. a `-l` label selector) also
+  underwent pathname expansion against the container's working directory. `set -f`
+  before the split; word-splitting still applies, and the quoted `flags`/`extra`
+  arrays (`--plugin-env` CMP value) are unaffected. Adds a glob regression case to
+  `entrypoint_test.sh` (literal `*` reaches argocd).
+
 - **gcloud plugin — command args no longer glob-expand against the workspace.**
   #361 sweep (after aws-cli #377). `exec gcloud ${PLUGIN_COMMAND}
   "${project_args[@]}"` word-split `${PLUGIN_COMMAND}` unquoted, so a `*`/`?`/`[…]`
