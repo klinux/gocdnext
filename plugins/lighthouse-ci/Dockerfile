@@ -38,9 +38,14 @@
 #                       to fail builds on budget misses.
 # patrickhulce/lhci-client (the upstream "Chromium + LHCI" image)
 # stopped publishing the 0.14.x tag, so we build the runtime
-# ourselves on top of node + Debian Bookworm's chromium package.
+# ourselves on top of node + Debian trixie's chromium package.
 # Both packages ship for amd64 AND arm64, which is what makes
 # the multi-arch matrix land.
+#
+# Debian trixie (13): bookworm had no fix for libsqlite3-0 (CVE-2025-7458),
+# glib (CVE-2026-58016) or zlib1g (CVE-2023-45853); trixie ships all three
+# fixed. (libxml2 CVE-2026-6653 is "no-dsa" in BOTH releases, so trixie does
+# NOT clear it — it stays signed off in plugins/.trivy-baseline.yaml.)
 #
 # Base pinned by version+digest. This image bundles Chromium, which processes
 # potentially hostile web content, so a STALE build is a real exposure. The
@@ -48,13 +53,13 @@
 # cached at Chromium 149 and never refreshed. Two measures: (1) the base is
 # digest-pinned so the apt layer refreshes exactly when the digest is bumped,
 # and (2) `apt-get upgrade` applies Debian security backports at build time
-# (so OS packages, incl. Chromium, are current — Chromium 156+ now). The weekly
-# Trivy gate catches drift and forces the next bump.
+# (so OS packages, incl. Chromium, are current). The weekly Trivy gate catches
+# drift and forces the next bump.
 #
 # NOTE: `apt-get upgrade` pulls from Debian's MUTABLE security repos, so the
 # OS-package set is security-patched at build time, not byte-identical
 # build-to-build; the FROM digest pins only the base layer.
-FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+FROM node:22-trixie-slim@sha256:be1e2a3dc2c4fd68cdfadad2a696a280e0d2749098bee509230174d72fb768c6
 
 ENV PUPPETEER_SKIP_DOWNLOAD=1 \
     CHROME_PATH=/usr/bin/chromium
