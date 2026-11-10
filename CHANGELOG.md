@@ -80,6 +80,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **playwright plugin — extra args no longer glob-expand against the working
+  dir.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet #380,
+  go #381, gradle #382, semgrep #383, gitleaks #384, golangci-lint #385) — final
+  plugin. `exec npx playwright "${cmd}" "${args[@]}" ${PLUGIN_EXTRA_ARGS:-}`
+  word-split `${PLUGIN_EXTRA_ARGS}` **unquoted**, so a `*`/`?`/`[…]` in the extra
+  args (e.g. a test filter `tests/*.spec.ts`) also underwent pathname expansion
+  against the working directory. `set -f` before the dispatch; word-splitting
+  still applies, and the quoted `"${cmd}"`/`"${args[@]}"` are unaffected. Ships a
+  new `entrypoint_test.sh` (the plugin had only a smoke): default reporter/command
+  assembly, modelled-input flag mapping, and the glob regression asserting the
+  exact argv vector. Verified via negative control: without the fix, `*.spec.ts`
+  expands to the decoy spec filenames.
+
 - **golangci-lint plugin — run args no longer glob-expand against the working
   dir.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet #380,
   go #381, gradle #382, semgrep #383, gitleaks #384). `exec golangci-lint run
