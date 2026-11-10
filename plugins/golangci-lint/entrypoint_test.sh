@@ -23,6 +23,10 @@ cat >"$TMP/golangci-lint" <<'EOF'
   echo "GOCACHE=${GOCACHE:-<unset>}"
   echo "PWD=$(pwd)"
   echo "ARGS=$*"
+  # Also record argv one-per-line so a test can assert the EXACT vector
+  # (order + count + boundaries); ARGS=$* joins the args and can't prove a
+  # literal `*` was not glob-expanded into separate filename args.
+  for a in "$@"; do echo "ARG=$a"; done
 } >> "$LOG"
 exit 0
 EOF
@@ -39,6 +43,13 @@ run() { # run <logfile> <env-assignments...>
 }
 check() { # check <logfile> <grep-pattern> <message>
   grep -q "$2" "$1" || { echo "FAIL: $3"; echo "--- $1 ---"; cat "$1"; fails=$((fails+1)); }
+}
+assert_argv() { # assert_argv <logfile> <expected args...> -- exact argv vector
+  local log="$1"; shift
+  local got expected
+  got="$(grep '^ARG=' "$log")"
+  expected="$(printf 'ARG=%s\n' "$@")"
+  [ "$got" = "$expected" ]
 }
 
 mkdir -p "$TMP/ws/api" "$TMP/home"
@@ -68,6 +79,15 @@ check "$TMP/4.log" "^GOLANGCI_LINT_CACHE=$TMP/abs-lint\$" "absolute GOLANGCI_LIN
 # 5. Args passthrough: PLUGIN_TIMEOUT + PLUGIN_ARGS land on the golangci-lint argv.
 run "$TMP/5.log" PLUGIN_TIMEOUT="3m" PLUGIN_ARGS="./cmd/..."
 check "$TMP/5.log" "^ARGS=run --timeout 3m ./cmd/...\$" "PLUGIN_TIMEOUT + PLUGIN_ARGS should pass through to golangci-lint run"
+
+# 6. word-split does NOT glob-expand against the workspace (#361): a `*` token
+# in PLUGIN_ARGS must reach golangci-lint literally, not be rewritten into the
+# .go files sitting in the working dir (which would inflate the argv vector).
+# Default timeout is 5m. Assert the EXACT vector [run, --timeout, 5m, *.go].
+: >"$TMP/ws/main_a.go"; : >"$TMP/ws/main_b.go"
+run "$TMP/6.log" PLUGIN_ARGS="*.go"
+assert_argv "$TMP/6.log" run --timeout 5m '*.go' \
+  || { echo "FAIL: PLUGIN_ARGS glob-expanded against the workspace"; echo "--- $TMP/6.log ---"; cat "$TMP/6.log"; fails=$((fails+1)); }
 
 if [ "$fails" -eq 0 ]; then
   echo "PASS: golangci-lint entrypoint"
