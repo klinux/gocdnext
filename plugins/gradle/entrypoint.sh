@@ -264,10 +264,18 @@ if [ -n "${testcontainers_tool_opts# }" ]; then
     echo "gocdnext/gradle: bridged TESTCONTAINERS_* env vars to JAVA_TOOL_OPTIONS so they reach test forks"
 fi
 
+# Unquoted expansion is intentional on two counts: empty flags (tri-state "no
+# flag" cases) disappear via word-splitting instead of landing as empty
+# positional args gradle would reject, and PLUGIN_COMMAND / extra_args are
+# word-split into argv. But an unquoted expansion ALSO undergoes pathname (glob)
+# expansion, so a `*`/`?`/`[…]` in PLUGIN_COMMAND or in args (e.g. a task filter
+# `-x '*Test'`, or `build *.jar`) would be silently rewritten by whatever files
+# sit in the workspace before gradle sees it. `set -f` disables globbing while
+# leaving word-splitting intact, so both expansions reach gradle literally. The
+# plugin-built flags carry no globs, so they're unaffected. (#361)
+set -f
+
 echo "==> ${CLI} ${daemon_flag} ${console_flag} ${build_cache_flag} ${parallel_flag} ${config_cache_flag} ${PLUGIN_COMMAND} ${extra_args}"
-# Unquoted expansion so empty flags (tri-state "no flag" cases)
-# disappear via word-splitting instead of landing as empty
-# positional args that gradle would reject.
 # shellcheck disable=SC2086
 exec "${CLI}" \
     ${daemon_flag} \
