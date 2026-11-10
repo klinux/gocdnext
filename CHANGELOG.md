@@ -80,6 +80,39 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **buildx plugin — AWS layer-cache credentials no longer land on process argv
+  or in the builder's `Config.Env`.** Resolves #335. For `cache: bucket` the
+  plugin configured the S3 cache secret by passing `docker buildx create
+  --driver-opt env.AWS_SECRET_ACCESS_KEY=<value>` (and `AWS_SESSION_TOKEN`),
+  which put the resolved secret on the `docker buildx create` argv — readable via
+  `ps` / `/proc/<pid>/cmdline` / any sidecar sharing the PID namespace. (Even
+  `docker run -e NAME` would only move it to the container's `Config.Env`, still
+  readable via `docker inspect`.) The `bucket` path now runs a **self-managed
+  BuildKit** container (`docker create --rm --privileged`, pinned/override image)
+  and hands it the credentials through an **AWS shared-credentials file** written
+  `umask 077` (0600, incl. `aws_session_token` when present) and copied in with
+  `docker cp` — the value crosses no argv or `Config.Env` boundary — then attaches
+  buildx via the remote driver (`--driver remote docker-container://`). Only
+  non-secret knobs ride as env: the checksum opt-out and the credentials-file
+  **path**. `registry`/`inline`/`none` keep the standard docker-container driver
+  (no secret, smaller blast radius). Scope: static keys/HMAC + `AWS_SESSION_TOKEN`;
+  IRSA/Workload Identity is a separate follow-up. New opt-in
+  `GOCDNEXT_LAYER_CACHE_USE_PATH_STYLE=true` emits S3 path-style on **both** cache
+  specs (needed for MinIO and other S3-compatible stores without
+  `bucket.<endpoint>` virtual-host DNS; AWS/GCS/R2 keep virtual-host) — validated
+  up front, never inferred from the endpoint. `entrypoint_test.sh` proves the
+  secret + session token reach no docker argv (negative-control-verified), a
+  partial credential fails fast instead of silently using the SDK default chain,
+  and the path-style knob is opt-in/dual-spec/validated; `smoke_test.sh` stands up
+  an S3-compatible store (`adobe/s3mock`, pinned; `minio/minio` isn't pullable
+  through this CI's Docker Hub mirror) inside DinD and proves, by inspecting the
+  live self-managed buildkitd, that neither sentinel is in its argv or
+  `Config.Env` while the 0600 creds file holds both, the mirror config is staged +
+  wired, teardown happens on a forced failure, and a path-style S3 round-trip
+  exports (build #1) then imports `CACHED` (build #2) with cleanup on success. Residual, by construction: whoever controls
+  `docker.sock` controls the daemon and can read the builder filesystem — this
+  removes incidental argv/metadata exposure, not the Docker admin.
+
 - **playwright plugin — extra args no longer glob-expand against the working
   dir.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet #380,
   go #381, gradle #382, semgrep #383, gitleaks #384, golangci-lint #385) — final
