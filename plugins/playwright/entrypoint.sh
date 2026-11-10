@@ -20,9 +20,11 @@ export PLAYWRIGHT_JUNIT_OUTPUT_NAME="${PLAYWRIGHT_JUNIT_OUTPUT_NAME:-test-result
 export PLAYWRIGHT_HTML_OPEN="${PLAYWRIGHT_HTML_OPEN:-never}"
 
 # Detect the package manager from the lockfile on disk. Same
-# priority GitHub Actions and Vercel use. Falls back to npm
-# when nothing's locked — Playwright tests without package.json
-# would be a config bug, so we don't cover that branch.
+# priority GitHub Actions and Vercel use. Falls back to npm when a
+# package.json exists without a lockfile. With no package.json at
+# all it returns "none" and the caller skips dependency
+# installation; the mock entrypoint_test uses that path to isolate
+# argv dispatch from a real install.
 detect_manager() {
     if [ -f "pnpm-lock.yaml" ]; then echo pnpm; return; fi
     if [ -f "yarn.lock" ]; then echo yarn; return; fi
