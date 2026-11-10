@@ -24,6 +24,10 @@ cat >"$TMP/go" <<'EOF'
   echo "GOCACHE=${GOCACHE:-<unset>}"
   echo "PWD=$(pwd)"
   echo "ARGS=$*"
+  # Also record argv one-per-line so a test can assert exact boundaries;
+  # ARGS=$* alone collapses them (a `*` glob-expanded into N files looks
+  # the same joined as a literal `*` would not).
+  for a in "$@"; do echo "ARG=$a"; done
 } >> "$LOG"
 exit 0
 EOF
@@ -41,6 +45,13 @@ run() { # run <logfile> <env-assignments...> -- runs the entrypoint in a fresh w
 }
 check() { # check <logfile> <grep-pattern> <message>
   grep -q "$2" "$1" || { echo "FAIL: $3"; echo "--- $1 ---"; cat "$1"; fails=$((fails+1)); }
+}
+assert_argv() { # assert_argv <logfile> <expected args...> -- exact argv vector
+  local log="$1"; shift
+  local got expected
+  got="$(grep '^ARG=' "$log")"
+  expected="$(printf 'ARG=%s\n' "$@")"
+  [ "$got" = "$expected" ]
 }
 
 mkdir -p "$TMP/ws/api" "$TMP/home"
@@ -84,6 +95,16 @@ check "$TMP/7.log" "^GOCACHE=$TMP/ws/.rel-cache\$" "relative GOCACHE override sh
 # entrypoint mkdir -p's it).
 run "$TMP/8.log" PLUGIN_COMMAND="test ./..." GOMODCACHE="$TMP/abs-mod"
 check "$TMP/8.log" "^GOMODCACHE=$TMP/abs-mod\$" "absolute GOMODCACHE override should be kept"
+
+# 9. word-split does NOT glob-expand against the working dir (#361): a `*`
+# token must reach go as a literal arg, not be rewritten into the .go files
+# sitting in the working dir (which would inflate the argv vector). Assert the
+# EXACT vector [build, *.go] — ARGS=$* alone can't tell a literal `*` from a
+# glob expansion.
+mkdir -p "$TMP/ws/globws"; : >"$TMP/ws/globws/main_a.go"; : >"$TMP/ws/globws/main_b.go"
+run "$TMP/9.log" PLUGIN_WORKING_DIR="globws" PLUGIN_COMMAND="build *.go"
+assert_argv "$TMP/9.log" build '*.go' \
+  || { echo "FAIL: command glob-expanded against the working dir"; echo "--- $TMP/9.log ---"; cat "$TMP/9.log"; fails=$((fails+1)); }
 
 if [ "$fails" -eq 0 ]; then
   echo "PASS: go entrypoint"

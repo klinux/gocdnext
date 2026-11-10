@@ -80,6 +80,15 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **go plugin — command args no longer glob-expand against the working dir.**
+  #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet #380). `exec go
+  ${PLUGIN_COMMAND}` word-split the command **unquoted**, so a `*`/`?`/`[…]` token
+  (e.g. `build *.go`) also underwent pathname expansion against the working
+  directory. `set -f` before the dispatch; word-splitting still applies.
+  `entrypoint_test.sh` gains a glob regression case asserting the exact argv
+  vector `[build, *.go]` (the stub now also logs argv one-per-line, since
+  `ARGS=$*` alone can't distinguish a literal `*` from a glob expansion).
+
 - **dotnet plugin — command args no longer glob-expand against the working dir.**
   #361 sweep (after aws-cli #377, gcloud #378, argocd #379). `exec dotnet
   ${PLUGIN_COMMAND}` word-split the command **unquoted**, so a `*`/`?`/`[…]` token
