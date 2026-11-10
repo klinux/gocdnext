@@ -28,17 +28,30 @@
 #   PLUGIN_CA_BUNDLE  (opt)       PEM/base64 CA -> pinned TLS verify.
 #   PLUGIN_CONFIG_TOKEN (opt)     bearer for fetching defaults/template URLs.
 #
-# Debian slim (not alpine) because the entrypoint is bash and gio targets
-# CPython 3.7–3.9 — so Python stays on 3.9 (bumping it risks the gio fork).
-# Base pinned by digest; `apt-get upgrade` below applies Debian security
-# backports at build time (the published :v1 had carried stale OpenSSL/GnuTLS
-# CRITICALs because its apt layer was cache-frozen). The plugin opts into
-# `no_cache` in plugin.yaml so the publish build can't re-import that stale layer.
+# Debian slim (not alpine) because the entrypoint is bash. Ported off EOL
+# Python 3.9 (EOL 2025-10-31, #341) to Python 3.12 on Debian trixie (13). The
+# gio fork was built for CPython 3.7–3.9 but runs clean on 3.12: it imports,
+# `apim apis definition generate`/`lint` return errors(0), and its async code
+# path — `apim apis list`, which the entrypoint runs on EVERY invocation to
+# resolve the API id by name (ls.py -> api_async.py: asyncio.get_event_loop +
+# run_until_complete + a ThreadPoolExecutor) — works on 3.12: get_event_loop is
+# deprecated but not removed. The smoke exercises that command against a mock
+# Management API. The fork still declares the dead `asyncio` BACKPORT
+# (asyncio==3.4.3) as a dep, so it is installed, but it is
+# INERT: stdlib asyncio is ahead of site-packages on sys.path, so `import
+# asyncio` resolves to /usr/local/lib/python3.12/asyncio, not the backport.
+#
+# Moving to trixie also clears the OS CRITICALs bookworm had no fix for
+# (libsqlite3-0 CVE-2025-7458, zlib1g CVE-2023-45853). Base pinned by digest;
+# `apt-get upgrade` below applies Debian security backports at build time (the
+# published :v1 had carried stale OpenSSL/GnuTLS CRITICALs because its apt layer
+# was cache-frozen). The plugin opts into `no_cache` in plugin.yaml so the
+# publish build can't re-import that stale layer.
 #
 # NOTE: `apt-get upgrade` pulls Debian's MUTABLE security repos, so the OS set is
 # patched at build time, not byte-identical build-to-build; the FROM digest pins
 # only the base layer, and the weekly Trivy gate catches drift.
-FROM python:3.9-slim-bookworm@sha256:a02e9c5406c416c504d6c9a1a306ff4080c3173f1008d192f953bd20382a2d5c
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 # graviteeio-cli: the klinux-maintained fork (graviteeio-cli 0.4 + fixes) — it
 # accepts a Resource `configuration` OBJECT in the gio_apim definition schema
