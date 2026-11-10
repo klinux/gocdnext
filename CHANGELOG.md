@@ -80,6 +80,16 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **aws-cli plugin — command args no longer glob-expand against the workspace.**
+  Part of the #361 sweep (after helm #359, buf/kubectl/kustomize #360). The
+  wrapper word-split `${PLUGIN_COMMAND}` **unquoted** (`exec aws ${PLUGIN_COMMAND}
+  …`), so a `*`/`?`/`[…]` in the command also underwent pathname expansion and
+  was silently rewritten from whatever files sat in the workspace (e.g. `s3 cp *`
+  became the actual filenames). Now runs `set -f` (disable globbing) right before
+  the split; word-splitting — the intended behaviour — still applies. Adds
+  `entrypoint_test.sh` (new) asserting a literal `*` reaches aws, plus the
+  command/profile/region dispatch.
+
 - **Plugin Trivy gate — three signed-off `os-no-fix` baseline exceptions.** After
   the v0.127.0 release re-scan, three OS-package CRITICALs remain with no fix in
   the supported Debian release scanned, each reviewed against the Debian security
