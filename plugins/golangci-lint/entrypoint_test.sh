@@ -23,9 +23,9 @@ cat >"$TMP/golangci-lint" <<'EOF'
   echo "GOCACHE=${GOCACHE:-<unset>}"
   echo "PWD=$(pwd)"
   echo "ARGS=$*"
-  # Also record argv one-per-line so a test can assert the EXACT vector
-  # (order + count + boundaries); ARGS=$* joins the args and can't prove a
-  # literal `*` was not glob-expanded into separate filename args.
+  # Also record argv one-per-line so a test can assert the EXACT vector:
+  # ARGS=$* joins the args and cannot prove order/count/boundaries or catch
+  # the whole command arriving as one arg.
   for a in "$@"; do echo "ARG=$a"; done
 } >> "$LOG"
 exit 0
