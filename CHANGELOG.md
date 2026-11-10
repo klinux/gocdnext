@@ -80,6 +80,13 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **gcloud plugin — command args no longer glob-expand against the workspace.**
+  #361 sweep (after aws-cli #377). `exec gcloud ${PLUGIN_COMMAND}
+  "${project_args[@]}"` word-split `${PLUGIN_COMMAND}` unquoted, so a `*`/`?`/`[…]`
+  also glob-expanded against the workspace (`storage cp *` became the actual
+  filenames). `set -f` before the split; word-splitting still applies. Adds a
+  glob regression case to `entrypoint_test.sh` (literal `*` reaches gcloud).
+
 - **aws-cli plugin — command args no longer glob-expand against the workspace.**
   Part of the #361 sweep (after helm #359, buf/kubectl/kustomize #360). The
   wrapper word-split `${PLUGIN_COMMAND}` **unquoted** (`exec aws ${PLUGIN_COMMAND}
