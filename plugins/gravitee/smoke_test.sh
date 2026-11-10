@@ -19,7 +19,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-gravitee:smoke-$$"
 W="$(mktemp -d)"
-cleanup() { docker image rm -f "$IMG" >/dev/null 2>&1 || true; rm -rf "$W" 2>/dev/null || true; }
+NET="gravnet-$$"       # user-defined docker network for the mock Management API
+MOCK="gravmock-$$"     # mock-server container name
+cleanup() {
+  docker rm -f "$MOCK" >/dev/null 2>&1 || true
+  docker network rm "$NET" >/dev/null 2>&1 || true
+  docker image rm -f "$IMG" >/dev/null 2>&1 || true
+  rm -rf "$W" 2>/dev/null || true
+}
 trap cleanup EXIT
 die() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output ---"; echo "$2" | tail -40; }; exit 1; }
 
@@ -53,6 +60,78 @@ AF="$(docker run --rm --entrypoint python3 "$IMG" -c 'import asyncio; print(asyn
   || die "python3 import asyncio failed" "$AF"
 grep -q '/usr/local/lib/python3.12/asyncio/' <<<"$AF" \
   || die "stdlib asyncio is shadowed by the backport (resolved to: $AF)"
+
+# gio's ASYNC path runs on every real invocation: the entrypoint resolves the
+# API id by name with `gio apim apis list` (entrypoint.sh), which drives
+# ls.py -> api_async.py (asyncio.get_event_loop + run_until_complete + a
+# ThreadPoolExecutor that fetches each API's /state). get_event_loop is
+# DEPRECATED but not removed in 3.12, so this is exactly what the port must
+# prove. Stand up a mock Management API (served by the image's OWN python3) on a
+# private docker network and run the real command against it: it exercises the
+# event loop + executor AND the refreshed requests/urllib3 over a live socket.
+echo "==> gio async list path works on 3.12 (real event loop + executor + HTTP)"
+cat >"$W/mock.py" <<'PY'
+import json, os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+API_ID, API_NAME = "smoke-api-id", "smoke-api"
+class H(BaseHTTPRequestHandler):
+    def _send(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-type", "application/json")
+        self.send_header("Content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_GET(self):
+        p = self.path.split("?", 1)[0]
+        if p.endswith("/state"):                       # per-API state (executor)
+            self._send({"is_synchronized": True})
+        elif p.rstrip("/").endswith("/apis"):          # the listing endpoint
+            self._send([{"id": API_ID, "name": API_NAME, "tags": [],
+                         "state": "started", "workflow_state": None}])
+        else:
+            self._send([])
+    def log_message(self, *a):  # quiet
+        pass
+if __name__ == "__main__":
+    HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+PY
+docker network create "$NET" >/dev/null || die "could not create docker network"
+docker run -d --name "$MOCK" --network "$NET" -v "$W:/w:ro" \
+  --entrypoint python3 "$IMG" /w/mock.py >/dev/null || die "could not start mock server"
+# Readiness: poll the listing endpoint (bounded) before invoking gio.
+ready=0
+for _ in $(seq 1 15); do
+  if docker run --rm --network "$NET" --entrypoint curl "$IMG" -fsS -m 2 \
+       "http://$MOCK:8080/management/organizations/DEFAULT/environments/DEFAULT/apis/" \
+       >/dev/null 2>&1; then ready=1; break; fi
+  sleep 1
+done
+[ "$ready" = 1 ] || die "mock Management API did not become ready" "$(docker logs "$MOCK" 2>&1 | tail -20)"
+
+set +e
+OUT="$(timeout --kill-after=10s 120s docker run --rm --network "$NET" \
+  -e GIO_APIM_URL="http://$MOCK:8080" -e GIO_APIM_TOKEN=smoke-dummy \
+  -e GIO_APIM_ORG=DEFAULT -e GIO_APIM_ENV=DEFAULT \
+  --entrypoint gio "$IMG" apim apis list -q "[?name=='smoke-api'].id" -o json 2>&1)"
+RC=$?
+set -e
+case "$RC" in 124|137) die "async list timed out (watchdog RC=$RC) — event loop hung on 3.12" "$OUT" ;; esac
+[ "$RC" -eq 0 ] || die "gio apim apis list (async path) exited $RC on 3.12" "$OUT"
+grep -q 'smoke-api-id' <<<"$OUT" || die "async list did not return the expected API id" "$OUT"
+# Prove the executor-driven /state fetch populated is_synchronized (not just the
+# bare listing): a second projection must surface the value the state endpoint returned.
+set +e
+OUT2="$(timeout --kill-after=10s 120s docker run --rm --network "$NET" \
+  -e GIO_APIM_URL="http://$MOCK:8080" -e GIO_APIM_TOKEN=smoke-dummy \
+  -e GIO_APIM_ORG=DEFAULT -e GIO_APIM_ENV=DEFAULT \
+  --entrypoint gio "$IMG" apim apis list -q "[?name=='smoke-api'].is_synchronized" -o json 2>&1)"
+RC2=$?
+set -e
+[ "$RC2" -eq 0 ] || die "gio async state projection exited $RC2" "$OUT2"
+grep -q 'true' <<<"$OUT2" || die "executor /state fetch did not populate is_synchronized" "$OUT2"
+docker rm -f "$MOCK" >/dev/null 2>&1 || true
+docker network rm "$NET" >/dev/null 2>&1 || true
 
 echo "==> yq is the bumped v4.54.2"
 OUT="$(docker run --rm --entrypoint yq "$IMG" --version 2>&1)" || die "yq --version failed" "$OUT"

@@ -14,9 +14,12 @@ convention that minor bumps may carry breaking changes until 1.0).
   cleared.** Resolves #341. Migrated from `python:3.9-slim-bookworm` (3.9 EOL
   2025-10-31) to `python:3.12-slim-trixie` (pinned by digest). The
   `klinux/gravitee-cli` fork (built for CPython 3.7–3.9) runs clean on 3.12:
-  `gio apim apis definition generate`/`lint` return `errors(0)`, and its only
-  async code (`apis ls`, unused by this plugin) uses `asyncio.get_event_loop()`,
-  deprecated but not removed in 3.12. `requirements.txt` regenerated hash-locked
+  `gio apim apis definition generate`/`lint` return `errors(0)`, and its async
+  path — `gio apim apis list`, run on every invocation to resolve the API id by
+  name (asyncio.get_event_loop + run_until_complete + a ThreadPoolExecutor that
+  fetches each API's /state) — works on 3.12 (get_event_loop deprecated but not
+  removed); the smoke exercises it against a mock Management API.
+  `requirements.txt` regenerated hash-locked
   on 3.12 (`pip install --require-hashes`); gio stays 0.4.1, yq stays v4.54.2.
   The fork still declares the dead `asyncio` backport (`asyncio==3.4.3`) so it is
   installed, but it is **inert** — stdlib `asyncio` shadows it on `sys.path`
