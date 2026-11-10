@@ -80,6 +80,18 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **semgrep plugin — config and paths no longer glob-expand against the
+  workspace.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet
+  #380, go #381, gradle #382). Two unquoted loop-splits built the argv — `for c
+  in ${CONFIG}` and `for p in ${PLUGIN_PATHS}` (IFS=', ') — so a `*`/`?`/`[…]` in
+  config or paths (e.g. `paths: "src/*.py"`) underwent pathname expansion against
+  the workspace before semgrep saw it. `set -f` before both loops; the IFS word-
+  splitting still applies. Ships a new `entrypoint_test.sh` (the plugin had only
+  a smoke): fail-on validation, CONFIG/PATHS splitting, and two glob regressions
+  (one per expansion) that assert a literal `*` reaches semgrep and the decoy
+  files do not. Verified via negative control (set -f stripped): both expand to
+  the decoy filenames.
+
 - **gradle plugin — command and extra args no longer glob-expand against the
   workspace.** #361 sweep (after aws-cli #377, gcloud #378, argocd #379, dotnet
   #380, go #381). The `exec` had **two** user-controlled unquoted expansions —
