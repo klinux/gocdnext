@@ -101,13 +101,15 @@ convention that minor bumps may carry breaking changes until 1.0).
   specs (needed for MinIO and other S3-compatible stores without
   `bucket.<endpoint>` virtual-host DNS; AWS/GCS/R2 keep virtual-host) — validated
   up front, never inferred from the endpoint. `entrypoint_test.sh` proves the
-  secret + session token reach no docker argv (negative-control-verified) and the
-  path-style knob is opt-in/dual-spec/validated; `smoke_test.sh` stands up MinIO
-  inside DinD and proves, by inspecting the live self-managed buildkitd, that
-  neither sentinel is in its argv or `Config.Env` while the 0600 creds file holds
-  both, the mirror config is staged + wired, teardown happens on a forced failure,
-  and a path-style S3 round-trip exports (build #1) then imports `CACHED`
-  (build #2) with cleanup on success. Residual, by construction: whoever controls
+  secret + session token reach no docker argv (negative-control-verified), a
+  partial credential fails fast instead of silently using the SDK default chain,
+  and the path-style knob is opt-in/dual-spec/validated; `smoke_test.sh` stands up
+  an S3-compatible store (`adobe/s3mock`, pinned; `minio/minio` isn't pullable
+  through this CI's Docker Hub mirror) inside DinD and proves, by inspecting the
+  live self-managed buildkitd, that neither sentinel is in its argv or
+  `Config.Env` while the 0600 creds file holds both, the mirror config is staged +
+  wired, teardown happens on a forced failure, and a path-style S3 round-trip
+  exports (build #1) then imports `CACHED` (build #2) with cleanup on success. Residual, by construction: whoever controls
   `docker.sock` controls the daemon and can read the builder filesystem — this
   removes incidental argv/metadata exposure, not the Docker admin.
 
