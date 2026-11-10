@@ -21,7 +21,12 @@ IMG="gocdnext-plugin-gravitee:smoke-$$"
 W="$(mktemp -d)"
 NET="gravnet-$$"       # user-defined docker network for the mock Management API
 MOCK="gravmock-$$"     # mock-server container name
+CONS="gravcons-$$"     # gio CONSUMER container name (named so a watchdog kill
+                       # can't orphan it on the network; see the async section)
 cleanup() {
+  # Order: consumer first (it's attached to the network), then the mock, then
+  # the network (now with nothing attached), then the image and the workdir.
+  docker rm -f "$CONS" >/dev/null 2>&1 || true
   docker rm -f "$MOCK" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   docker image rm -f "$IMG" >/dev/null 2>&1 || true
@@ -109,8 +114,12 @@ for _ in $(seq 1 15); do
 done
 [ "$ready" = 1 ] || die "mock Management API did not become ready" "$(docker logs "$MOCK" 2>&1 | tail -20)"
 
+# Named + pre-removed consumer: if the watchdog kills the docker CLI, --rm may not
+# fire, so a leftover named container could stay attached to $NET (blocking its
+# removal). Removing "$CONS" before each run (and first in cleanup) is fail-closed.
+docker rm -f "$CONS" >/dev/null 2>&1 || true
 set +e
-OUT="$(timeout --kill-after=10s 120s docker run --rm --network "$NET" \
+OUT="$(timeout --kill-after=10s 120s docker run --rm --name "$CONS" --network "$NET" \
   -e GIO_APIM_URL="http://$MOCK:8080" -e GIO_APIM_TOKEN=smoke-dummy \
   -e GIO_APIM_ORG=DEFAULT -e GIO_APIM_ENV=DEFAULT \
   --entrypoint gio "$IMG" apim apis list -q "[?name=='smoke-api'].id" -o json 2>&1)"
@@ -121,15 +130,18 @@ case "$RC" in 124|137) die "async list timed out (watchdog RC=$RC) — event loo
 grep -q 'smoke-api-id' <<<"$OUT" || die "async list did not return the expected API id" "$OUT"
 # Prove the executor-driven /state fetch populated is_synchronized (not just the
 # bare listing): a second projection must surface the value the state endpoint returned.
+docker rm -f "$CONS" >/dev/null 2>&1 || true
 set +e
-OUT2="$(timeout --kill-after=10s 120s docker run --rm --network "$NET" \
+OUT2="$(timeout --kill-after=10s 120s docker run --rm --name "$CONS" --network "$NET" \
   -e GIO_APIM_URL="http://$MOCK:8080" -e GIO_APIM_TOKEN=smoke-dummy \
   -e GIO_APIM_ORG=DEFAULT -e GIO_APIM_ENV=DEFAULT \
   --entrypoint gio "$IMG" apim apis list -q "[?name=='smoke-api'].is_synchronized" -o json 2>&1)"
 RC2=$?
 set -e
+case "$RC2" in 124|137) die "async state projection timed out (watchdog RC=$RC2) — event loop hung" "$OUT2" ;; esac
 [ "$RC2" -eq 0 ] || die "gio async state projection exited $RC2" "$OUT2"
 grep -q 'true' <<<"$OUT2" || die "executor /state fetch did not populate is_synchronized" "$OUT2"
+docker rm -f "$CONS" >/dev/null 2>&1 || true
 docker rm -f "$MOCK" >/dev/null 2>&1 || true
 docker network rm "$NET" >/dev/null 2>&1 || true
 
