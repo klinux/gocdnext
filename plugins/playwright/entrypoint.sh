@@ -75,6 +75,15 @@ fi
 
 cmd="${PLUGIN_COMMAND:-test}"
 
+# PLUGIN_EXTRA_ARGS is word-split intentionally so an operator can pass
+# several flags in one input ("--workers=2 --retries=1"). But an UNQUOTED
+# expansion also undergoes pathname (glob) expansion, so a `*`/`?`/`[…]` in
+# the extra args — e.g. a test filter `tests/*.spec.ts` — would be silently
+# rewritten by whatever files sit in the working directory before playwright
+# sees it. `set -f` disables globbing while leaving word-splitting intact. The
+# quoted "${cmd}" / "${args[@]}" are unaffected. (#361)
+set -f
+
 echo "==> npx playwright ${cmd} ${args[*]} ${PLUGIN_EXTRA_ARGS:-}"
 # shellcheck disable=SC2086
 exec npx playwright "${cmd}" "${args[@]}" ${PLUGIN_EXTRA_ARGS:-}
