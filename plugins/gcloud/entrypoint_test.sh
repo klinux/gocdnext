@@ -56,4 +56,13 @@ rc=$(run "$TMP/5.log" PLUGIN_COMMAND="version" PLUGIN_WORKING_DIR="$TMP/wd")
 [ "$rc" = 0 ] || { echo "FAIL: working-dir should exit 0 (got $rc)"; cat "$TMP/5.log.out"; fails=$((fails+1)); }
 grep -qx "PWD=$TMP/wd" "$TMP/5.log" || { echo "FAIL: gcloud did not run in PLUGIN_WORKING_DIR ($TMP/wd)"; cat "$TMP/5.log"; fails=$((fails+1)); }
 
+# 6. word-split does NOT glob-expand against the workspace (#361): a `*` in the
+#    command must reach gcloud literally, not be rewritten into workspace files.
+mkdir -p "$TMP/ws"; : >"$TMP/ws/decoy-a.txt"; : >"$TMP/ws/decoy-b.txt"
+rc=$(run "$TMP/6.log" PLUGIN_WORKING_DIR="$TMP/ws" \
+      PLUGIN_COMMAND="storage cp * gs://bkt")
+[ "$rc" = 0 ] || { echo "FAIL: glob case should exit 0 (got $rc)"; cat "$TMP/6.log.out"; fails=$((fails+1)); }
+grep -qxF "ARGS=storage cp * gs://bkt" "$TMP/6.log" \
+  || { echo "FAIL: command glob-expanded against the workspace"; cat "$TMP/6.log"; fails=$((fails+1)); }
+
 if [ "$fails" -eq 0 ]; then echo "PASS: gcloud entrypoint"; else echo "FAILED: $fails check(s)"; exit 1; fi
