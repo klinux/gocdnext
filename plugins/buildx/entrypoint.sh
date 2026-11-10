@@ -63,6 +63,49 @@ case "${COMPRESSION}" in
         ;;
 esac
 
+# S3 path-style addressing for the `cache: bucket` backend (opt-in, #335).
+# MinIO and other S3-compatible stores that don't publish bucket.<endpoint>
+# virtual-host DNS need path-style requests; AWS S3, GCS interop, and R2 work
+# with virtual-host and must stay as-is. BuildKit's s3 cache exposes this choice
+# explicitly and defaults to false, so we DON'T infer it from the endpoint (a
+# "custom endpoint" doesn't determine the right style) — the operator opts in
+# with GOCDNEXT_LAYER_CACHE_USE_PATH_STYLE=true. Validated up front so a typo
+# fails here, before the 60s daemon wait and the builder boot.
+USE_PATH_STYLE="$(trim "${GOCDNEXT_LAYER_CACHE_USE_PATH_STYLE:-}")"
+case "${USE_PATH_STYLE}" in
+    ""|false|true) ;;
+    *)
+        echo "gocdnext/buildx: GOCDNEXT_LAYER_CACHE_USE_PATH_STYLE must be 'true' or 'false' (got '${USE_PATH_STYLE}')" >&2
+        exit 2
+        ;;
+esac
+
+# Credential shape for the bucket cache (#335). A PARTIAL credential silently
+# changes the identity used: when only one of the pair is set, the
+# shared-credentials file isn't written and BuildKit's SDK falls back to the
+# IMDS/default chain (a DIFFERENT principal) instead of failing — before this
+# rework the partial key reached the SDK and failed loudly. Require the pair to
+# be all-or-nothing, and reject a session token without it. The fully-absent case
+# is allowed here (default chain / IRSA is a separate follow-up); the gcs backend
+# separately requires the HMAC pair further down.
+if [ "${PLUGIN_CACHE:-}" = "bucket" ]; then
+    _cred_ak="${AWS_ACCESS_KEY_ID:-}"
+    _cred_sk="${AWS_SECRET_ACCESS_KEY:-}"
+    _cred_tok="${AWS_SESSION_TOKEN:-}"
+    if [ -n "${_cred_ak}" ] && [ -z "${_cred_sk}" ]; then
+        echo "gocdnext/buildx: AWS_ACCESS_KEY_ID is set without AWS_SECRET_ACCESS_KEY — set both or neither (a partial key silently falls back to the SDK default chain)" >&2
+        exit 2
+    fi
+    if [ -z "${_cred_ak}" ] && [ -n "${_cred_sk}" ]; then
+        echo "gocdnext/buildx: AWS_SECRET_ACCESS_KEY is set without AWS_ACCESS_KEY_ID — set both or neither (a partial key silently falls back to the SDK default chain)" >&2
+        exit 2
+    fi
+    if [ -n "${_cred_tok}" ] && { [ -z "${_cred_ak}" ] || [ -z "${_cred_sk}" ]; }; then
+        echo "gocdnext/buildx: AWS_SESSION_TOKEN is set without the AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY pair" >&2
+        exit 2
+    fi
+fi
+
 # Wait for the Docker daemon before issuing any `docker run` /
 # `docker buildx` against it. The agent's k8s engine adds a DinD
 # sidecar when the YAML job declares `docker: true`, and DinD takes
@@ -160,76 +203,40 @@ fi
 # "default" builder that already exists in some docker-in-docker
 # setups from being reused in a way that skips the QEMU wiring.
 BUILDER="gocdnext-${RANDOM}"
-trap 'docker buildx rm "${BUILDER}" >/dev/null 2>&1 || true' EXIT
-buildx_create_args=(--name "${BUILDER}" --use)
-# When the operator sets PLUGIN_BUILDKIT_IMAGE explicitly we honour
-# it as-is. Otherwise, the default fork below picks a sensible
-# image for the cache backend in play.
-# Operator override wins as-is; otherwise the pinned default (top of file).
-# buildkit_image is never empty after this, so `--driver-opt image=` is always
-# set below and buildx never falls back to its floating buildx-stable-1 builder.
+# Set only on the bucket/remote path below; the cleanup trap keys off them.
+BUILDKIT_CONTAINER=""
+STAGE_DIR=""
+BUILDKITD_CONFIG=""
+# Trap installed BEFORE any builder/container/file is created, so a failure at
+# ANY step still tears everything down. Order: buildx builder metadata → the
+# self-managed BuildKit container → temp files (the staged credentials last).
+# Idempotent — every step is guarded + `|| true`, so a partial setup (e.g. the
+# container was created but never started, or creation failed outright) cleans
+# up without error.
+cleanup() {
+    docker buildx rm "${BUILDER}" >/dev/null 2>&1 || true
+    [ -n "${BUILDKIT_CONTAINER}" ] && docker rm -f "${BUILDKIT_CONTAINER}" >/dev/null 2>&1 || true
+    [ -n "${STAGE_DIR}" ] && rm -rf "${STAGE_DIR}" 2>/dev/null || true
+    [ -n "${BUILDKITD_CONFIG}" ] && rm -f "${BUILDKITD_CONFIG}" 2>/dev/null || true
+    return 0
+}
+trap cleanup EXIT
+
+# Builder image: operator override wins as-is; otherwise the pinned default
+# (top of file). Never empty, so neither builder path falls back to buildx's
+# floating buildx-stable-1.
 buildkit_image="$(trim "${PLUGIN_BUILDKIT_IMAGE:-}")"
 if [ -z "${buildkit_image}" ]; then
     buildkit_image="${DEFAULT_BUILDKIT_IMAGE}"
 fi
-if [ "${needs_no_checksum}" = "1" ]; then
-    # Non-AWS S3 endpoint (GCS/MinIO/R2): recent aws-sdk-go-v2 sends
-    # x-amz-checksum-* headers on PutObject by default; those endpoints don't
-    # recognise them, fold them into the v4 signature, and reject the call as
-    # SignatureDoesNotMatch (surfaces as a generic 403). The SDK reads these
-    # env vars to opt out — we set them on the BuildKit container so the fix
-    # lands inside BuildKit itself. The pinned default buildkit above ships an
-    # SDK new enough to honour this (the old floating buildx-stable-1 did not,
-    # which is why this used to force its own pin here).
-    echo "==> buildkit: disabling AWS SDK auto-checksum (non-AWS S3 endpoint detected)"
-    buildx_create_args+=(--driver-opt "env.AWS_REQUEST_CHECKSUM_CALCULATION=when_required")
-    buildx_create_args+=(--driver-opt "env.AWS_RESPONSE_CHECKSUM_VALIDATION=when_required")
-fi
 
-# AWS credentials live in the PLUGIN container's env (injected by
-# the runner profile's `secrets:` list). The BuildKit container is
-# a SEPARATE process — `docker buildx create` spawns it with
-# whatever env the operator passed via --driver-opt; nothing else
-# crosses the boundary. Without explicit propagation BuildKit's S3
-# cache backend has no AWS_ACCESS_KEY_ID at all and fails with the
-# tell-tale empty-RequestID 403:
-#   StatusCode: 403, RequestID: , HostID: , api error Forbidden
-# (no GCS round-trip happened — credential resolution gave up
-# before the SDK could even build a signed HEAD).
-#
-# Propagate the standard AWS env trio so BuildKit's S3 client picks
-# them up via the same default credential chain it would on a fresh
-# CI runner. AWS_SESSION_TOKEN is forwarded when present for SSO /
-# STS setups; for GCS HMAC the key+secret pair is all that matters.
-# We do it only when cache uses a bucket — for `registry`/`inline`
-# the BuildKit container has no use for AWS env and we'd be
-# leaking an env scope it doesn't need.
-if [ "${PLUGIN_CACHE:-}" = "bucket" ]; then
-    if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
-        buildx_create_args+=(--driver-opt "env.AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}")
-    fi
-    if [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-        buildx_create_args+=(--driver-opt "env.AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}")
-    fi
-    if [ -n "${AWS_SESSION_TOKEN:-}" ]; then
-        buildx_create_args+=(--driver-opt "env.AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}")
-    fi
-    if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
-        echo "==> buildkit: forwarding AWS credentials for cache backend"
-    fi
-fi
-
-if [ -n "${buildkit_image}" ]; then
-    buildx_create_args+=(--driver-opt "image=${buildkit_image}")
-fi
-
-# Registry mirror for docker.io base-image pulls (issue #35).
-# Without it every FROM resolves straight to Docker Hub from the
-# builder — anonymous pulls are rate-limited per IP and clusters
-# egress through a handful of NAT IPs, so a cold-cache rebuild day
-# can exhaust the quota. The mirror lands in a buildkitd.toml the
-# builder is created with; BuildKit falls back to the upstream
-# registry automatically when the mirror misses or is down.
+# Registry mirror for docker.io base-image pulls (issue #35). Without it every
+# FROM resolves straight to Docker Hub from the builder — anonymous pulls are
+# rate-limited per IP and clusters egress through a handful of NAT IPs, so a
+# cold-cache rebuild day can exhaust the quota. The mirror lands in a
+# buildkitd.toml the builder reads; BuildKit falls back to the upstream registry
+# automatically when the mirror misses or is down. Both builder paths below
+# consume BUILDKITD_CONFIG (docker-container: `--config`; remote: `docker cp`).
 PLUGIN_MIRROR="$(trim "${PLUGIN_MIRROR:-}")"
 if [ -n "${PLUGIN_MIRROR}" ]; then
     mirror="${PLUGIN_MIRROR#https://}"
@@ -248,11 +255,10 @@ if [ -n "${PLUGIN_MIRROR}" ]; then
 [registry."docker.io"]
   mirrors = ["${mirror}"]
 EOF
-    buildx_create_args+=(--config "${BUILDKITD_CONFIG}")
     echo "==> docker.io pulls mirrored via ${mirror} (fallback: upstream)"
-    # Authenticated mirrors: the login happens in THIS container —
-    # buildx forwards registry auth to BuildKit through the client
-    # session's auth provider, mirrors included. Credentials ride
+    # Authenticated mirrors: the login happens in THIS container — buildx
+    # forwards registry auth to BuildKit through the client session's auth
+    # provider (remote builder included), mirrors among them. Credentials ride
     # the job's `secrets:`, same masking contract as the push creds.
     if [ -n "${PLUGIN_MIRROR_USERNAME:-}" ]; then
         mirror_host="${mirror%%/*}"
@@ -262,8 +268,118 @@ EOF
     fi
 fi
 
-docker buildx create "${buildx_create_args[@]}" >/dev/null
-docker buildx inspect --bootstrap >/dev/null
+if [ "${PLUGIN_CACHE:-}" = "bucket" ]; then
+    # --- cache: bucket → self-managed BuildKit + remote driver (#335) --------
+    # The docker-container driver's ONLY way to put env in the builder is
+    # `--driver-opt env.NAME=VALUE`, which lands VALUE on `docker buildx
+    # create`'s argv (visible via `ps` / /proc/<pid>/cmdline / any sidecar in
+    # the PID namespace). For the S3 cache backend that value is
+    # AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN. Even `docker run -e NAME`
+    # (value read from our env, off argv) would still store the resolved value
+    # in the container's Config.Env, readable via `docker inspect`. So we run
+    # BuildKit ourselves and hand it the secrets through an AWS shared
+    # credentials FILE copied in with `docker cp` — the value crosses no argv
+    # or Config.Env boundary — then attach buildx via the remote driver's
+    # docker-container:// endpoint. Only non-secret knobs (the checksum opt-out,
+    # the credentials-file PATH) ride as env.
+    #
+    # Residual, by construction: whoever controls docker.sock controls the
+    # daemon and can read the builder's filesystem. This eliminates incidental
+    # argv/metadata exposure, NOT the Docker admin.
+    BUILDKIT_CONTAINER="gocdnext-buildkitd-${RANDOM}"
+    STAGE_DIR="$(mktemp -d)"
+    mkdir "${STAGE_DIR}/gocdnext"
+    staged=0
+
+    bk_create_args=(docker create --rm --privileged --name "${BUILDKIT_CONTAINER}")
+    if [ "${needs_no_checksum}" = "1" ]; then
+        # Non-AWS S3 endpoint (GCS/MinIO/R2): recent aws-sdk-go-v2 sends
+        # x-amz-checksum-* headers on PutObject by default; those endpoints
+        # fold them into the v4 signature and reject the call as
+        # SignatureDoesNotMatch (surfaces as a generic 403). These two env vars
+        # opt out. Non-secret values — fine on argv / in Config.Env.
+        echo "==> buildkit: disabling AWS SDK auto-checksum (non-AWS S3 endpoint detected)"
+        bk_create_args+=(-e "AWS_REQUEST_CHECKSUM_CALCULATION=when_required")
+        bk_create_args+=(-e "AWS_RESPONSE_CHECKSUM_VALIDATION=when_required")
+    fi
+    # AWS credentials → an AWS shared-credentials file staged with `docker cp`.
+    # BuildKit's S3 client reads it via the AWS Go SDK default chain, pointed at
+    # it by AWS_SHARED_CREDENTIALS_FILE (a non-secret PATH, so it may ride env).
+    # Written umask 077 so the secret is 0600 before it ever leaves this
+    # container. Only when static keys are present — the gcs/s3 cache specs
+    # already require them; an env-less builder would fall back to its own chain
+    # (IMDS/IRSA), which is a separate follow-up.
+    if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+        ( umask 077
+          {
+            printf '[default]\n'
+            printf 'aws_access_key_id = %s\n' "${AWS_ACCESS_KEY_ID}"
+            printf 'aws_secret_access_key = %s\n' "${AWS_SECRET_ACCESS_KEY}"
+            # if-block, NOT `[ -n … ] && printf`: the latter is the group's last
+            # command, so when there's no session token (the common static-key
+            # case) it returns 1, the subshell exits 1, and `set -e` would kill
+            # the plugin. The if returns 0 whether or not the token is present.
+            if [ -n "${AWS_SESSION_TOKEN:-}" ]; then
+                printf 'aws_session_token = %s\n' "${AWS_SESSION_TOKEN}"
+            fi
+          } > "${STAGE_DIR}/gocdnext/aws-credentials" )
+        bk_create_args+=(-e "AWS_SHARED_CREDENTIALS_FILE=/etc/gocdnext/aws-credentials")
+        staged=1
+        echo "==> buildkit: AWS credentials staged as a shared-credentials file (not argv, not Config.Env)"
+    fi
+    bk_create_args+=("${buildkit_image}")
+    # buildkitd flags appended AFTER the image (the moby/buildkit entrypoint is
+    # buildkitd). Point it at the mirror config staged below when present; the
+    # default listen socket is kept so the remote docker-container:// endpoint
+    # can dial it.
+    if [ -n "${BUILDKITD_CONFIG}" ]; then
+        cp "${BUILDKITD_CONFIG}" "${STAGE_DIR}/gocdnext/buildkitd.toml"
+        bk_create_args+=(--config /etc/gocdnext/buildkitd.toml)
+        staged=1
+    fi
+
+    "${bk_create_args[@]}" >/dev/null
+    # Stage files BEFORE start (buildkitd reads its config, and the SDK reads
+    # the creds, at runtime). `docker cp` of the directory creates /etc/gocdnext
+    # inside the container and preserves the 0600 mode — and, unlike a bind
+    # mount, doesn't depend on the DinD host filesystem.
+    if [ "${staged}" = "1" ]; then
+        docker cp "${STAGE_DIR}/gocdnext" "${BUILDKIT_CONTAINER}:/etc/" >/dev/null
+    fi
+    docker start "${BUILDKIT_CONTAINER}" >/dev/null
+
+    # The remote driver dials buildkitd over the container's socket; give it a
+    # moment to come up (a cold buildkitd listens in ~1-2s). Probe with buildctl
+    # inside the container rather than racing `buildx create`.
+    echo "==> waiting for self-managed BuildKit (${BUILDKIT_CONTAINER})"
+    for i in $(seq 1 30); do
+        if docker exec "${BUILDKIT_CONTAINER}" buildctl debug workers >/dev/null 2>&1; then
+            break
+        fi
+        if [ "${i}" = "30" ]; then
+            echo "gocdnext/buildx: self-managed BuildKit did not become ready within 30s" >&2
+            docker logs "${BUILDKIT_CONTAINER}" 2>&1 | tail -20 >&2 || true
+            exit 2
+        fi
+        sleep 1
+    done
+
+    docker buildx create --name "${BUILDER}" --use \
+        --driver remote "docker-container://${BUILDKIT_CONTAINER}" >/dev/null
+    docker buildx inspect --bootstrap >/dev/null
+    echo "==> using self-managed BuildKit via remote driver (AWS creds off argv/Config.Env)"
+else
+    # --- registry / inline / none → the standard docker-container driver -----
+    # No AWS secret is needed for these cache modes, so the argv concern that
+    # drives the bucket path above doesn't apply; buildx manages the builder
+    # container lifecycle itself.
+    buildx_create_args=(--name "${BUILDER}" --use --driver-opt "image=${buildkit_image}")
+    if [ -n "${BUILDKITD_CONFIG}" ]; then
+        buildx_create_args+=(--config "${BUILDKITD_CONFIG}")
+    fi
+    docker buildx create "${buildx_create_args[@]}" >/dev/null
+    docker buildx inspect --bootstrap >/dev/null
+fi
 
 tag_args=()
 for t in "${TAGS[@]}"; do
@@ -352,7 +468,12 @@ if [ -z "${cache_to}" ] && [ -z "${cache_from}" ]; then
                     # placeholder that keeps BuildKit's s3 client happy
                     # without imposing a fake region on the operator.
                     region="${GOCDNEXT_LAYER_CACHE_REGION:-auto}"
-                    if [ -z "${AWS_ACCESS_KEY_ID:-}${AWS_SECRET_ACCESS_KEY:-}" ]; then
+                    # Require the pair explicitly — a concatenation test
+                    # (`-z "${AK}${SK}"`) would accept a single key. (The
+                    # all-or-nothing partial-credential guard up top already
+                    # rejects a lone key, but gcs additionally forbids the
+                    # fully-absent/default-chain case, so assert the pair here.)
+                    if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
                         echo "gocdnext/buildx: cache: gcs backend requires AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (GCS HMAC keys); declare them in the job's secrets: or runner profile" >&2
                         exit 2
                     fi
@@ -371,6 +492,12 @@ if [ -z "${cache_to}" ] && [ -z "${cache_from}" ]; then
             spec="type=${backend},region=${region},bucket=${GOCDNEXT_LAYER_CACHE_BUCKET},name=${name}"
             if [ -n "${endpoint}" ]; then
                 spec="${spec},endpoint_url=${endpoint}"
+            fi
+            # Opt-in path-style addressing (validated up front). Appended to the
+            # shared spec so it lands on BOTH cache-to and cache-from — a
+            # half-applied style silently breaks the import side.
+            if [ "${USE_PATH_STYLE}" = "true" ]; then
+                spec="${spec},use_path_style=true"
             fi
             cache_to="${spec},mode=max"
             cache_from="${spec}"
