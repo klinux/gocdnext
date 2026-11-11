@@ -2,7 +2,7 @@
 
 Frontend-specific rules. Applies together with the root `CLAUDE.md` (TDD, ~400 lines/file, Conventional Commits, etc.).
 
-Stack: **Next.js 15 (App Router) + React 19 + TypeScript + Tailwind + shadcn/ui**.
+Stack: **Next.js 16 (App Router) + React 19 + TypeScript + Tailwind + shadcn/ui**.
 
 ## Non-negotiable rules (root reinforcement)
 
