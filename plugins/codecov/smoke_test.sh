@@ -9,6 +9,9 @@
 #   - the plugin assembles a real `upload-process` and reaches the Codecov ingest
 #     API (request built, git SHA derived, CLI functional) — offline it fails at
 #     the network boundary, NOT at argument/parse handling;
+#   - the baked CLI accepts the upload token from the CODECOV_TOKEN env var and the
+#     token never surfaces on argv or in stdout/stderr (#393 — the wrapper no longer
+#     passes --token on the CLI argv);
 #   - the entrypoint's auth contract holds: no token -> exit 2.
 #
 # Built --no-cache to match a release build. Root-owned workspace outputs are
@@ -19,6 +22,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 IMG="gocdnext-plugin-codecov:smoke-$$"
 CNAME="codecovsmoke-$$"
 SMOKE_OK=0
+# Distinctive dummy token; asserted absent from every output below. Passed to
+# containers by env NAME only (exported here, `-e CODECOV_TOKEN`/`-e PLUGIN_TOKEN`),
+# never as `-e NAME=value`, so the value lands on no argv.
+TOKEN_SENTINEL="SENTINELcodecovTOKENsmoke5c1d"
 
 cleanup() {
   docker rm -f "$CNAME" >/dev/null 2>&1 || true
@@ -64,24 +71,57 @@ run docker run --rm --name "$CNAME" --network none "$IMG"
 [ "$RC" -eq 2 ] || die "no-token: expected exit 2, got $RC" "$OUT"
 grep -qi 'token is required' <<<"$OUT" || die "no-token: missing the token-required message" "$OUT"
 
-echo "==> codecov-cli assembles a real API request and reaches the Codecov ingest endpoint"
+echo "==> codecov-cli reaches the ingest endpoint AND accepts the token via CODECOV_TOKEN env, not argv (#393)"
 # The CLI (not the wrapper) is what the OS migration risks — does codecov-cli still
-# run and talk to the API on trixie's Python. Exercise it directly with an explicit
-# --commit-sha (codecov's "local" adapter requires one; a real gocdnext job gets it
-# from the CI env), offline: it must reach ingest.codecov.io and fail at the NETWORK
-# boundary, not crash during startup/arg handling. (The wrapper's own arg assembly
-# and its token contract are covered by the no-token case above.)
-run docker run --rm --name "$CNAME" --network none --entrypoint codecov "$IMG" \
-  create-commit --token smoke-dummy --slug acme/repo \
+# run and talk to the API on trixie's Python. It must also accept the upload token
+# from the CODECOV_TOKEN env var, which is the whole point of #393 (the wrapper no
+# longer puts --token on argv). The token goes in by env NAME only (exported above,
+# `-e CODECOV_TOKEN` forwards it) so the sentinel touches no argv — not the
+# container's, not the harness's. --commit-sha/--slug are not secrets, so they ride
+# argv (codecov's "local" adapter needs a SHA; a real gocdnext job derives it from
+# the CI env). Offline it must reach ingest.codecov.io and fail at the NETWORK
+# boundary, not crash during startup/arg handling.
+export CODECOV_TOKEN="$TOKEN_SENTINEL"
+run docker run --rm --name "$CNAME" --network none -e CODECOV_TOKEN --entrypoint codecov "$IMG" \
+  create-commit --slug acme/repo \
   --commit-sha 0000000000000000000000000000000000000000
-[ "$RC" -ne 0 ] || die "api probe: expected a non-zero exit offline, got 0" "$OUT"
+unset CODECOV_TOKEN
+# A watchdog kill (124/137) means codecov hung, not a network failure.
 case "$RC" in 124|137) die "api probe: watchdog fired (RC=$RC) — codecov hung" "$OUT" ;; esac
+# Exact functional exit observed offline, stable across runs: 1 (retry exhaustion).
+[ "$RC" -eq 1 ] || die "api probe: expected the stable offline exit 1, got $RC" "$OUT"
 grep -qiE 'ingest\.codecov\.io|Request failed after too many retries' <<<"$OUT" \
-  || die "api probe: codecov never reached the ingest API" "$OUT"
+  || die "api probe: codecov never reached the ingest API (token not accepted via env?)" "$OUT"
 # NB: codecov prints a Python traceback when it raises on retry exhaustion, so a
-# traceback is NOT a failure signal here — only an arg/usage error is.
+# traceback is NOT a failure signal here — only an arg/usage error is. A usage error
+# would mean the env token was NOT consumed and the CLI bailed before the network.
 grep -qiE 'Missing option|no such option|Usage: codecov' <<<"$OUT" \
   && die "api probe: codecov errored during arg handling, not at the network" "$OUT" || true
+# The token value must never surface in the CLI's own output.
+grep -qF "$TOKEN_SENTINEL" <<<"$OUT" \
+  && die "api probe: token sentinel leaked into codecov stdout/stderr" "$OUT" || true
+
+echo "==> the plugin WRAPPER exec's upload-process with the token off argv and off the banner (#393)"
+# End-to-end through the real entrypoint: the token arrives as PLUGIN_TOKEN by env
+# NAME only (exported here; `-e PLUGIN_TOKEN` forwards it), never `-e NAME=value`, so
+# the sentinel is on no argv. Offline the CLI can't derive the required commit SHA
+# (the "local" adapter reads it from the CI env, absent here) and exits on THAT, not
+# on the token — the wrapper exported CODECOV_TOKEN and the token was accepted. We
+# assert: codecov was actually invoked (the `==> codecov upload-process` banner), the
+# sentinel is absent from the whole output incl. that banner, and it was NOT the
+# token that was missing. (entrypoint_test.sh proves argv/banner cleanliness
+# rigorously with a mock; this is the real-image backstop.)
+export PLUGIN_TOKEN="$TOKEN_SENTINEL"
+run docker run --rm --name "$CNAME" --network none -e PLUGIN_TOKEN -e PLUGIN_SLUG=acme/repo "$IMG"
+unset PLUGIN_TOKEN
+case "$RC" in 124|137) die "wrapper probe: watchdog fired (RC=$RC) — codecov hung" "$OUT" ;; esac
+[ "$RC" -ne 0 ] || die "wrapper probe: expected a non-zero exit offline, got 0" "$OUT"
+grep -qE '==> codecov upload-process' <<<"$OUT" \
+  || die "wrapper probe: the entrypoint never exec'd codecov upload-process" "$OUT"
+grep -qF "$TOKEN_SENTINEL" <<<"$OUT" \
+  && die "wrapper probe: token sentinel leaked into the wrapper output (banner/log?)" "$OUT" || true
+grep -qi 'token is required' <<<"$OUT" \
+  && die "wrapper probe: token was NOT accepted via env (fell back to the required-token error)" "$OUT" || true
 
 SMOKE_OK=1
 echo "PASS: codecov smoke"
