@@ -11,12 +11,24 @@ fi
 
 cd "${PLUGIN_WORKING_DIR:-.}"
 
+# Keep the token OFF the codecov child's argv (#393). Passing it as
+# `--token <value>` would put the secret in the process's argv/cmdline
+# (ps, /proc/<pid>/cmdline — a broader read surface than the env) and
+# echo it into the `==> codecov …` banner below. The baked codecov-cli
+# reads it from CODECOV_TOKEN instead: the shared --token option is
+# defined with envvar="CODECOV_TOKEN" and upload-process pulls it in via
+# @global_options (codecov_cli/helpers/options.py). `unset` it under its
+# original name right after, so the child never carries the same secret
+# under two names (PLUGIN_TOKEN arrived from the env).
+export CODECOV_TOKEN="${PLUGIN_TOKEN}"
+unset PLUGIN_TOKEN
+
 # Same dubious-ownership opt-in as every other git-aware plugin.
 # codecov inspects the repo to derive the commit SHA + branch
 # when they aren't passed explicitly.
 git config --global --add safe.directory '*' 2>/dev/null || true
 
-args=(upload-process --token "${PLUGIN_TOKEN}")
+args=(upload-process)
 
 if [ -n "${PLUGIN_FILE:-}" ]; then
     args+=(--file "${PLUGIN_FILE}")
