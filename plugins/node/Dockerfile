@@ -1,42 +1,62 @@
-# gocdnext/node v3 — Node.js install + run runner with MULTI-VERSION node
+# gocdnext/node v4 — Node.js install + run runner with MULTI-VERSION node
 # selection + bun. See plugin.yaml for the input contract; entrypoint.sh
 # implements it; select-node.sh does the version switch.
 #
-# v3 vs v2:
-#   - Bakes node 20 + 22 + 24 in ONE image, selected at runtime by
+# v4 vs v3 (#373 — drop EOL node 20):
+#   - Bakes node 22 + 24 + 26 in ONE image, selected at runtime by
 #     select-node.sh from the project's engines.node / .nvmrc /
 #     .node-version (or the node-version: input) — a pure PATH switch, no
 #     runtime download. Same "one image, select the version" convention as
-#     jdk-base (Temurin 11/17/21/25) and dotnet (SDK 8/10). As of 2026-11
-#     node 20 is EOL (2026-04-30) and 22/24 are both Maintenance LTS; the
-#     current Active LTS is node 26. Refreshing the baked set to a current
-#     major (ideally node 26) is tracked in #373.
+#     jdk-base (Temurin 11/17/21/25) and dotnet (SDK 8/10).
+#   - BREAKING vs v3: node 20 is dropped. It reached EOL on 2026-04-30 and
+#     no longer receives upstream security/bug fixes, so v4 does not bake
+#     it. A pipeline whose version resolves to 20 (engines.node 20.x,
+#     node-version: 20, .nvmrc 20, a <22 range) now FAILS LOUD (exit 2)
+#     with the baked set + a "pin a supported major or use a custom image"
+#     message — never a silent run on a different node. Migrate to 22|24|26.
+#     v3 is FROZEN at its last published digest (still baking 20/22/24) for
+#     pipelines pinned to @v3; it is not rebuilt. See README migration note.
+#   - Baked majors as of 2026-11: 22 Maintenance LTS (EOL 2027-04-30),
+#     24 Maintenance LTS (EOL 2028-04-30), 26 Active LTS (EOL 2029-04-30).
+#     Default stays node 22 (hint-less projects keep v3 behaviour).
 #   - Adds bun as a first-class manager (corepack can't manage bun, so
 #     the binary is baked from oven/bun).
-#   - Base moves alpine → debian-slim (glibc): matches the node:24 base
-#     real projects build on, and avoids musl prebuilt-native-module
-#     surprises. build-essential + python3 make node-gyp native builds
-#     work out of the box.
-#   - @v2 stays in the registry for pipelines pinned to it.
+#   - Base is debian-slim (glibc): matches the node:24 base real projects
+#     build on, and avoids musl prebuilt-native-module surprises.
+#     build-essential + python3 make node-gyp native builds work out of
+#     the box.
 
 # Per-major node builders — the official images install node + npm +
 # corepack under /usr/local; we relocate each to a versioned path.
 # Pinned by digest (trixie-slim; see the final stage for the OS-CVE
-# rationale). node 20 and 22 ship an npm (10.x) whose BUNDLED node-tar
-# (6.2.1 / 7.5.11) is < 7.5.19 and carries CVE-2026-59873, so each is
-# bumped to npm 11.19.1 — the exact npm that node 24 already ships, which
-# bundles tar 7.5.22. Pinning the same npm keeps the npm<->tar API aligned
-# (npm 11 expects tar 7); surgically swapping only tar would cross tar's
-# 6->7 break under npm 10. node 24 is already clean (npm 11.19.1 /
-# tar 7.5.22), so it is left untouched. (Only /usr/local is copied out of
-# these stages, so their OS packages never reach the scanned final image;
-# they move to trixie purely to keep node's glibc baseline consistent with
-# the trixie runtime.)
-FROM node:20-trixie-slim@sha256:abfbe12cc943141a0c9e8c0a57d710df1dadd95d35e8662cc02958b284d1f35b AS node20
-RUN npm install -g npm@11.19.1
+# rationale).
+#
+# npm/node-tar posture (CVE-2026-59873: node-tar < 7.5.19):
+#   - node 22 ships npm 10.x whose BUNDLED node-tar (7.5.11) is < 7.5.19,
+#     so it is bumped to npm 11.19.1 (bundles tar 7.5.22). Pinning the same
+#     npm keeps the npm<->tar API aligned (npm 11 expects tar 7); surgically
+#     swapping only tar would cross tar's 6->7 break under npm 10.
+#   - node 24 is already clean (npm 11.19.1 / tar 7.5.22) → untouched.
+#   - node 26 ships npm 11.20.0 / tar 7.5.22 (already >= 7.5.19) → no bump.
+#
+# corepack on node 26: node STOPPED distributing corepack in the runtime as
+# of node 25 (https://github.com/nodejs/node/blob/main/doc/contributing/distribution.md),
+# so node:26 has NO corepack. The plugin drives yarn v3+/pnpm through
+# corepack, so we install it standalone, PINNED to 0.36.0 — the exact
+# version node 22/24 still bundle — keeping corepack consistent across the
+# baked set. It installs under /usr/local and rides the relocation like the
+# bundled one; the entrypoint runs `corepack enable` at RUNTIME (so no yarn
+# shim is baked here — the relocation step below still strips the official
+# image's dangling yarn1 shim).
+#
+# (Only /usr/local is copied out of these stages, so their OS packages never
+# reach the scanned final image; they move to trixie purely to keep node's
+# glibc baseline consistent with the trixie runtime.)
 FROM node:22-trixie-slim@sha256:be1e2a3dc2c4fd68cdfadad2a696a280e0d2749098bee509230174d72fb768c6 AS node22
 RUN npm install -g npm@11.19.1
 FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS node24
+FROM node:26-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS node26
+RUN npm install -g corepack@0.36.0
 
 # bun binary source (glibc slim variant to match the debian final stage).
 # Pinned to an EXACT version for reproducibility — bun is not
@@ -70,9 +90,9 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # node images keep node + npm + corepack (+ a yarn1 shim) under
 # /usr/local with relative symlinks, so copying the whole tree yields a
 # self-contained toolchain that select-node.sh addresses by PATH.
-COPY --from=node20 /usr/local /opt/node/node-20
 COPY --from=node22 /usr/local /opt/node/node-22
 COPY --from=node24 /usr/local /opt/node/node-24
+COPY --from=node26 /usr/local /opt/node/node-26
 
 # The official node images ship a bundled yarn 1.x (symlinked to
 # /opt/yarn-v1.22.22, OUTSIDE /usr/local so it's NOT copied) plus a
@@ -93,7 +113,8 @@ RUN for d in /opt/node/node-*; do \
 # selected node major.
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
-# Default to node 22 (Maintenance LTS; kept as the default for v2 parity).
+# Default to node 22 (Maintenance LTS; kept as the default for v3 parity —
+# hint-less projects keep the same node they ran on v3).
 # A job that somehow runs without sourcing select-node.sh still boots a
 # working node — fail-closed to working, like jdk-base's default JAVA_HOME.
 ENV PATH=/opt/node/node-22/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
