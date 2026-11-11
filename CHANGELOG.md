@@ -28,9 +28,12 @@ convention that minor bumps may carry breaking changes until 1.0).
   (tar 7.5.22) — all ≥ 7.5.19, clear of CVE-2026-59873. Trivy (gate args,
   `--ignore-unfixed`): **0 CRITICAL**; residual HIGH are npm/corepack-bundled JS
   (`undici`, `brace-expansion`) observe-mode WARN, the same classes the v3 image
-  already shipped. **`@v3` is frozen** at its last digest (still baking
-  20/22/24) for pipelines pinned to it — not rebuilt or patched; use it only as
-  a temporary bridge, or pin a gocdnext release tag. `select-node.sh` now derives
+  already shipped. **Only `@v3` freezes** at its last digest (still baking
+  20/22/24) — not rebuilt or patched. On release, `@v4`, **`@v1` and `@latest`
+  all move to the new 22/24/26 image** (the rolling `v1` tracks current content,
+  it is not a frozen major), so pipelines pinned to `@v1`/`@latest` with a
+  node-20 declaration also start failing loud — pin `@v3` as a temporary bridge,
+  or a gocdnext release tag to hold the whole catalog. `select-node.sh` now derives
   the "pin node-version: …" guidance from the actually-baked majors (no
   hard-coded list to drift), `entrypoint_test.sh` + `smoke_test.sh` cover the
   22/24/26 matrix, node-26 selection + standalone corepack, and the explicit
