@@ -10,6 +10,32 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **web frontend image → node 24 (off EOL node 20), 3 base CRITICAL cleared.**
+  Resolves #391. `web/Dockerfile` built and ran the Next.js app on `node:20-alpine`
+  across all three stages — including `runner`, the **production** runtime serving
+  the app. Node 20 reached end-of-life on 2026-04-30 (no upstream security/bug
+  fixes). Migrated all three stages to `node:24-alpine` pinned by digest
+  (`@sha256:a34ab6d7…`): node 24 is Maintenance LTS (EOL 2028-04-30 — node 26 is
+  the current Active LTS, but 24 gives the longest still-security-supported runway
+  while keeping bundled corepack 0.36.0, which the `pnpm@10.33.0` `packageManager`
+  pin needs; node 26 unbundled corepack), and satisfies Next 16's
+  `engines.node >= 20.9.0`. A new `web/Dockerfile.dockerignore` keeps the host's
+  `web/node_modules` + `web/.next` out of the build context so `COPY web/ ./`
+  can't overwrite the clean in-image install with host-built (glibc) artifacts. No app change needed — the
+  Next.js 16 / React 19 build, `pnpm install --frozen-lockfile`, and the
+  standalone server all work unchanged on node 24 (no node-20-ABI-pinned native
+  dep: `sharp` is N-API, `esbuild` is a standalone binary, `canvas` is an
+  optional transitive). Trivy (`--ignore-unfixed`): the base goes from **3
+  CRITICAL + 43 HIGH** (node:20-alpine) to **0 CRITICAL + 6 HIGH** (node:24; the
+  residual HIGH are npm/corepack-bundled `undici`/`brace-expansion`, observe-mode
+  — the same class the plugin images carry). The CI `web` job now runs on node 24
+  (was pinned to `node-version: "20"`, which validated the wrong runtime), and a
+  new `web/docker_smoke.sh` — run by that job — builds the image and boots the
+  `runner` stage (asserts the runtime is node 24 and `GET /docs` → 200 with the
+  docs-index marker), so the production stage CI never exercised before is now
+  regression-covered. `@types/node` stays at `^22` (a compatible subset on a
+  node-24 runtime; no functional need to churn the lockfile).
+
 - **node plugin → `@v4`, drops EOL node 20 (baked matrix now 22/24/26).**
   Resolves #373. **Breaking for pipelines pinned to node 20.** Node 20 reached
   end-of-life on 2026-04-30 (no upstream security/bug fixes), so the maintained
