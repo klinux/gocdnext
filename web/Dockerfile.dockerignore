@@ -1,0 +1,9 @@
+# Per-Dockerfile ignore for web/Dockerfile (build context is the repo ROOT).
+# Paths are relative to the context root. Without this, `COPY web/ ./` in the
+# build stage would pull the HOST's web/node_modules + web/.next over the clean,
+# in-image `pnpm install` from the deps stage — contaminating the build with
+# host-built (glibc) artifacts and diverging from the release, which builds from
+# a clean checkout. Keep this in sync with what the release workflow expects.
+.git
+**/node_modules
+web/.next
