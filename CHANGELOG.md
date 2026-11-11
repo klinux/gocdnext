@@ -10,6 +10,29 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **helm-push plugin → Helm 4 (alpine/helm 3.22.1 → 4.3.1), ahead of Helm 3
+  security EOL.** Resolves #349. A proactive migration: the Helm project has set
+  the Helm 3 security end-of-life for **2027-02-10**
+  (<https://helm.sh/blog/helm-v3-end-of-life/>, extended from Nov 2026), after
+  which 3.x receives no releases of any kind — a late CVE in the shipped `helm`
+  binary would then have no patched 3.x base to move to. Moving now, while 3.x is
+  still patched, keeps the plugin on the actively-maintained line. Migrated the
+  base to `alpine/helm:4.3.1` (pinned by digest, current Go). The plugin's CLI
+  surface is
+  **unchanged** across the v3→v4 major: the only helm commands it runs are `helm
+  package` (`--destination`/`--version`/`--app-version`), `helm push` (OCI), and
+  `helm registry login --username --password-stdin <host>` — all present and
+  behaviour-compatible in 4.3.1 (the smoke packages a minimal `apiVersion: v2`
+  chart, exercises the version/app-version overrides, and drives each backend to
+  the registry/repo DNS boundary, failing there rather than on an unknown
+  flag/command — a v3→v4 surface break would surface as a parse error). The
+  `chartmuseum`/`nexus` backends use `curl`, not helm, so they are unaffected.
+  No contract change. Trivy (gate args, `--ignore-unfixed`): **0 CRITICAL**; the
+  2 residual HIGH are upstream-bound Go CVEs in the helm binary
+  (`golang.org/x/net` CVE-2026-78661, `stdlib` CVE-2026-111943), observe-mode
+  WARN and tracked by the weekly gate — the same posture the interim 3.22.1 base
+  carried. `smoke_test.sh` now asserts the helm binary is on the **4.x** line.
+
 - **gravitee plugin → Python 3.12 on Debian trixie (off EOL 3.9), OS CRITICALs
   cleared.** Resolves #341. Migrated from `python:3.9-slim-bookworm` (3.9 EOL
   2025-10-31) to `python:3.12-slim-trixie` (pinned by digest). The
