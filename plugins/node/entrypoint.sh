@@ -1,5 +1,5 @@
 #!/bin/bash
-# gocdnext/node v3 — Node.js install + run runner. Selects the node major
+# gocdnext/node v4 — Node.js install + run runner. Selects the node major
 # (select-node.sh) from engines.node/.nvmrc across baked 22/24/26, and
 # supports pnpm/npm/yarn v3+/bun as managers.
 #

@@ -92,12 +92,23 @@ printf '%s\n' "$out" | grep -qxF '11.19.1' \
   || die "node-22: our npm@11.19.1 bump must run under node 22" "$out"
 
 # 1d. node 26 has corepack installed standalone (node stopped bundling it as of
-#     node 25). The plugin drives pnpm/yarn through corepack, so it MUST be
-#     present and runnable under the selected node 26.
+#     node 25) PINNED to 0.36.0 — the exact version node 22/24 bundle. Assert
+#     the exact version so a dropped/again-floating install is caught.
 d="$(mkfix cp26 '{"engines":{"node":"26.x"}}')"
 out="$(plug "$d" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='corepack --version')"
-printf '%s\n' "$out" | grep -qE '(^|[^0-9])[0-9]+\.[0-9]+\.[0-9]+' \
-  || die "node-26: corepack must be installed standalone and runnable" "$out"
+printf '%s\n' "$out" | grep -qxF '0.36.0' \
+  || die "node-26: corepack must be the pinned standalone 0.36.0" "$out"
+
+# 1e. FUNCTIONAL corepack on node 26: the standalone corepack must actually
+#     drive pnpm under the selected node 26 — not just report its own version.
+#     This exercises `corepack enable` + `corepack prepare --activate` (which
+#     1d/`manager:none` skip) on node 26 specifically, proving the unbundled-
+#     corepack remediation works end to end, not only on the default node 22.
+d="$(mkfix pnpm26 '{"engines":{"node":"26.x"},"packageManager":"pnpm@9.0.0"}')"; : >"$d/pnpm-lock.yaml"
+out="$(plug "$d" -e PLUGIN_INSTALL=false -e PLUGIN_COMMAND='node --version; pnpm --version')"
+printf '%s\n' "$out" | grep -qE '==> node: 26 ' || die "pnpm-on-26: node 26 not selected" "$out"
+printf '%s\n' "$out" | grep -qE '^v26\.' || die "pnpm-on-26: node 26 not on PATH" "$out"
+printf '%s\n' "$out" | grep -qxF '9.0.0' || die "pnpm-on-26: corepack did not activate pnpm 9.0.0 under node 26" "$out"
 
 # NOTE: always CAPTURE the plug output then grep the string — never
 # `plug | grep -q`. grep -q closes the pipe on first match, the still-

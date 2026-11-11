@@ -1,4 +1,4 @@
-# gocdnext/node v3 — Node.js install + run runner with MULTI-VERSION node
+# gocdnext/node v4 — Node.js install + run runner with MULTI-VERSION node
 # selection + bun. See plugin.yaml for the input contract; entrypoint.sh
 # implements it; select-node.sh does the version switch.
 #

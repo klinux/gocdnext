@@ -172,17 +172,26 @@ To migrate, move your declaration to a supported major:
 | `.nvmrc` / `.node-version` = `20` | `22` (or `24`/`26`)                       |
 | needs an exact node 20 build      | run the job on a custom `image:`          |
 
-**Temporary bridge:** `@v3` stays in the registry **frozen** at its last
-digest (still baking 20/22/24). It is **not rebuilt or security-patched**,
-so treat it as a short-lived bridge while migrating — or pin a gocdnext
-release tag to hold the whole catalog. Prefer migrating off node 20.
+**Which tags carry the break.** On the next release, `@v4`, **`@v1` and
+`@latest` all move to the new 22/24/26 image at the same digest** — `@v1` is a
+rolling tag that tracks current content, *not* a frozen "major 1" channel (see
+[plugin versioning](/gocdnext/docs/reference/plugin-versioning/)). So a pipeline
+pinned to `@v1` or `@latest` with a node-20 declaration **will also start failing
+loud** after the release. **Only `@v3` freezes** — it stays at its last digest
+(still baking 20/22/24), **not rebuilt or security-patched**.
+
+**Temporary bridge:** pin `@v3` as a short-lived bridge while migrating, or pin a
+**gocdnext release tag** to hold the whole catalog at a known point. Prefer
+migrating off node 20 — `@v3` gets no further fixes.
 
 ## Migration from v1
 
 v1 was a thin `pnpm <command>` prefixer. v2 separates install from
-command and shell-evaluates `command:`. The `:v1` rolling tag now
-points at the v2 image — pin to `:0.4.38` to stay on the old
-contract while migrating.
+command and shell-evaluates `command:`. The `:v1` rolling tag is **not**
+frozen at major 1 — it tracks current content, so it has carried the v2
+contract since v0.4.39 and **now carries v4** (node 22/24/26, with node 20
+rejected). Pin a **gocdnext release tag** to stay on an old contract while
+migrating; do not rely on `@v1` to shield a pipeline from a breaking change.
 
 | v1 YAML                                 | v2 YAML                                                                 |
 |-----------------------------------------|-------------------------------------------------------------------------|
