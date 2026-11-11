@@ -1,6 +1,6 @@
 #!/bin/bash
 # gocdnext/node v3 — Node.js install + run runner. Selects the node major
-# (select-node.sh) from engines.node/.nvmrc across baked 20/22/24, and
+# (select-node.sh) from engines.node/.nvmrc across baked 22/24/26, and
 # supports pnpm/npm/yarn v3+/bun as managers.
 #
 # The v2 contract below still holds (command is a shell command, install

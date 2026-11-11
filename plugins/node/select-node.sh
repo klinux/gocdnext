@@ -45,14 +45,24 @@ _baked_majors() {
         | sed 's/^node-//' | sort -n || true
 }
 
+# _baked_hint formats the baked majors as a "22|24|26" pipe list for the
+# user-facing "pin node-version: …" guidance. Derived from the image so the
+# message can NEVER drift from what's actually baked (a hard-coded list
+# would silently lie after a matrix change — e.g. #373 dropping node 20).
+_baked_hint() {
+    local m out=""
+    for m in $(_baked_majors); do out="${out:+${out}|}${m}"; done
+    printf '%s' "${out}"
+}
+
 # _resolve_engines_major maps an engines.node range to the SMALLEST baked
 # major whose FULL version (X.Y.Z) actually satisfies the range — using
 # the REAL semver bundled in the image's npm, so minor/patch bounds
-# (">=20.99.0"), operator spaces (">= 18") and hyphen ranges ("18 - 22")
+# (">=22.99.0"), operator spaces (">= 18") and hyphen ranges ("18 - 24")
 # are honored exactly, not approximated. Returns:
 #   - a baked major   → satisfiable, use it;
 #   - "UNSAT"         → valid range, but NO baked version satisfies it
-#                       (e.g. "<20", ">24", ">=24.99.0") — caller fails loud;
+#                       (e.g. "<22", ">26", ">=26.99.0") — caller fails loud;
 #   - "BADRANGE"      → not a valid semver range — caller fails loud;
 #   - "NOSEMVER"      → semver isn't available AND the value isn't a plain
 #                       wildcard-major we can resolve without it (only the
@@ -118,7 +128,7 @@ _read_engines_node() {
 }
 
 # _read_node_version_file reads .node-version or .nvmrc (first that
-# exists). Content is a bare version ("20" or "v20.11.0").
+# exists). Content is a bare version ("22" or "v22.11.0").
 _read_node_version_file() {
     local f
     for f in .node-version .nvmrc; do
@@ -136,7 +146,7 @@ _select_node() {
     explicit="$(printf '%s' "${PLUGIN_NODE_VERSION:-}" | tr -d '[:space:]')"
     engines_raw="$(_read_engines_node)"
     # Resolve against the baked majors so an open range like ">=18" widens
-    # to the smallest baked major (20) instead of failing on 18.
+    # to the smallest baked major (22) instead of failing on 18.
     declared_major="$(_resolve_engines_major "${engines_raw}")"
 
     if [ -n "${explicit}" ] && [ "${explicit}" != "auto" ]; then
@@ -144,7 +154,7 @@ _select_node() {
         # loud — the operator asked for something we can't parse.
         major="$(_node_major_from_range "${explicit}")"
         if [ -z "${major}" ]; then
-            echo "gocdnext/node: node-version:${explicit} has no numeric major (use 20 | 22 | 24)" >&2
+            echo "gocdnext/node: node-version:${explicit} has no numeric major (use $(_baked_hint))" >&2
             exit 2
         fi
         source="node-version input"
@@ -155,7 +165,7 @@ _select_node() {
         fi
     elif [ "${declared_major}" = "BADRANGE" ]; then
         echo "gocdnext/node: engines.node \"${engines_raw}\" is not a valid semver range" >&2
-        echo "  fix it, pin node-version: 20|22|24, or run the job on a custom image:" >&2
+        echo "  fix it, pin node-version: $(_baked_hint), or run the job on a custom image:" >&2
         exit 2
     elif [ -n "${declared_major}" ] && ! printf '%s' "${declared_major}" | grep -qE '^[0-9]+$'; then
         # A sentinel (UNSAT / NOSEMVER): engines.node declared a range no
@@ -163,7 +173,7 @@ _select_node() {
         # NEVER fall back to a major the project didn't ask for.
         echo "gocdnext/node: engines.node \"${engines_raw}\" can't be satisfied by a baked node major ($(_baked_majors | tr '\n' ' '))" >&2
         echo "  it declares a version/range outside the baked set (or a minor/patch we don't ship)" >&2
-        echo "  pin node-version: 20|22|24, or run the job on a custom image: with the exact node" >&2
+        echo "  node 20 is EOL (2026-04-30) and no longer baked — pin node-version: $(_baked_hint), or run the job on a custom image: with the exact node" >&2
         exit 2
     elif [ -n "${declared_major}" ]; then
         major="${declared_major}"
@@ -186,7 +196,10 @@ _select_node() {
     if [ ! -x "${NODE_BASE_DIR}/node-${major}/bin/node" ]; then
         echo "gocdnext/node: node ${major} (from ${source}) is not baked into this image" >&2
         echo "  baked majors: $(cd "${NODE_BASE_DIR}" 2>/dev/null && ls -d node-* 2>/dev/null | sed 's/node-/ /g' | tr -d '\n' || echo ' none')" >&2
-        echo "  pin a supported major (node-version: 20|22|24) OR run the job on a custom image:" >&2
+        if [ "${major}" = "20" ]; then
+            echo "  node 20 reached EOL on 2026-04-30 and was dropped in node@v4 — migrate to $(_baked_hint)" >&2
+        fi
+        echo "  pin a supported major (node-version: $(_baked_hint)) OR run the job on a custom image:" >&2
         exit 2
     fi
 
