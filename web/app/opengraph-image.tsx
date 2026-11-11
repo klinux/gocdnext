@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 
-// Route-level OG image. Next.js 15 picks this up automatically
+// Route-level OG image. Next.js picks this up automatically
 // and serves it at /opengraph-image on every page. Rendered by
 // @vercel/og (Satori) — so no CSS vars, no Tailwind tokens; we
 // hardcode the brand hex (mirror of --brand-500) and keep the

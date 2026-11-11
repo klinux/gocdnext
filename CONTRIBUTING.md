@@ -97,7 +97,7 @@ not done.
   corrective migration, not a `.down.sql` run in production.
 - **Proto** is managed by `buf`; regenerate with `make proto`, never hand-edit
   generated output. Breaking changes bump the package version.
-- **Frontend rules** live in [web/CLAUDE.md](web/CLAUDE.md) (Next.js 15, Server
+- **Frontend rules** live in [web/CLAUDE.md](web/CLAUDE.md) (Next.js 16, Server
   Actions, Zod, Biome).
 
 ## Commit & PR style

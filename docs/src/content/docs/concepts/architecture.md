@@ -62,7 +62,7 @@ session matches the job's tag requirements + has free slots.
 
 ### `web` — the dashboard
 
-Next.js 15 + React 19, App Router, RSC default. Server Actions
+Next.js 16 + React 19, App Router, RSC default. Server Actions
 hit the platform's HTTP API for mutations; RSC fetch hits it
 for reads. Client components use TanStack Query for live
 polling + SSE subscription for log tailing.
