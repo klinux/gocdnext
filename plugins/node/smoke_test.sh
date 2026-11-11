@@ -52,33 +52,52 @@ grep -qx 'SQLITE_FIXED'      <<<"$osv" || die "libsqlite3-0 does not carry the C
 grep -qx 'LINUX_LIBC_FIXED'  <<<"$osv" || die "linux-libc-dev does not carry the CVE-2026-99083 fix (>= 6.12.115-2)" "$osv"
 
 # 1. node major selected from engines.node AND actually on PATH inside the
-#    `bash -lc` the entrypoint execs (the /etc/profile-reset bug).
-for maj in 20 22 24; do
+#    `bash -lc` the entrypoint execs (the /etc/profile-reset bug). Matrix is
+#    22/24/26 — node 20 was dropped as EOL (#373; rejection proven below).
+for maj in 22 24 26; do
   d="$(mkfix "n${maj}" "{\"engines\":{\"node\":\"${maj}.x\"}}")"
   out="$(plug "$d" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version')"
   echo "$out" | grep -qE "==> node: ${maj} " || die "engines ${maj}.x not selected" "$out"
   echo "$out" | grep -qE "^v${maj}\." || die "node v${maj} not on PATH in bash -lc" "$out"
 done
 
-# 1b. npm 11.19.1 actually RUNS under each selected major, and the node-tar it
-#     bundles is >= 7.5.19 — the removed CVE-2026-59873. node 20/22 shipped npm
-#     10.x (tar 6.2.1 / 7.5.11, both vulnerable) and were bumped to npm 11.19.1
-#     (tar 7.5.22); node 24 already had it. This drives the REAL path: the plugin
-#     selects the major and npm is EXECUTED under THAT node (not the image
-#     default), so an npm that installed but can't run under node 20/22 fails
-#     HERE — as does a future base re-pin that regresses tar. (version sort:
-#     semver is not zero-padded, so the 7.5.19 floor must sort first.)
-for maj in 20 22 24; do
+# 1b. SECURITY INVARIANT (all majors): npm RUNS under the selected node, and
+#     the node-tar it bundles is >= 7.5.19 — the removed CVE-2026-59873. This
+#     drives the REAL path: the plugin selects the major and npm is EXECUTED
+#     under THAT node (not the image default), so an npm that can't run under
+#     the selected node fails HERE — as does a future base re-pin that
+#     regresses tar. (version sort: semver is not zero-padded, so the 7.5.19
+#     floor must sort first.)
+#     Per-major npm: node 22 ships npm 10.x (tar 7.5.11, vulnerable) → WE bump
+#     it to 11.19.1; node 24 already ships 11.19.1; node 26 ships 11.20.0
+#     (tar 7.5.22) and needs no bump.
+for maj in 22 24 26; do
   d="$(mkfix "ver${maj}" "{\"engines\":{\"node\":\"${maj}.x\"}}")"
   out="$(plug "$d" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='npm --version')"
-  printf '%s\n' "$out" | grep -qxF '11.19.1' \
-    || die "node-${maj}: npm 11.19.1 must run under the selected node" "$out"
+  printf '%s\n' "$out" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+    || die "node-${maj}: npm must run under the selected node" "$out"
   out="$(plug "$d" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='cat "$(npm root -g)/npm/node_modules/tar/package.json"')"
   tv="$(printf '%s\n' "$out" | grep -oE '"version": *"[0-9]+\.[0-9]+\.[0-9]+"' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
   [ -n "$tv" ] || die "node-${maj}: could not read the npm-bundled tar version" "$out"
   [ "$(printf '%s\n7.5.19\n' "$tv" | sort -V | head -1)" = "7.5.19" ] \
     || die "node-${maj}: npm-bundled tar ${tv} is < 7.5.19 (CVE-2026-59873)" "$out"
 done
+
+# 1c. node 22 specifically carries OUR explicit npm@11.19.1 bump (node 22's
+#     shipped npm 10.x bundled a vulnerable tar) — assert the exact version so
+#     a dropped/again-stale bump is caught, not just "some npm ran".
+d="$(mkfix ver22exact '{"engines":{"node":"22.x"}}')"
+out="$(plug "$d" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='npm --version')"
+printf '%s\n' "$out" | grep -qxF '11.19.1' \
+  || die "node-22: our npm@11.19.1 bump must run under node 22" "$out"
+
+# 1d. node 26 has corepack installed standalone (node stopped bundling it as of
+#     node 25). The plugin drives pnpm/yarn through corepack, so it MUST be
+#     present and runnable under the selected node 26.
+d="$(mkfix cp26 '{"engines":{"node":"26.x"}}')"
+out="$(plug "$d" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='corepack --version')"
+printf '%s\n' "$out" | grep -qE '(^|[^0-9])[0-9]+\.[0-9]+\.[0-9]+' \
+  || die "node-26: corepack must be installed standalone and runnable" "$out"
 
 # NOTE: always CAPTURE the plug output then grep the string — never
 # `plug | grep -q`. grep -q closes the pipe on first match, the still-
@@ -89,38 +108,59 @@ done
 out="$(plug "$(mkfix def '{}')" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version')"
 printf '%s\n' "$out" | grep -qE '==> node: 22 \(default\)' || die "default node not 22" "$out"
 
-# 2b. real semver eval (proves the bundled semver is found + used):
-#     open range ">=18" → node 20; operator SPACE ">= 18" and a HYPHEN
-#     range "18 - 22" are valid semver and must resolve too (the bash
-#     parser used to mis-handle these).
-for rng in '>=18' '>= 18' '18 - 22'; do
+# 2b. real semver eval (proves the bundled semver is found + used): an open
+#     range widens to the SMALLEST baked major (now 22, was 20 pre-#373).
+#     ">=18", operator SPACE ">= 18" and a HYPHEN range "18 - 24" are all
+#     valid semver and must resolve to node 22 (the bash parser used to
+#     mis-handle the spaced/hyphen forms).
+for rng in '>=18' '>= 18' '18 - 24'; do
   out="$(plug "$(mkfix "ge_$$" "{\"engines\":{\"node\":\"${rng}\"}}")" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version')"
-  printf '%s\n' "$out" | grep -qE '==> node: 20 ' || die "engines '${rng}' should widen to node 20" "$out"
-  printf '%s\n' "$out" | grep -qE '^v20\.' || die "engines '${rng}' should actually run node 20" "$out"
+  printf '%s\n' "$out" | grep -qE '==> node: 22 ' || die "engines '${rng}' should widen to node 22" "$out"
+  printf '%s\n' "$out" | grep -qE '^v22\.' || die "engines '${rng}' should actually run node 22" "$out"
 done
 
-# 2b-2. MINOR/PATCH honored: ">=20.99.0" is NOT met by baked 20 (20.20.2)
-#       but IS met by 22 → must skip 20 and pick node 22 (the old
-#       major-only parser wrongly ran v20.20.2 here).
-out="$(plug "$(mkfix ge2099 '{"engines":{"node":">=20.99.0"}}')" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version')"
-printf '%s\n' "$out" | grep -qE '^v22\.' || die "engines >=20.99.0 must skip node 20 (20.20.2 fails) and run node 22" "$out"
+# 2b-2. MINOR/PATCH honored: ">=22.99.0" is NOT met by baked 22 (22.23.x)
+#       but IS met by 24 → must skip 22 and pick node 24 (a major-only
+#       parser would wrongly run 22 here).
+out="$(plug "$(mkfix ge2299 '{"engines":{"node":">=22.99.0"}}')" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version')"
+printf '%s\n' "$out" | grep -qE '^v24\.' || die "engines >=22.99.0 must skip node 22 (22.23.x fails) and run node 24" "$out"
 
-# 2b-3. a patch bound NO baked version can meet (">=24.99.0") must FAIL —
+# 2b-3. a patch bound NO baked version can meet (">=26.99.0") must FAIL —
 #       never fall back to a version that doesn't satisfy.
-if plug "$(mkfix ge2499 '{"engines":{"node":">=24.99.0"}}')" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version' >/dev/null 2>&1; then
-  die "engines >=24.99.0 must fail (no baked patch satisfies), not run a lower node"
+if plug "$(mkfix ge2699 '{"engines":{"node":">=26.99.0"}}')" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version' >/dev/null 2>&1; then
+  die "engines >=26.99.0 must fail (no baked patch satisfies), not run a lower node"
 fi
 
-# 2c. an UPPER bound must be honored: "<22" excludes 22 → node 20 runs,
-#     never the excluded major (the dangerous corner).
-out="$(plug "$(mkfix lt22 '{"engines":{"node":"<22"}}')" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version')"
-printf '%s\n' "$out" | grep -qE '^v20\.' || die "engines <22 must run node 20 (22 excluded), not the excluded major" "$out"
+# 2c. an UPPER bound must be honored: "<24" excludes 24 and 26 → node 22 runs,
+#     never an excluded major (the dangerous corner).
+out="$(plug "$(mkfix lt24 '{"engines":{"node":"<24"}}')" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version')"
+printf '%s\n' "$out" | grep -qE '^v22\.' || die "engines <24 must run node 22 (24/26 excluded), not an excluded major" "$out"
 
-# 2d. a range NO baked major satisfies ("<20") must FAIL — never run an
-#     excluded major just because its number happens to be baked.
-if plug "$(mkfix lt20 '{"engines":{"node":"<20"}}')" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version' >/dev/null 2>&1; then
-  die "engines <20 must fail loud, not run a baked (excluded) major"
-fi
+# 2e. #373 — node 20 is DROPPED. Every channel that resolves to 20 (or to a
+#     range no baked major satisfies) must FAIL LOUD (exit 2) and NEVER run
+#     the command. assert_rejected proves all three: exit 2, no `vXX.X` line
+#     (the `node --version` command never executed), and a migration hint.
+assert_rejected() { # <label> <fixture-dir> <extra -e ...>
+  local label="$1" dir="$2"; shift 2
+  local out rc
+  set +e
+  out="$(docker run --rm -v "${dir}:/workspace" -w /workspace "$@" \
+        -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='node --version' "${IMG}" 2>&1)"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || die "${label}: expected exit 2, got ${rc}" "$out"
+  printf '%s\n' "$out" | grep -qE '^v[0-9]' && die "${label}: node ran despite the rejection (command executed)" "$out"
+  printf '%s\n' "$out" | grep -qiE 'baked|custom image|satisf|EOL' || die "${label}: missing migration guidance" "$out"
+}
+# explicit node-version:20
+assert_rejected "node-version:20" "$(mkfix rej_nv20 '{}')" -e PLUGIN_NODE_VERSION=20
+# engines.node "20.x" (a range no baked major satisfies)
+assert_rejected "engines:20.x" "$(mkfix rej_eng20 '{"engines":{"node":"20.x"}}')"
+# .nvmrc 20 (exact unbaked major)
+dn="$(mkfix rej_nvmrc20 '{}')"; printf '20\n' >"${dn}/.nvmrc"
+assert_rejected ".nvmrc:20" "$dn"
+# a "<22" range — no baked major satisfies it anymore (was node 20 pre-#373)
+assert_rejected "engines:<22" "$(mkfix rej_lt22 '{"engines":{"node":"<22"}}')"
 
 # 3. bun is baked and runnable.
 out="$(plug "$(mkfix bun '{}')" -e PLUGIN_MANAGER=none -e PLUGIN_COMMAND='bun --version')"

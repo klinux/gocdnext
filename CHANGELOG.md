@@ -10,6 +10,34 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **node plugin → `@v4`, drops EOL node 20 (baked matrix now 22/24/26).**
+  Resolves #373. **Breaking for pipelines pinned to node 20.** Node 20 reached
+  end-of-life on 2026-04-30 (no upstream security/bug fixes), so the maintained
+  image no longer bakes it. The baked set is now node **22** (Maintenance LTS,
+  EOL 2027-04-30), **24** (Maintenance LTS, EOL 2028-04-30) and **26** (Active
+  LTS, EOL 2029-04-30); the default stays **22** so hint-less projects keep v3
+  behaviour. A pipeline that resolves to node 20 — `engines.node: "20.x"`,
+  `node-version: 20`, `.nvmrc`/`.node-version` = `20`, or a `<22` range — now
+  **fails loud (exit 2)** with the baked set + a migration message, never a
+  silent run on a different node (the existing anti-silent-skew contract). Node
+  26 **unbundled corepack** (node stopped distributing it as of node 25), so the
+  image installs `corepack@0.36.0` standalone in the node-26 stage — the same
+  version node 22/24 bundle — keeping corepack consistent across the set; bun is
+  unaffected. npm/tar posture unchanged: node 22 is bumped to `npm@11.19.1`
+  (tar 7.5.22), node 24 already ships it, node 26 ships `npm@11.20.0`
+  (tar 7.5.22) — all ≥ 7.5.19, clear of CVE-2026-59873. Trivy (gate args,
+  `--ignore-unfixed`): **0 CRITICAL**; residual HIGH are npm/corepack-bundled JS
+  (`undici`, `brace-expansion`) observe-mode WARN, the same classes the v3 image
+  already shipped. **`@v3` is frozen** at its last digest (still baking
+  20/22/24) for pipelines pinned to it — not rebuilt or patched; use it only as
+  a temporary bridge, or pin a gocdnext release tag. `select-node.sh` now derives
+  the "pin node-version: …" guidance from the actually-baked majors (no
+  hard-coded list to drift), `entrypoint_test.sh` + `smoke_test.sh` cover the
+  22/24/26 matrix, node-26 selection + standalone corepack, and the explicit
+  node-20 rejection (exit 2, command never runs) across all four channels. See
+  [`plugins/node/README.md`](https://github.com/klinux/gocdnext/blob/main/plugins/node/README.md)
+  for the migration note.
+
 - **helm-push plugin → Helm 4 (alpine/helm 3.22.1 → 4.3.1), ahead of Helm 3
   security EOL.** Resolves #349. A proactive migration: the Helm project has set
   the Helm 3 security end-of-life for **2027-02-10**
