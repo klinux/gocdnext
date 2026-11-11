@@ -160,6 +160,28 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Security
 
+- **codecov plugin — Codecov upload token no longer lands on process argv or in
+  the build log.** Resolves #393. The plugin passed the repo upload token as
+  `codecov upload-process --token <value>`, which put the secret on the `codecov`
+  child's argv (readable via `ps` / `/proc/<pid>/cmdline`, a broader read surface
+  than the process env) and — because the wrapper echoes `==> codecov ${args[*]}`
+  before exec — printed it verbatim into the job log. The token now rides the
+  `CODECOV_TOKEN` environment variable, which the baked codecov-cli (10.3.0) maps
+  to the upload token (`--token` is defined with `envvar="CODECOV_TOKEN"` and
+  `upload-process` reuses it via `@global_options`), so it reaches no argv and no
+  log line; `PLUGIN_TOKEN` is unset right after the export so the child never
+  carries the secret under two names. codecov runs in the same container as the
+  entrypoint, so env-name-only is the proportionate pattern (no creds-file needed —
+  that was a buildx-only requirement, #335, because its BuildKit is a separate
+  container). No contract change — `token:` is still piped via `secrets:`; this
+  only removes the argv/log exposure of a value that was already a secret env
+  input. `entrypoint_test.sh` (new) uses a mock `codecov` to prove the token is
+  absent from argv and the banner and present only on the `CODECOV_TOKEN` channel
+  (with the negative control: no token → exit 2, CLI never runs); `smoke_test.sh`
+  proves on the real image that the baked CLI accepts the env token (reaching the
+  ingest API, stable exit 1) and that the sentinel never appears in stdout/stderr.
+  Same class as #339 (lighthouse-ci), cited as precedent.
+
 - **lighthouse-ci plugin — self-hosted LHCI build token no longer lands on
   process argv or in the build log.** Resolves #339. For `upload-target=lhci` the
   plugin passed the secret build token as `lhci upload --token=<value>`, which

@@ -7,7 +7,10 @@
 #
 # Contract (PLUGIN_* env, mapped from `with:`):
 #   PLUGIN_TOKEN        (required)  Codecov repo upload token.
-#                                   Populate via secrets:.
+#                                   Populate via secrets:. Injected
+#                                   into the codecov child as the
+#                                   CODECOV_TOKEN env var, never on
+#                                   the CLI argv or the log (#393).
 #   PLUGIN_FILE         (optional)  Explicit coverage file
 #                                   (cover.out, coverage.xml, …).
 #                                   When omitted the CLI
