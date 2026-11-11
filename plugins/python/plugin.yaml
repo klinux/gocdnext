@@ -85,8 +85,9 @@ examples:
 
   - name: publish to a private index (secret token)
     description: >
-      Twine upload piping the index credentials via secrets so
-      the token never touches the log.
+      Twine upload passing the index credentials through
+      TWINE_USERNAME/TWINE_PASSWORD so the token stays off twine's
+      argv (ps / /proc/<pid>/cmdline) and out of the log.
     yaml: |
       secrets:
         - PYPI_TOKEN
@@ -94,7 +95,8 @@ examples:
       with:
         command: |
           python -m build && \
-          twine upload --username __token__ --password "${PYPI_TOKEN}" dist/*
+          TWINE_USERNAME=__token__ TWINE_PASSWORD="${PYPI_TOKEN}" \
+            twine upload dist/*
 
   - name: cached test run
     description: >

@@ -47,7 +47,7 @@ Every PR — hotfixes included — passes through these lenses. "Happy-path pass
 
 ## Frontend (web/)
 
-Frontend-specific rules (Next.js 15, RSC, Server Actions, shadcn, Tailwind, Zod, Biome, testing) live in [web/CLAUDE.md](web/CLAUDE.md). Claude Code loads hierarchically — when working in `web/`, both files apply.
+Frontend-specific rules (Next.js 16, RSC, Server Actions, shadcn, Tailwind, Zod, Biome, testing) live in [web/CLAUDE.md](web/CLAUDE.md). Claude Code loads hierarchically — when working in `web/`, both files apply.
 
 ## Proto / gRPC contracts
 
