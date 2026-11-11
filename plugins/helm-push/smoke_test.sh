@@ -3,12 +3,13 @@
 # registry, so every case anchors on the deterministic NXDOMAIN of
 # `example.invalid` (RFC2606): `helm package` runs for real against a minimal
 # in-workspace chart, then each backend drives its publish flow until it hits the
-# DNS boundary — proving the base bump (alpine/helm:3.16.2 -> 3.22.1) kept the
-# plugin's surface:
-#   - the helm binary is on the 3.22 line (NOT 4.x);
+# DNS boundary — proving the Helm 4 migration (alpine/helm:3.22.1 -> 4.3.1, #349)
+# kept the plugin's surface:
+#   - the helm binary is on the 4.x line;
 #   - oci (helm registry login + push), chartmuseum (curl POST) and nexus (curl
 #     PUT) each run the REAL entrypoint, package the chart, and fail on the
-#     registry/repo DNS lookup — NOT a parse/unknown-flag error;
+#     registry/repo DNS lookup — NOT a parse/unknown-flag error (a v3->v4
+#     surface break would show up here as an unknown flag/command);
 #   - the registry password never appears in the log/argv.
 #
 # Convention-named so plugins.yml runs it as a PRE-PUBLISH gate. Needs docker.
@@ -44,9 +45,11 @@ HOST="example.invalid"
 echo "==> build plugin image (--no-cache, same Dockerfile/context as the official build)"
 docker build --no-cache -t "$IMG" "$HERE" >/dev/null
 
-echo "==> helm is on the 3.22 line"
+echo "==> helm is the pinned 4.3.1 build"
 OUT="$(docker run --rm --entrypoint helm "$IMG" version --short 2>&1)" || die "helm version failed" "$OUT"
-grep -qE '^v3\.22\.' <<<"$OUT" || die "helm is not on the 3.22 line" "$OUT"
+# The Dockerfile pins exactly 4.3.1 (by digest), so require that version — not a
+# loose v4.* that would mask a silent base drift. Trailing +git/-pre is allowed.
+grep -qE '^v4\.3\.1([+.-]|$)' <<<"$OUT" || die "helm is not the pinned 4.3.1 build (see #349)" "$OUT"
 
 echo "==> stage a minimal chart in the workspace"
 mkdir -p "$W/templates"
@@ -77,10 +80,20 @@ run -e PLUGIN_BACKEND=oci -e PLUGIN_OCI_REPO="oci://${HOST}/charts" \
 assert_reached "oci-login" "$PW_OCI"
 grep -q "helm registry login ${HOST}" <<<"$OUT" || die "oci-login: did not reach registry login" "$OUT"
 
-echo "==> oci PUSH (no creds) reaches the registry"
-run -e PLUGIN_BACKEND=oci -e PLUGIN_OCI_REPO="oci://${HOST}/charts"
+echo "==> oci PUSH with --version/--app-version overrides reaches the registry"
+# Drive BOTH packaging overrides through a real flow (nothing else exercises
+# them). --version renames the package to the override, which we assert below;
+# --app-version has no effect on the filename, but `helm package` would reject an
+# unknown/removed flag BEFORE producing a tgz — so reaching the package + DNS
+# boundary proves 4.3.1 still accepts it too.
+run -e PLUGIN_BACKEND=oci -e PLUGIN_OCI_REPO="oci://${HOST}/charts" \
+    -e PLUGIN_VERSION=9.9.9 -e PLUGIN_APP_VERSION=1.2.3
 assert_reached "oci-push" ""
 grep -q "helm push " <<<"$OUT" || die "oci-push: did not reach helm push" "$OUT"
+grep -q "==> packaged smoke-chart-9.9.9.tgz" <<<"$OUT" \
+  || die "oci-push: --version override did not rename the package to 9.9.9 (helm package flag dropped?)" "$OUT"
+grep -q "smoke-chart-9.9.9.tgz oci://${HOST}/charts" <<<"$OUT" \
+  || die "oci-push: helm push did not receive the overridden tgz" "$OUT"
 
 echo "==> chartmuseum backend (curl POST) reaches the repo; password not leaked"
 run -e PLUGIN_BACKEND=chartmuseum -e PLUGIN_REPO_URL="https://${HOST}/cm" \

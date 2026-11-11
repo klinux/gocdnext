@@ -29,17 +29,27 @@
 #                       of the chart repo. For nexus this is the
 #                       full hosted-helm-repo URL (e.g.
 #                       https://nexus.corp/repository/helm/).
-# Base bumped alpine/helm:3.16.2 -> 3.22.1 (pinned by digest). 3.16.2 shipped the
-# `helm` binary built on an old Go that bundled vulnerable stdlib + grpc
-# (Go-stdlib CVE-2025-68121, grpc CVE-2026-33186); 3.22.1 is built on Go 1.26.9 and
-# rides Alpine 3.24. The plugin's surface is unchanged — it stays on the Helm 3
-# line (NOT 4.x, which is a breaking major): `helm package`, `helm push`,
-# `helm registry login` and the flags it passes (--destination, --version,
-# --app-version, --username, --password-stdin) all exist in 3.22.1 (proven by the
-# smoke). `apk upgrade` refreshes the OS set (clears brotli-libs CVE-2026-111497
-# CRITICAL); the FROM digest pins the base layer, not the upgraded set, so the
-# weekly Trivy gate catches drift.
-FROM alpine/helm:3.22.1@sha256:8191701ad1f82ee3695c87211fcbfe6d7b1bb7df92ac1c8de9ccdb0995a6a2c1
+# Base migrated alpine/helm:3.22.1 -> 4.3.1 (pinned by digest). Resolves #349:
+# a PROACTIVE migration ahead of the Helm 3 security end-of-life, which the Helm
+# project has set for 2027-02-10 (https://helm.sh/blog/helm-v3-end-of-life/,
+# extended from Nov 2026 — on-demand security patches continue until then, after
+# which 3.x gets no releases of any kind). Moving now, while 3.x is still patched,
+# avoids a scramble when a late CVE in the shipped `helm` binary would have no
+# patched 3.x base to move to. Helm 4.3.1 is built on a current Go and is the
+# actively-maintained line.
+#
+# The plugin's CLI surface is UNCHANGED across the v3->v4 major: the only helm
+# commands this plugin runs are `helm package` (flags --destination, --version,
+# --app-version), `helm push` (OCI), and `helm registry login --username
+# --password-stdin <host>` — all present and behaviour-compatible in 4.3.1
+# (verified against the real binary + the smoke: package of a minimal
+# apiVersion:v2 chart, version/app-version overrides, and push/login reaching the
+# registry boundary rather than a parse error). The chartmuseum/nexus backends
+# use curl, not helm, so they are unaffected by the helm major.
+#
+# `apk upgrade` refreshes the OS set; the FROM digest pins the base layer, not the
+# upgraded set, so the weekly Trivy gate catches drift.
+FROM alpine/helm:4.3.1@sha256:e3f8d5c462d75470fbb1fce79ad5c20063657096d1f98c0fcea869e2600e2e5e
 
 RUN apk upgrade --no-cache && apk add --no-cache bash curl
 
