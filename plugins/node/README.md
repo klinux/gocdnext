@@ -1,17 +1,24 @@
-# `gocdnext/node` v3
+# `gocdnext/node` v4
 
 Node.js install + run runner. Selects the **node major** from the
 project's own declaration (`engines.node` / `.nvmrc` / `.node-version`)
-across the baked 20/22/24, auto-detects the manager (**pnpm / npm /
+across the baked 22/24/26, auto-detects the manager (**pnpm / npm /
 yarn v3+ / bun**) from the lockfile, sets up corepack (or the baked bun)
 + a workspace-local store, runs the dependency install (skippable), then
 executes your shell command.
 
-> **v3 vs v2**: adds **bun** + **node-version selection**; base moved
-> alpine → debian-slim (glibc) with `build-essential` + `python3` so
-> node-gyp native builds work. Node/bun are **baked** — selection is a
-> PATH switch with no runtime download. `@v2` stays available for
-> pipelines pinned to it.
+> **Breaking change from v3 (#373)**: the baked matrix drops **EOL node 20**
+> — it is now **22/24/26**. Node 20 reached end-of-life on 2026-04-30, so v4
+> no longer ships it. A pipeline resolving to node 20 now **fails loud**
+> (exit 2) with a migration message instead of running a different node. See
+> [migration from v3](#migration-from-v3-node-20-dropped). `@v3` stays
+> available **frozen** (still baking 20/22/24) for a temporary bridge — it is
+> not rebuilt or patched.
+>
+> **v3 vs v2**: adds **bun** + **node-version selection**; base is
+> debian-slim (glibc) with `build-essential` + `python3` so node-gyp native
+> builds work. Node/bun are **baked** — selection is a PATH switch with no
+> runtime download.
 >
 > **Breaking change from v1**: see [migration](#migration-from-v1) below.
 
@@ -21,7 +28,7 @@ executes your shell command.
 jobs:
   deps:
     stage: install
-    uses: gocdnext/node@v3
+    uses: gocdnext/node@v4
     with:
       working-dir: web
       # install: true (default) + command: "" (default) →
@@ -35,7 +42,7 @@ jobs:
 
   typecheck:
     stage: lint
-    uses: gocdnext/node@v3
+    uses: gocdnext/node@v4
     needs: [deps]
     needs_artifacts:
       - from_job: deps
@@ -47,7 +54,7 @@ jobs:
 
   unit:
     stage: test
-    uses: gocdnext/node@v3
+    uses: gocdnext/node@v4
     needs: [deps]
     needs_artifacts:
       - from_job: deps
@@ -64,7 +71,7 @@ jobs:
 |---------------|----------------------|---------|----------------------------------------------------|
 | `command`      | `PLUGIN_COMMAND`      | `""`    | Shell command via `bash -lc` — `&&` / pipes / env expansion all work. NOT prefixed with a manager. |
 | `working-dir`  | `PLUGIN_WORKING_DIR`  | `.`     | Path under `/workspace`. |
-| `node-version` | `PLUGIN_NODE_VERSION` | `auto`  | `20` / `22` / `24` / `auto`. `auto` reads `engines.node`, else `.node-version` / `.nvmrc`; defaults to 22. Explicit value overrides the declaration (printed). An unbaked major fails loud — no silent fallback. PATH switch, no download. |
+| `node-version` | `PLUGIN_NODE_VERSION` | `auto`  | `22` / `24` / `26` / `auto`. `auto` reads `engines.node`, else `.node-version` / `.nvmrc`; defaults to 22. Explicit value overrides the declaration (printed). An unbaked major fails loud — no silent fallback. Node 20 (EOL) was dropped in v4 → pins to it fail loud. PATH switch, no download. |
 | `manager`      | `PLUGIN_MANAGER`      | `auto`  | `pnpm` / `npm` / `yarn` (v3+) / `bun` / `none` / `auto`. Auto detects via lockfile (priority `bun.lock`/`bun.lockb` > `pnpm-lock.yaml` > `yarn.lock` + `.yarnrc.yml` > `package-lock.json`; a `packageManager: "bun@x"` with no lockfile also picks bun). `none` skips install entirely. |
 | `install`      | `PLUGIN_INSTALL`      | `true`  | Run the manager's frozen install before `command`. Set `false` to reuse a `node_modules/` artifact. |
 | `frozen`       | `PLUGIN_FROZEN`       | `true`  | pnpm → `--frozen-lockfile`; npm → `npm ci` vs `npm install`; yarn v3+ → `--immutable`; bun → `--frozen-lockfile`. |
@@ -88,12 +95,13 @@ listing the accepted set.
 - Auto-detect with no lockfile fails with a clear "add a lockfile or
   set manager explicitly" message rather than guessing.
 - A `node-version` (or `engines.node`) major that isn't baked into the
-  image (only **20 / 22 / 24**) fails loud with the baked set — never a
-  silent fallback to the default node.
+  image (only **22 / 24 / 26**) fails loud with the baked set — never a
+  silent fallback to the default node. Node 20 (EOL 2026-04-30) was
+  dropped in v4; a pipeline pinned to it fails loud with a migration hint.
 
 ## Node version
 
-The image bakes node **20**, **22**, and **24**; the entrypoint selects
+The image bakes node **22**, **24**, and **26**; the entrypoint selects
 one per run and points `PATH` at it — a switch, not a download. Source
 of truth, in order:
 
@@ -108,12 +116,15 @@ bounds, operator spaces and hyphen ranges are honored exactly, not
 approximated. The plugin picks the **smallest baked node version that
 satisfies the range**:
 
-- `">=18"` → node 20 (20 satisfies; not rejected just because 18 isn't baked);
-- `"18 - 22"`, `">= 18"` (spaces / hyphen ranges) → node 20;
-- `">=20.99.0"` → node 22 (baked 20 is 20.20.2 which does **not** satisfy →
-  skipped; the old major-only logic wrongly ran 20 here);
-- `">=18 <20"`, `"^18"`, `"18.x"`, `"<20"`, `">24"`, `">=24.99.0"` → **fail
-  loud** (no baked version satisfies) — never a version the range excludes;
+- `">=18"` → node 22 (smallest baked that satisfies; not rejected just
+  because 18 isn't baked);
+- `"18 - 24"`, `">= 18"` (spaces / hyphen ranges) → node 22;
+- `">=22.99.0"` → node 24 (baked 22 is 22.23.x which does **not** satisfy →
+  skipped; a major-only parser would wrongly run 22 here);
+- `"<24"` → node 22 (upper bound honored; 24/26 excluded);
+- `"20.x"`, `"<22"`, `"^18"`, `">=26.99.0"`, `">26"` → **fail loud** (no baked
+  version satisfies) — never a version the range excludes. **`20.x`/`<22`
+  are the dropped-node-20 cases: migrate the declaration to 22|24|26;**
 - an invalid range → fail loud;
 - a value with **no numeric major** (an `lts/*` alias, `*`) falls back to
   the default — not a hard error.
@@ -140,12 +151,47 @@ path so the platform's `cache:` block can tar it:
 Combine with `cache: { key: <manager>-{{ hash "<lockfile>" }} }` for
 deterministic invalidation on lockfile change (gocdnext ≥ v0.4.37).
 
+## Migration from v3 (node 20 dropped)
+
+v4 drops **node 20** from the baked matrix — it reached end-of-life on
+2026-04-30 and no longer receives upstream security or bug fixes, so the
+maintained image stops shipping it. The matrix is now **22 / 24 / 26**.
+
+What happens to a pipeline pinned to node 20 on `@v4`: version selection
+**fails loud** (exit 2) — `engines.node: "20.x"`, `node-version: 20`,
+`.nvmrc`/`.node-version` = `20`, or a `<22` range all stop the job with the
+baked set + a "migrate to 22|24|26" message. The job never runs on a
+different node silently.
+
+To migrate, move your declaration to a supported major:
+
+| Pinned to node 20 (v3)            | Fix (v4)                                  |
+|-----------------------------------|-------------------------------------------|
+| `engines.node: "20.x"`            | `engines.node: "22.x"` (or `24`/`26`)     |
+| `node-version: 20`                | `node-version: 22` (or `24`/`26`)         |
+| `.nvmrc` / `.node-version` = `20` | `22` (or `24`/`26`)                       |
+| needs an exact node 20 build      | run the job on a custom `image:`          |
+
+**Which tags carry the break.** On the next release, `@v4`, **`@v1` and
+`@latest` all move to the new 22/24/26 image at the same digest** — `@v1` is a
+rolling tag that tracks current content, *not* a frozen "major 1" channel (see
+[plugin versioning](/gocdnext/docs/reference/plugin-versioning/)). So a pipeline
+pinned to `@v1` or `@latest` with a node-20 declaration **will also start failing
+loud** after the release. **Only `@v3` freezes** — it stays at its last digest
+(still baking 20/22/24), **not rebuilt or security-patched**.
+
+**Temporary bridge:** pin `@v3` as a short-lived bridge while migrating, or pin a
+**gocdnext release tag** to hold the whole catalog at a known point. Prefer
+migrating off node 20 — `@v3` gets no further fixes.
+
 ## Migration from v1
 
 v1 was a thin `pnpm <command>` prefixer. v2 separates install from
-command and shell-evaluates `command:`. The `:v1` rolling tag now
-points at the v2 image — pin to `:0.4.38` to stay on the old
-contract while migrating.
+command and shell-evaluates `command:`. The `:v1` rolling tag is **not**
+frozen at major 1 — it tracks current content, so it has carried the v2
+contract since v0.4.39 and **now carries v4** (node 22/24/26, with node 20
+rejected). Pin a **gocdnext release tag** to stay on an old contract while
+migrating; do not rely on `@v1` to shield a pipeline from a breaking change.
 
 | v1 YAML                                 | v2 YAML                                                                 |
 |-----------------------------------------|-------------------------------------------------------------------------|

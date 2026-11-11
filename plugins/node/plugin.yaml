@@ -3,9 +3,21 @@
 # image still reads the same PLUGIN_* env vars at runtime; this
 # file is metadata, not code.
 #
-# v3 adds multi-version node (20/22/24, auto-selected from engines.node)
-# and bun as a manager; see the description field below. The v2 notes
-# (still in force) follow.
+# v4 BREAKING CHANGES vs v3 (#373):
+#   - The baked node matrix drops EOL node 20 → now 22/24/26. Node 20
+#     reached end-of-life on 2026-04-30 (no upstream security/bug fixes),
+#     so v4 does not bake it. A pipeline whose version resolves to 20
+#     (engines.node 20.x, node-version: 20, .nvmrc 20, a <22 range) now
+#     FAILS LOUD (exit 2) with a migration message — never a silent run
+#     on a different node. Migrate the declaration to 22|24|26.
+#   - `@v3` stays in the registry FROZEN at its last digest (still baking
+#     20/22/24) for pipelines pinned to it; it is not rebuilt or patched.
+#     Pin `@v3` (or a gocdnext release tag) only as a temporary bridge
+#     while migrating off node 20.
+#
+# v3 added multi-version node (auto-selected from engines.node) and bun as
+# a manager; see the description field below. The v2 notes (still in force)
+# follow.
 #
 # v2 BREAKING CHANGES vs v1:
 #   - `command:` is now a SHELL command (run via bash -lc), no longer
@@ -24,7 +36,7 @@
 # See CHANGELOG entry for v0.4.39 for the side-by-side migration.
 name: node
 category: build
-image_tag: v3
+image_tag: v4
 # Refreshes OS packages via `apt-get upgrade` and bumps npm at build time, so it
 # MUST build from scratch — otherwise the registry build cache re-imports a stale
 # OS/npm layer on a release that didn't touch the Dockerfile. Consumed by the
@@ -32,20 +44,22 @@ image_tag: v3
 no_cache: true
 description: >
   Node.js install + run with multi-manager support (pnpm, npm,
-  yarn v3+, bun) AND multi-version node. Bakes node 20/22/24 in one
+  yarn v3+, bun) AND multi-version node. Bakes node 22/24/26 in one
   image and selects the major from the project's own declaration
   (`engines.node` / `.nvmrc` / `.node-version`) or the `node-version:`
   input — a pure PATH switch, no runtime download (same convention as
   jdk-base / dotnet). Auto-detects the manager from the lockfile, sets
   up corepack (pnpm/yarn) or the baked bun, redirects the store to a
   workspace-local cache, runs frozen-lockfile install (skippable), then
-  executes the user's shell command via `bash -lc`. **v3 vs v2:** adds
-  bun + node-version selection; base moves alpine → debian-slim (glibc)
-  with build-essential + python3 for node-gyp. `@v2` stays available
-  for pipelines pinned to it. **v2 BREAKING vs v1** (still applies):
-  `command:` is a shell command (not a pnpm subcommand); `install:`
-  flag separates install from `command:`; yarn v1 is rejected (use v3+
-  or `manager: none`).
+  executes the user's shell command via `bash -lc`. **v4 BREAKING vs v3
+  (#373):** drops EOL node 20 — the matrix is now 22/24/26; a pipeline
+  resolving to node 20 fails loud (migrate to 22|24|26). `@v3` stays
+  available FROZEN (still baking 20/22/24) for pipelines pinned to it,
+  not rebuilt. **v3 vs v2:** adds bun + node-version selection; base is
+  debian-slim (glibc) with build-essential + python3 for node-gyp.
+  **v2 BREAKING vs v1** (still applies): `command:` is a shell command
+  (not a pnpm subcommand); `install:` flag separates install from
+  `command:`; yarn v1 is rejected (use v3+ or `manager: none`).
 
 inputs:
   command:
@@ -68,16 +82,17 @@ inputs:
     required: false
     default: auto
     description: >
-      Node.js major to run on: `20` | `22` | `24` | `auto`. `auto`
+      Node.js major to run on: `22` | `24` | `26` | `auto`. `auto`
       (default) reads the project's own declaration — `engines.node`
       in package.json, else `.node-version` / `.nvmrc` — the same way
       the dotnet plugin reads global.json; falls back to 22 when the
       project declares nothing. An explicit value here overrides the
       declaration (printed so the divergence is visible). A major that
-      isn't baked into the image (only 20/22/24 are) fails LOUD rather
+      isn't baked into the image (only 22/24/26 are) fails LOUD rather
       than silently running on the default — pin a supported major or
-      run the job on a custom `image:`. Selection is a PATH switch with
-      no runtime download.
+      run the job on a custom `image:`. Node 20 was dropped in v4 (EOL
+      2026-04-30): a pipeline pinned to it fails loud — migrate to
+      22|24|26. Selection is a PATH switch with no runtime download.
   manager:
     required: false
     default: auto
@@ -151,7 +166,7 @@ examples:
     yaml: |
       install:
         stage: install
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v4
         cache:
           - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
             paths: [.pnpm-store]
@@ -164,7 +179,7 @@ examples:
 
       lint:
         stage: lint
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v4
         needs: [install]
         needs_artifacts:
           - from_job: install
@@ -186,7 +201,7 @@ examples:
     yaml: |
       lint:
         stage: lint
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v4
         cache:
           - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
             paths: [.pnpm-store]
@@ -205,7 +220,7 @@ examples:
       node 24 + bun are baked into the image.
     yaml: |
       test:
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v4
         cache:
           - key: bun-cache-{{ hash "bun.lock" }}
             paths: [.bun-cache]
@@ -220,7 +235,7 @@ examples:
       separate jobs to chain commands" pattern.
     yaml: |
       build:
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v4
         cache:
           - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
             paths: [.pnpm-store]
@@ -240,7 +255,7 @@ examples:
       tsc which are devDependencies.
     yaml: |
       docker-build:
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v4
         with:
           prod: true
           command: pnpm --filter @app/web build
@@ -253,7 +268,7 @@ examples:
       separate flag on npm.
     yaml: |
       lint:
-        uses: ghcr.io/klinux/gocdnext-plugin-node@v3
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v4
         cache:
           - key: npm-cache-{{ hash "package-lock.json" }}
             paths: [.npm-cache]

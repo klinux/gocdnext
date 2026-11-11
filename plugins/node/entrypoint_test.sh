@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mock-PATH test for the node plugin entrypoint. Stubs node / pnpm /
 # npm / yarn / bun / corepack / git on PATH (each appends its argv to a
-# file) and injects a temp NODE_BASE_DIR with fake node-20/22/24 so
+# file) and injects a temp NODE_BASE_DIR with fake node-22/24/26 so
 # select-node.sh's version switch runs without a real image. Asserts:
 #   - version selection from engines.node / .nvmrc / node-version input,
 #     including the unbaked/malformed fail-loud paths;
@@ -29,7 +29,7 @@ chmod +x "$STUB/git"
 
 # ── fake baked node majors (only need an executable node-*/bin/node) ──
 NODEBASE="$TMP/opt-node"
-for maj in 20 22 24; do
+for maj in 22 24 26; do
     mkdir -p "$NODEBASE/node-$maj/bin"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$NODEBASE/node-$maj/bin/node"
     chmod +x "$NODEBASE/node-$maj/bin/node"
@@ -54,6 +54,10 @@ fail() { echo "FAIL: $1"; echo "--- output ---"; echo "$OUT"; echo "--- args ---
 
 pkg() { printf '%s' "$2" >"$1/package.json"; }
 
+# f_bare: a package.json with only a packageManager (no version declaration)
+# — used by several cases below, so it is defined up front.
+f_bare() { pkg "$1" '{"packageManager":"bun@1.3.9"}'; }
+
 # ─────────────────────────────── version ───────────────────────────────
 
 # 1. engines.node "24.x" → node 24, bun install (needs a manager so the
@@ -63,10 +67,24 @@ run f_engines24
 [ "$RC" -eq 0 ] || fail "engines.node 24.x should succeed (rc=$RC)"
 echo "$OUT" | grep -qE '==> node: 24 \(engines\.node' || fail "engines.node 24.x should select node 24"
 
-# 2. .nvmrc "20" → node 20.
+# 1b. engines.node "26.x" → node 26 (the newly-baked Active LTS major).
+f_engines26() { pkg "$1" '{"engines":{"node":"26.x"},"packageManager":"bun@1.3.9"}'; }
+run f_engines26
+[ "$RC" -eq 0 ] || fail "engines.node 26.x should succeed (rc=$RC)"
+echo "$OUT" | grep -qE '==> node: 26 \(engines\.node' || fail "engines.node 26.x should select node 26"
+
+# 2. .nvmrc "26" → node 26 (the new major is baked and selectable).
+f_nvmrc26() { printf '26\n' >"$1/.nvmrc"; printf '{"packageManager":"bun@1.3.9"}\n' >"$1/package.json"; }
+run f_nvmrc26
+echo "$OUT" | grep -qE '==> node: 26 \(\.node-version/\.nvmrc' || fail ".nvmrc 26 should select node 26"
+
+# 2r. #373: node 20 is dropped. A .nvmrc pinning 20 (an exact unbaked major)
+#     must FAIL LOUD (exit 2) and NEVER dispatch — no manager/command ran.
 f_nvmrc20() { printf '20\n' >"$1/.nvmrc"; printf '{"packageManager":"bun@1.3.9"}\n' >"$1/package.json"; }
 run f_nvmrc20
-echo "$OUT" | grep -qE '==> node: 20 \(\.node-version/\.nvmrc' || fail ".nvmrc 20 should select node 20"
+[ "$RC" -eq 2 ] || fail ".nvmrc 20 (dropped major) must exit 2 (got $RC)"
+[ -s "$TMP/args" ] && fail ".nvmrc 20: a manager/command ran despite the rejection"
+echo "$OUT" | grep -qiE 'EOL|not baked|baked majors' || fail ".nvmrc 20: expected a loud drop/EOL message ($OUT)"
 
 # 3. explicit node-version:22 OVERRIDES engines.node 24 (both printed).
 run f_engines24 PLUGIN_NODE_VERSION=22
@@ -79,8 +97,20 @@ run f_engines18
 [ "$RC" -eq 2 ] || fail "unbaked node 18 must exit 2 (got $RC)"
 echo "$OUT" | grep -qiE "satisf|not baked" || fail "unbaked should fail loud with a clear reason ($OUT)"
 
+# 4r. #373 explicit reject of the dropped major via both channels, each
+#     proving exit 2 AND no dispatch (args file empty):
+#     (a) explicit node-version:20 → the exact unbaked major fails loud.
+run f_bare PLUGIN_NODE_VERSION=20
+[ "$RC" -eq 2 ] || fail "node-version:20 (dropped major) must exit 2 (got $RC)"
+[ -s "$TMP/args" ] && fail "node-version:20: a manager/command ran despite the rejection"
+echo "$OUT" | grep -qiE 'EOL|not baked|baked majors' || fail "node-version:20: expected a loud drop/EOL message ($OUT)"
+#     (b) engines.node "20.x" → a range no baked major satisfies → exit 2.
+f_engines20() { pkg "$1" '{"engines":{"node":"20.x"}}'; }
+run f_engines20
+[ "$RC" -eq 2 ] || fail "engines.node 20.x (dropped major) must exit 2 (got $RC)"
+[ -s "$TMP/args" ] && fail "engines 20.x: a manager/command ran despite the rejection"
+
 # 5. no declaration → default node 22.
-f_bare() { pkg "$1" '{"packageManager":"bun@1.3.9"}'; }
 run f_bare
 echo "$OUT" | grep -qE '==> node: 22 \(default\)' || fail "no declaration should default to node 22"
 
@@ -109,8 +139,9 @@ run f_bare PLUGIN_NODE_VERSION=lts
 #     (minor/patch, operator spaces, hyphen ranges all honored). The mock
 #     has no node/semver, so a range degrades to a LOUD failure here
 #     (NOSEMVER) — never a mis-resolve. The actual range matrix
-#     (">=18"→20, ">= 18"→20, "18 - 22"→20, "<22"→20, ">=20.99.0"→22,
-#     "<20"→fail, ...) is covered against the real image in smoke_test.sh.
+#     (">=18"→22, ">= 18"→22, "18 - 24"→22, "<24"→22, ">=22.99.0"→24,
+#     "<22"→fail, "20.x"→fail, ...) is covered against the real image in
+#     smoke_test.sh.
 f_range() { pkg "$1" '{"engines":{"node":">=18"}}'; }
 run f_range
 [ "$RC" -eq 2 ] || fail "engines range without semver must fail loud, not mis-resolve (got $RC)"
