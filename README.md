@@ -109,7 +109,7 @@ Differentiators vs. GitHub Actions / Tekton / Woodpecker:
 server/      Go control plane: HTTP API, gRPC for agents, scheduler, webhooks
 agent/       Go agent: pulls jobs, runs containers (docker or k8s), streams logs
 cli/         gocdnext CLI: validate, run-local, apply, secret, login, admin
-web/         Next.js 15 UI (App Router, RSC, Server Actions, shadcn)
+web/         Next.js 16 UI (App Router, RSC, Server Actions, shadcn)
 proto/       gRPC / protobuf contracts (managed by buf)
 plugins/     Reference plugins — 60+ images (build/test/scan/sign/deploy/migrate/notify)
 charts/      Helm chart (server + agents, single-host Ingress / Gateway API)
