@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **PR-head config trust is now a toggle in project settings (GitHub checks tab).**
+  Same-repo (non-fork) PR-head config (#223 — a PR running against its own
+  `.gocdnext/` so it self-validates pipeline changes) already existed behind the
+  per-project `trust_same_repo_pr_config` flag, but could only be flipped via the
+  API. Added an admin `Switch` (`ProjectPrHeadSettings`) that reads
+  `GET /pr-head-config` and writes `PUT /pr-head-config`, with a description of
+  what enabling means (the PR author controls the jobs/images/profiles/OIDC/
+  deploys that run with the project's secrets; fork PRs never use head config).
+  Default stays **off**; the toggle is read-only for non-admins (the write is
+  admin-only + audited server-side). No backend change.
+
 ### Changed
 
 - **Project settings page grouped into vertical tabs.** The per-project settings

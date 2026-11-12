@@ -8,6 +8,7 @@ import { ProjectLabelsCard } from "@/components/projects/project-labels.client";
 import { ProjectComplianceCard } from "@/components/projects/project-compliance.client";
 import { ProjectCompliancePreview } from "@/components/projects/project-compliance-preview.client";
 import { ProjectRequiredChecks } from "@/components/projects/project-required-checks.client";
+import { ProjectPrHeadSettings } from "@/components/projects/project-pr-head-settings.client";
 import { ProjectStatusBadgeSettings } from "@/components/projects/project-status-badge-settings.client";
 import { ProjectBuildCacheSettings } from "@/components/projects/project-build-cache-settings.client";
 import {
@@ -21,6 +22,7 @@ import {
   getProjectDetail,
   getProjectLogArchive,
   getProjectCheckReporting,
+  getProjectPrHeadConfig,
   getProjectRequiredChecks,
   type CheckReportingMode,
 } from "@/server/queries/projects";
@@ -80,6 +82,22 @@ export default async function ProjectSettingsPage({
     checkReporting = await getProjectCheckReporting(slug);
   } catch {
     checkReporting = null;
+  }
+
+  // Same-repo PR-head config trust (#223) — GitHub only. The dispatcher applies
+  // head config exclusively for GitHub same-repo PRs (pr_head_dispatch.go), so
+  // don't surface the toggle where it has no effect (GitLab / Bitbucket / manual
+  // / no SCM) — an admin flipping it there would get a success toast but every PR
+  // would still run the base flow. Read is maintainer+ (a viewer gets 403, so the
+  // card is hidden for them); the write is admin-only (canEdit below). Degrades to
+  // null (card hidden) when the endpoint can't be read.
+  let prHead: Awaited<ReturnType<typeof getProjectPrHeadConfig>> | null = null;
+  if (detail.scm_source?.provider === "github") {
+    try {
+      prHead = await getProjectPrHeadConfig(slug);
+    } catch {
+      prHead = null;
+    }
   }
 
   let badge: Awaited<ReturnType<typeof getProjectBadge>> | null = null;
@@ -173,7 +191,7 @@ export default async function ProjectSettingsPage({
     },
   ];
 
-  if (checkReporting || requiredChecks) {
+  if (checkReporting || requiredChecks || prHead) {
     tabs.push({
       value: "checks",
       label: "GitHub checks",
@@ -191,6 +209,13 @@ export default async function ProjectSettingsPage({
           ) : null}
           {requiredChecks ? (
             <ProjectRequiredChecks slug={slug} initial={requiredChecks} />
+          ) : null}
+          {prHead ? (
+            <ProjectPrHeadSettings
+              slug={slug}
+              initialEnabled={prHead.enabled}
+              canEdit={isAdmin}
+            />
           ) : null}
         </>
       ),
