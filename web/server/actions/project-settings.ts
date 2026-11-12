@@ -163,6 +163,55 @@ export async function setProjectCheckReporting(
   }
 }
 
+// Same-repo PR-head config trust (#223). The PUT is admin-only + audited on the
+// server; this action just forwards the viewer's session so the server enforces
+// the role (a non-admin gets a 403 surfaced as the error).
+const setPrHeadTrustSchema = z.object({
+  slug: z.string().min(1),
+  enabled: z.boolean(),
+});
+
+export async function setProjectPrHeadTrust(
+  input: z.infer<typeof setPrHeadTrustSchema>,
+): Promise<ActionResult> {
+  const parsed = setPrHeadTrustSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/pr-head-config`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "PUT",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+      body: JSON.stringify({ enabled: parsed.data.enabled }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        error: `server ${res.status}: ${body.trim().slice(0, 300) || "save failed"}`,
+      };
+    }
+    revalidatePath(`/projects/${parsed.data.slug}/settings`);
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 // Required pipelines for PR merge. The server writes a dedicated GitHub ruleset
 // requiring these pipelines' checks; it re-validates that each pipeline fires on
 // PRs and that the project emits commit statuses (a client-friendly cap here).
