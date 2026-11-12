@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.128.0 — 2026-11-12
+
 ### Added
 
 - **PR-head config trust is now a toggle in project settings (GitHub checks tab).**
