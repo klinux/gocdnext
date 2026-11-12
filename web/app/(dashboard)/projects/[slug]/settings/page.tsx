@@ -11,6 +11,10 @@ import { ProjectRequiredChecks } from "@/components/projects/project-required-ch
 import { ProjectStatusBadgeSettings } from "@/components/projects/project-status-badge-settings.client";
 import { ProjectBuildCacheSettings } from "@/components/projects/project-build-cache-settings.client";
 import {
+  ProjectSettingsTabs,
+  type ProjectSettingsTab,
+} from "@/components/projects/project-settings-tabs.client";
+import {
   GocdnextAPIError,
   getProjectBadge,
   getProjectBuildCache,
@@ -138,6 +142,119 @@ export default async function ProjectSettingsPage({
     }
   }
 
+  // Group the sections into vertical tabs. Each tab only renders when it has at
+  // least one available section, so the conditional logic that used to gate
+  // individual cards now gates whole tabs (General always shows — labels +
+  // polling are unconditional).
+  const tabs: ProjectSettingsTab[] = [
+    {
+      value: "general",
+      label: "General",
+      icon: "general",
+      content: (
+        <>
+          <ProjectLabelsCard
+            slug={slug}
+            initial={detail.project.labels ?? []}
+          />
+          <ProjectPollSettings
+            slug={slug}
+            initialIntervalNs={detail.scm_source?.poll_interval_ns ?? 0}
+            hasScmSource={Boolean(detail.scm_source)}
+          />
+          {badge ? (
+            <ProjectStatusBadgeSettings
+              slug={slug}
+              initialEnabled={badge.enabled}
+            />
+          ) : null}
+        </>
+      ),
+    },
+  ];
+
+  if (checkReporting || requiredChecks) {
+    tabs.push({
+      value: "checks",
+      label: "GitHub checks",
+      icon: "checks",
+      content: (
+        <>
+          {checkReporting ? (
+            <ProjectGithubChecksSettings
+              slug={slug}
+              initialMode={checkReporting.mode}
+              // default_mode is the server's single source of truth; the API
+              // only ever returns a valid mode, so the cast is safe.
+              defaultMode={checkReporting.default_mode as CheckReportingMode}
+            />
+          ) : null}
+          {requiredChecks ? (
+            <ProjectRequiredChecks slug={slug} initial={requiredChecks} />
+          ) : null}
+        </>
+      ),
+    });
+  }
+
+  if (archive || buildCache) {
+    tabs.push({
+      value: "build",
+      label: "Build & cache",
+      icon: "build",
+      content: (
+        <>
+          {archive ? (
+            <ProjectLogArchiveSettings
+              slug={slug}
+              initialEnabled={archive.enabled}
+              globalPolicy={archive.global_policy ?? "auto"}
+              hasArtifactBackend={archive.has_artifact_backend}
+            />
+          ) : null}
+          {buildCache ? (
+            <ProjectBuildCacheSettings
+              slug={slug}
+              initialEnabled={buildCache.enabled}
+            />
+          ) : null}
+        </>
+      ),
+    });
+  }
+
+  if (isAdmin) {
+    tabs.push({
+      value: "compliance",
+      label: "Compliance",
+      icon: "compliance",
+      content: (
+        <>
+          <ProjectComplianceCard
+            slug={slug}
+            frameworks={allFrameworks}
+            assignedIDs={assignedIDs}
+          />
+          {/*
+            Reset the preview's internal state when the assignment changes: saving
+            frameworks above revalidates this page, so a new assignment streams
+            fresh `assignedIDs` + `initial`. Keying on the assignment remounts the
+            preview so it reflects the just-saved governance (and any in-progress
+            what-if for the OLD set is correctly discarded). An unrelated
+            revalidation keeps the same key, preserving an active what-if.
+          */}
+          <ProjectCompliancePreview
+            key={[...assignedIDs].sort().join(",")}
+            slug={slug}
+            frameworks={allFrameworks}
+            assignedIDs={assignedIDs}
+            initial={preview}
+          />
+        </>
+      ),
+    });
+  }
+
   return (
     <section className="space-y-6">
       <div className="space-y-1">
@@ -148,74 +265,7 @@ export default async function ProjectSettingsPage({
         </p>
       </div>
 
-      <ProjectLabelsCard slug={slug} initial={detail.project.labels ?? []} />
-
-      <ProjectPollSettings
-        slug={slug}
-        initialIntervalNs={detail.scm_source?.poll_interval_ns ?? 0}
-        hasScmSource={Boolean(detail.scm_source)}
-      />
-
-      {archive ? (
-        <ProjectLogArchiveSettings
-          slug={slug}
-          initialEnabled={archive.enabled}
-          globalPolicy={archive.global_policy ?? "auto"}
-          hasArtifactBackend={archive.has_artifact_backend}
-        />
-      ) : null}
-
-      {checkReporting ? (
-        <ProjectGithubChecksSettings
-          slug={slug}
-          initialMode={checkReporting.mode}
-          // default_mode is the server's single source of truth; the API only
-          // ever returns a valid mode, so the cast is safe.
-          defaultMode={checkReporting.default_mode as CheckReportingMode}
-        />
-      ) : null}
-
-      {requiredChecks ? (
-        <ProjectRequiredChecks slug={slug} initial={requiredChecks} />
-      ) : null}
-
-      {badge ? (
-        <ProjectStatusBadgeSettings
-          slug={slug}
-          initialEnabled={badge.enabled}
-        />
-      ) : null}
-
-      {buildCache ? (
-        <ProjectBuildCacheSettings
-          slug={slug}
-          initialEnabled={buildCache.enabled}
-        />
-      ) : null}
-
-      {isAdmin ? (
-        <ProjectComplianceCard
-          slug={slug}
-          frameworks={allFrameworks}
-          assignedIDs={assignedIDs}
-        />
-      ) : null}
-
-      {isAdmin ? (
-        // Reset the preview's internal state when the assignment changes: saving
-        // frameworks above revalidates this page, so a new assignment streams
-        // fresh `assignedIDs` + `initial`. Keying on the assignment remounts the
-        // preview so it reflects the just-saved governance (and any in-progress
-        // what-if for the OLD set is correctly discarded). An unrelated
-        // revalidation keeps the same key, preserving an active what-if.
-        <ProjectCompliancePreview
-          key={[...assignedIDs].sort().join(",")}
-          slug={slug}
-          frameworks={allFrameworks}
-          assignedIDs={assignedIDs}
-          initial={preview}
-        />
-      ) : null}
+      <ProjectSettingsTabs tabs={tabs} />
     </section>
   );
 }
