@@ -79,3 +79,23 @@ func TestWithRunCheckLock_DistinctRunsDoNotBlock(t *testing.T) {
 	}
 	close(release)
 }
+
+// A newly-applied project defaults to commit_status reporting (Woodpecker/GoCD
+// style) — migration 00095 flipped the column default from 'both'. The create
+// path never writes the column, so the row inherits the DB default; this pins
+// that the default is the single-status mode, not the old double-report 'both'.
+func TestProjectCheckReporting_DefaultsToCommitStatus(t *testing.T) {
+	t.Parallel()
+	s := store.New(dbtest.SetupPool(t))
+	ctx := context.Background()
+	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{Slug: "freshproj", Name: "freshproj"}); err != nil {
+		t.Fatalf("apply project: %v", err)
+	}
+	mode, err := s.GetProjectCheckReportingBySlug(ctx, "freshproj")
+	if err != nil {
+		t.Fatalf("get mode: %v", err)
+	}
+	if mode != store.CheckReportingCommitStatus {
+		t.Errorf("new project check reporting mode = %q, want %q", mode, store.CheckReportingCommitStatus)
+	}
+}

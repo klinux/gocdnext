@@ -34,6 +34,10 @@ const MODE_LABELS: Record<string, string> = {
 type Props = {
   slug: string;
   initialMode: CheckReportingMode;
+  // The mode a NEW project inherits, echoed by the API from the server's single
+  // source of truth (store.CheckReportingDefault). Labelled dynamically below so
+  // the "default" marker can never drift from the backend.
+  defaultMode: CheckReportingMode;
 };
 
 // hint tailors the helptext to the chosen mode. The check_run case carries the
@@ -42,7 +46,7 @@ type Props = {
 function hint(mode: CheckReportingMode, slug: string): React.ReactNode {
   switch (mode) {
     case "both":
-      return "Posts the rich Check Run (coverage + security + GitHub re-run) and the legacy Commit Status (links straight to the run). Safe default.";
+      return "Posts the rich Check Run (coverage + security + GitHub re-run) and the legacy Commit Status (links straight to the run).";
     case "check_run":
       return (
         <>
@@ -64,7 +68,11 @@ function hint(mode: CheckReportingMode, slug: string): React.ReactNode {
   }
 }
 
-export function ProjectGithubChecksSettings({ slug, initialMode }: Props) {
+export function ProjectGithubChecksSettings({
+  slug,
+  initialMode,
+  defaultMode,
+}: Props) {
   const [mode, setMode] = useState<CheckReportingMode>(initialMode);
   const [pending, startTransition] = useTransition();
 
@@ -132,6 +140,10 @@ export function ProjectGithubChecksSettings({ slug, initialMode }: Props) {
           }
         >
           {hint(mode, slug)}
+        </p>
+
+        <p className="text-xs text-muted-foreground">
+          Default for new projects: <strong>{MODE_LABELS[defaultMode]}</strong>.
         </p>
 
         <Button onClick={onSave} disabled={!dirty || pending}>

@@ -160,14 +160,21 @@ func (s *Store) MarkGithubCheckRunCompleted(ctx context.Context, runID uuid.UUID
 
 // Check reporting modes — how gocdnext surfaces a run's state to GitHub.
 //
-//	Both         — Check Run + legacy Commit Status (default, current behavior)
+//	Both         — Check Run + legacy Commit Status
 //	CheckRun     — only the rich Check Run
-//	CommitStatus — only the straight-to-run Commit Status (Woodpecker/GoCD style)
+//	CommitStatus — only the straight-to-run Commit Status (Woodpecker/GoCD style;
+//	               the default for new projects since migration 00095)
 const (
 	CheckReportingBoth         = "both"
 	CheckReportingCheckRun     = "check_run"
 	CheckReportingCommitStatus = "commit_status"
 )
+
+// CheckReportingDefault is the mode a new project inherits. It MUST match the
+// `projects.check_reporting_mode` column DEFAULT (migration 00095) — the API
+// echoes it to the settings UI as the "default" hint, so a drift here would
+// mislabel the default without changing behavior.
+const CheckReportingDefault = CheckReportingCommitStatus
 
 // ValidCheckReportingMode reports whether m is one of the three known modes.
 // The DB has a CHECK constraint too — this is the fail-fast at the API edge.
@@ -181,8 +188,9 @@ func ValidCheckReportingMode(m string) bool {
 }
 
 // GetProjectCheckReportingBySlug returns the project's GitHub check reporting
-// mode. The column is NOT NULL DEFAULT 'both', so an existing project always
-// yields a value; a missing project returns ErrProjectNotFound.
+// mode. The column is NOT NULL DEFAULT 'commit_status' (migration 00095), so an
+// existing project always yields a value; a missing project returns
+// ErrProjectNotFound.
 func (s *Store) GetProjectCheckReportingBySlug(ctx context.Context, slug string) (string, error) {
 	mode, err := s.q.GetProjectCheckReportingBySlug(ctx, slug)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -24,7 +24,13 @@ describe("ProjectGithubChecksSettings", () => {
   });
 
   it("renders the current mode and disables Save until changed", () => {
-    render(<ProjectGithubChecksSettings slug="demo" initialMode="both" />);
+    render(
+      <ProjectGithubChecksSettings
+        slug="demo"
+        initialMode="both"
+        defaultMode="commit_status"
+      />,
+    );
     const save = screen.getByRole("button", {
       name: /save/i,
     }) as HTMLButtonElement;
@@ -35,9 +41,49 @@ describe("ProjectGithubChecksSettings", () => {
     ).toBeTruthy();
   });
 
+  it("labels the default dynamically from the server's default_mode", () => {
+    // Find the "Default for new projects:" paragraph (not the select trigger,
+    // which can carry the same mode label) and read its full text.
+    const defaultNote = () =>
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "P" &&
+          /Default for new projects:/.test(el.textContent ?? ""),
+      );
+
+    const { rerender } = render(
+      <ProjectGithubChecksSettings
+        slug="demo"
+        initialMode="both"
+        defaultMode="commit_status"
+      />,
+    );
+    // The default marker reflects default_mode, never a hardcoded value.
+    expect(defaultNote().textContent).toContain("Commit Status only");
+
+    // A different server default must move the marker — proving it is driven by
+    // the prop (single source of truth), not pinned to one mode in the UI.
+    rerender(
+      <ProjectGithubChecksSettings
+        slug="demo"
+        initialMode="both"
+        defaultMode="both"
+      />,
+    );
+    expect(defaultNote().textContent).toContain(
+      "Both — Check Run + Commit Status",
+    );
+  });
+
   it("warns about the Required status check when switching to check_run", async () => {
     const user = userEvent.setup();
-    render(<ProjectGithubChecksSettings slug="demo" initialMode="both" />);
+    render(
+      <ProjectGithubChecksSettings
+        slug="demo"
+        initialMode="both"
+        defaultMode="commit_status"
+      />,
+    );
 
     await selectOption(
       user,
@@ -52,7 +98,13 @@ describe("ProjectGithubChecksSettings", () => {
 
   it("saves the selected mode and toasts on success", async () => {
     const user = userEvent.setup();
-    render(<ProjectGithubChecksSettings slug="demo" initialMode="both" />);
+    render(
+      <ProjectGithubChecksSettings
+        slug="demo"
+        initialMode="both"
+        defaultMode="commit_status"
+      />,
+    );
 
     await selectOption(
       user,
@@ -82,7 +134,13 @@ describe("ProjectGithubChecksSettings", () => {
       error: "server 404: project not found",
     } as never);
     const user = userEvent.setup();
-    render(<ProjectGithubChecksSettings slug="demo" initialMode="both" />);
+    render(
+      <ProjectGithubChecksSettings
+        slug="demo"
+        initialMode="both"
+        defaultMode="commit_status"
+      />,
+    );
 
     await selectOption(
       user,
