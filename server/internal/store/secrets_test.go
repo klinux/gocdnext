@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -168,5 +170,64 @@ func TestSetSecret_NilCipherFails(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected error when cipher is nil")
+	}
+}
+
+// expose_on_pr: a newly-set secret is PR-closed by default (migration 00096 flips
+// the column DEFAULT to false after grandfathering existing rows to true), the
+// flag round-trips, and the EFFECTIVE flag follows project-shadows-global.
+func TestSecretExposeOnPR(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	cipher := testCipher(t)
+	ctx := context.Background()
+
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{Slug: "demo", Name: "Demo"})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	pid := applied.ProjectID
+
+	exposure := func(projectID uuid.UUID, name string) bool {
+		t.Helper()
+		entries, eErr := s.ResolveSecretEntries(ctx, projectID, []string{name})
+		if eErr != nil {
+			t.Fatalf("resolve entries: %v", eErr)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("want 1 entry for %q, got %d", name, len(entries))
+		}
+		return entries[0].ExposeOnPR
+	}
+
+	// Default: SetSecret without ExposeOnPR → PR-closed.
+	if _, err := s.SetSecret(ctx, cipher, store.SecretSet{ProjectID: pid, Name: "DEF", Value: []byte("v")}); err != nil {
+		t.Fatalf("set DEF: %v", err)
+	}
+	if exposure(pid, "DEF") {
+		t.Error("new secret should default to PR-closed (expose_on_pr=false)")
+	}
+
+	// Explicit opt-in round-trips.
+	if _, err := s.SetSecret(ctx, cipher, store.SecretSet{ProjectID: pid, Name: "OPT", Value: []byte("v"), ExposeOnPR: true}); err != nil {
+		t.Fatalf("set OPT: %v", err)
+	}
+	if !exposure(pid, "OPT") {
+		t.Error("expose_on_pr=true did not round-trip")
+	}
+
+	// Project shadows global for the flag: global OPEN (exposed) shadowed by a
+	// project OPEN (closed) → effective is the project's false.
+	if _, err := s.SetGlobalSecret(ctx, cipher, store.SecretSet{Name: "SHADOW", Value: []byte("g"), ExposeOnPR: true}); err != nil {
+		t.Fatalf("set global SHADOW: %v", err)
+	}
+	if !exposure(pid, "SHADOW") {
+		t.Error("global-only SHADOW should expose its own flag (true)")
+	}
+	if _, err := s.SetSecret(ctx, cipher, store.SecretSet{ProjectID: pid, Name: "SHADOW", Value: []byte("p"), ExposeOnPR: false}); err != nil {
+		t.Fatalf("set project SHADOW: %v", err)
+	}
+	if exposure(pid, "SHADOW") {
+		t.Error("project secret must shadow the global's expose_on_pr (want false)")
 	}
 }

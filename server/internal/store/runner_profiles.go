@@ -474,7 +474,12 @@ type ResolvedProfile struct {
 // Returns ErrRunnerProfileNotFound for unknown names — the
 // scheduler turns that into "skip this dispatch, leave the run
 // queued so an admin sees the misconfiguration".
-func (s *Store) ResolveProfileByName(ctx context.Context, cipher *crypto.Cipher, name string) (ResolvedProfile, error) {
+// pullRequest gates `{{secret:NAME}}` global interpolation: on a pull_request-
+// caused run, a referenced global that isn't PR-exposed (expose_on_pr=false) must
+// fail the dispatch closed rather than be interpolated into the profile env — a
+// profile is PR-author-selectable, so without this a PR could read a PR-closed
+// global via a profile template (bypassing the job-level secrets: gate).
+func (s *Store) ResolveProfileByName(ctx context.Context, cipher *crypto.Cipher, name string, pullRequest bool) (ResolvedProfile, error) {
 	row, err := s.q.GetRunnerProfileByName(ctx, name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ResolvedProfile{}, ErrRunnerProfileNotFound
@@ -492,7 +497,7 @@ func (s *Store) ResolveProfileByName(ctx context.Context, cipher *crypto.Cipher,
 		return ResolvedProfile{}, fmt.Errorf("store: decrypt profile secrets %q: %w", name, err)
 	}
 
-	if err := s.expandProfileSecretTemplates(ctx, cipher, name, secrets); err != nil {
+	if err := s.expandProfileSecretTemplates(ctx, cipher, name, secrets, pullRequest); err != nil {
 		return ResolvedProfile{}, err
 	}
 
@@ -551,7 +556,7 @@ var profileSecretTemplate = regexp.MustCompile(`\{\{\s*secret:([A-Z_][A-Z0-9_]*)
 // Missing globals fail closed: dispatch refuses, the operator sees
 // the misconfiguration in the run's error rather than silently
 // shipping an empty env var into a build that depends on it.
-func (s *Store) expandProfileSecretTemplates(ctx context.Context, cipher *crypto.Cipher, profileName string, secrets map[string]string) error {
+func (s *Store) expandProfileSecretTemplates(ctx context.Context, cipher *crypto.Cipher, profileName string, secrets map[string]string, pullRequest bool) error {
 	if len(secrets) == 0 {
 		return nil
 	}
@@ -580,7 +585,15 @@ func (s *Store) expandProfileSecretTemplates(ctx context.Context, cipher *crypto
 	}
 	resolved := make(map[string]string, len(rows))
 	isExternal := make(map[string]bool)
+	prWithheld := make(map[string]bool)
 	for _, r := range rows {
+		// On a pull_request run, a referenced global that isn't PR-exposed is
+		// withheld BEFORE decryption — recorded so the fail-closed check below
+		// rejects it with a precise message, and its plaintext is never produced.
+		if pullRequest && !r.ExposeOnPr {
+			prWithheld[r.Name] = true
+			continue
+		}
 		// Profile `{{secret:NAME}}` interpolation is, by design, db-stored
 		// globals only: it expands the value inline into the profile's env at
 		// config time, whereas external references are resolved per-job at
@@ -602,6 +615,9 @@ func (s *Store) expandProfileSecretTemplates(ctx context.Context, cipher *crypto
 	for n := range refs {
 		if _, ok := resolved[n]; ok {
 			continue
+		}
+		if prWithheld[n] {
+			return fmt.Errorf("store: profile %q references global secret %q, which is not exposed to pull_request runs — enable \"Expose to pull requests\" on it, or use a profile without it for PR builds", profileName, n)
 		}
 		if isExternal[n] {
 			return fmt.Errorf("store: profile %q references global secret %q, which is an external reference — profile {{secret:...}} interpolation supports db-stored secrets only", profileName, n)
