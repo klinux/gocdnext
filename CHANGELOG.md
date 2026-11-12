@@ -10,6 +10,16 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **Project settings page grouped into vertical tabs.** The per-project settings
+  page had grown into a long vertical scroll of cards. Grouped them behind a
+  vertical left-rail of tabs — **General** (labels, polling, status badge),
+  **GitHub checks** (check reporting, required checks), **Build & cache** (log
+  archive, build cache) and **Compliance** — so each area is scannable and the
+  page stays manageable as more settings land. Purely presentational: a new
+  `ProjectSettingsTabs` client component lays out the tabs and receives the
+  existing server-rendered section cards as slots; no section's behavior, data
+  fetching, or conditional visibility changed (a tab only appears when it has at
+  least one available section, and Compliance stays admin-only).
 - **Default GitHub check reporting mode for new projects → `commit_status`.**
   New projects previously defaulted to `both` (a rich Check Run **and** a legacy
   Commit Status for every run), which doubled GitHub API writes and showed two
