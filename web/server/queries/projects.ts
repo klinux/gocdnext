@@ -110,6 +110,18 @@ export async function getProjectCheckReporting(
 	);
 }
 
+// Same-repo PR-head config trust (#223): when enabled, a same-repo (non-fork)
+// PR runs against its OWN .gocdnext/ at the PR head instead of the default
+// branch's config. Read is maintainer+; the write (PUT) is admin-only.
+export type PrHeadConfigSettings = { enabled: boolean };
+export async function getProjectPrHeadConfig(
+	slug: string,
+): Promise<PrHeadConfigSettings> {
+	return readJSON<PrHeadConfigSettings>(
+		`/api/v1/projects/${encodeURIComponent(slug)}/pr-head-config`,
+	);
+}
+
 // Required pipelines for PR merge: the chosen set, the selectable (PR-firing)
 // set, the repo provider, the exact required contexts, and the last GitHub
 // ruleset sync state (so the card can surface synced / failed / drift).
