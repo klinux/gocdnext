@@ -118,6 +118,15 @@ func seedWebhookRun(t *testing.T, pool *pgxpool.Pool, repoURL string, cause stri
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
+	// Pin 'both' so these reporter tests stay independent of the project default,
+	// which migration 00095 flipped to commit_status (that mode creates no Check
+	// Run, which most tests here assert). Mode-specific tests override via
+	// setProjectMode after seeding.
+	if _, err := pool.Exec(ctx,
+		`UPDATE projects SET check_reporting_mode = 'both' WHERE slug = $1`,
+		"chk-"+strings.ReplaceAll(cause, "_", "-")); err != nil {
+		t.Fatalf("pin reporting mode: %v", err)
+	}
 	var matID uuid.UUID
 	_ = pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&matID)
 
