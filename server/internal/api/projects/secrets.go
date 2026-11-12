@@ -51,6 +51,10 @@ type setSecretRequest struct {
 	Value  string          `json:"value"`
 	Source string          `json:"source"`
 	Ref    *secretRefInput `json:"ref"`
+	// ExposeOnPR opts this secret into pull_request-caused runs. Absent/false is
+	// the safe default — a client (CLI/API) that doesn't send it gets a PR-closed
+	// secret. Existing secrets are grandfathered to true by migration 00096.
+	ExposeOnPR bool `json:"expose_on_pr"`
 }
 
 type secretsListResponse struct {
@@ -119,12 +123,13 @@ func (h *Handler) SetSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.store.SetSecret(r.Context(), h.cipher, store.SecretSet{
-		ProjectID: detail.Project.ID,
-		Name:      req.Name,
-		Source:    source,
-		Value:     []byte(req.Value),
-		RefPath:   refPath,
-		RefKey:    refKey,
+		ProjectID:  detail.Project.ID,
+		Name:       req.Name,
+		Source:     source,
+		Value:      []byte(req.Value),
+		RefPath:    refPath,
+		RefKey:     refKey,
+		ExposeOnPR: req.ExposeOnPR,
 	})
 	if err != nil {
 		h.log.Error("set secret", "slug", slug, "name", req.Name, "err", err)
@@ -135,7 +140,7 @@ func (h *Handler) SetSecret(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("secret set", "slug", slug, "name", req.Name, "source", source, "created", created)
 	audit.Emit(r.Context(), h.log, h.store,
 		store.AuditActionSecretSet, "project_secret", slug+"/"+req.Name,
-		map[string]any{"slug": slug, "name": req.Name, "source": source, "created": created})
+		map[string]any{"slug": slug, "name": req.Name, "source": source, "created": created, "expose_on_pr": req.ExposeOnPR})
 
 	w.Header().Set("Content-Type", "application/json")
 	if created {

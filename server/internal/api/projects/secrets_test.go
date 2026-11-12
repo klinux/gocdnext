@@ -295,3 +295,38 @@ func TestSetSecret_TrimsSourceAndRef(t *testing.T) {
 		t.Fatalf("not trimmed: source=%q ref=%+v", got.Source, got.Ref)
 	}
 }
+
+// expose_on_pr round-trips through POST → GET: an opted-in secret lists as
+// exposed, and one set without the field lists PR-closed (safe default).
+func TestSetSecret_ExposeOnPRRoundTrip(t *testing.T) {
+	router, _ := secretsRouter(t, true)
+	if rr := postSecret(t, router, "demo", map[string]any{"name": "PRON", "value": "v", "expose_on_pr": true}); rr.Code != http.StatusCreated {
+		t.Fatalf("set PRON: %d", rr.Code)
+	}
+	if rr := postSecret(t, router, "demo", map[string]any{"name": "PROFF", "value": "v"}); rr.Code != http.StatusCreated {
+		t.Fatalf("set PROFF: %d", rr.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo/secrets", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list status = %d", rr.Code)
+	}
+	var resp struct {
+		Secrets []store.Secret `json:"secrets"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := map[string]bool{}
+	for _, s := range resp.Secrets {
+		got[s.Name] = s.ExposeOnPR
+	}
+	if !got["PRON"] {
+		t.Error("PRON should list as expose_on_pr=true")
+	}
+	if got["PROFF"] {
+		t.Error("PROFF (no field) should default to expose_on_pr=false")
+	}
+}

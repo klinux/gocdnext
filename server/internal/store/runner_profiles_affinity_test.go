@@ -81,7 +81,7 @@ func TestRunnerProfile_ResolveByName_CarriesAffinity(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	resolved, err := s.ResolveProfileByName(ctx, nil, "spot")
+	resolved, err := s.ResolveProfileByName(ctx, nil, "spot", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

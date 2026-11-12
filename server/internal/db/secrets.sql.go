@@ -63,17 +63,18 @@ func (q *Queries) DeleteSecretByName(ctx context.Context, arg DeleteSecretByName
 }
 
 const getGlobalSecretEntries = `-- name: GetGlobalSecretEntries :many
-SELECT name, value_enc, source, ref_path, ref_key
+SELECT name, value_enc, source, ref_path, ref_key, expose_on_pr
 FROM secrets
 WHERE project_id IS NULL AND name = ANY($1::text[])
 `
 
 type GetGlobalSecretEntriesRow struct {
-	Name     string
-	ValueEnc []byte
-	Source   string
-	RefPath  *string
-	RefKey   *string
+	Name       string
+	ValueEnc   []byte
+	Source     string
+	RefPath    *string
+	RefKey     *string
+	ExposeOnPr bool
 }
 
 // Resolver fallback for names still missing at project scope.
@@ -92,6 +93,7 @@ func (q *Queries) GetGlobalSecretEntries(ctx context.Context, dollar_1 []string)
 			&i.Source,
 			&i.RefPath,
 			&i.RefKey,
+			&i.ExposeOnPr,
 		); err != nil {
 			return nil, err
 		}
@@ -104,7 +106,7 @@ func (q *Queries) GetGlobalSecretEntries(ctx context.Context, dollar_1 []string)
 }
 
 const getSecretEntriesByProject = `-- name: GetSecretEntriesByProject :many
-SELECT name, value_enc, source, ref_path, ref_key
+SELECT name, value_enc, source, ref_path, ref_key, expose_on_pr
 FROM secrets
 WHERE project_id = $1 AND name = ANY($2::text[])
 `
@@ -115,11 +117,12 @@ type GetSecretEntriesByProjectParams struct {
 }
 
 type GetSecretEntriesByProjectRow struct {
-	Name     string
-	ValueEnc []byte
-	Source   string
-	RefPath  *string
-	RefKey   *string
+	Name       string
+	ValueEnc   []byte
+	Source     string
+	RefPath    *string
+	RefKey     *string
+	ExposeOnPr bool
 }
 
 // Dispatch path: a job declared `secrets: [FOO, BAR]`. Returns the full
@@ -140,6 +143,7 @@ func (q *Queries) GetSecretEntriesByProject(ctx context.Context, arg GetSecretEn
 			&i.Source,
 			&i.RefPath,
 			&i.RefKey,
+			&i.ExposeOnPr,
 		); err != nil {
 			return nil, err
 		}
@@ -152,19 +156,20 @@ func (q *Queries) GetSecretEntriesByProject(ctx context.Context, arg GetSecretEn
 }
 
 const listGlobalSecrets = `-- name: ListGlobalSecrets :many
-SELECT name, source, ref_path, ref_key, created_at, updated_at
+SELECT name, source, ref_path, ref_key, expose_on_pr, created_at, updated_at
 FROM secrets
 WHERE project_id IS NULL
 ORDER BY name
 `
 
 type ListGlobalSecretsRow struct {
-	Name      string
-	Source    string
-	RefPath   *string
-	RefKey    *string
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	Name       string
+	Source     string
+	RefPath    *string
+	RefKey     *string
+	ExposeOnPr bool
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
 }
 
 // Admin-only listing of every global (unscoped) secret. Same
@@ -183,6 +188,7 @@ func (q *Queries) ListGlobalSecrets(ctx context.Context) ([]ListGlobalSecretsRow
 			&i.Source,
 			&i.RefPath,
 			&i.RefKey,
+			&i.ExposeOnPr,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -197,7 +203,7 @@ func (q *Queries) ListGlobalSecrets(ctx context.Context) ([]ListGlobalSecretsRow
 }
 
 const listGlobalSecretsPaged = `-- name: ListGlobalSecretsPaged :many
-SELECT name, source, ref_path, ref_key, created_at, updated_at
+SELECT name, source, ref_path, ref_key, expose_on_pr, created_at, updated_at
 FROM secrets
 WHERE project_id IS NULL
 ORDER BY name
@@ -210,12 +216,13 @@ type ListGlobalSecretsPagedParams struct {
 }
 
 type ListGlobalSecretsPagedRow struct {
-	Name      string
-	Source    string
-	RefPath   *string
-	RefKey    *string
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	Name       string
+	Source     string
+	RefPath    *string
+	RefKey     *string
+	ExposeOnPr bool
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
 }
 
 func (q *Queries) ListGlobalSecretsPaged(ctx context.Context, arg ListGlobalSecretsPagedParams) ([]ListGlobalSecretsPagedRow, error) {
@@ -232,6 +239,7 @@ func (q *Queries) ListGlobalSecretsPaged(ctx context.Context, arg ListGlobalSecr
 			&i.Source,
 			&i.RefPath,
 			&i.RefKey,
+			&i.ExposeOnPr,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -246,19 +254,20 @@ func (q *Queries) ListGlobalSecretsPaged(ctx context.Context, arg ListGlobalSecr
 }
 
 const listSecretsByProject = `-- name: ListSecretsByProject :many
-SELECT name, source, ref_path, ref_key, created_at, updated_at
+SELECT name, source, ref_path, ref_key, expose_on_pr, created_at, updated_at
 FROM secrets
 WHERE project_id = $1
 ORDER BY name
 `
 
 type ListSecretsByProjectRow struct {
-	Name      string
-	Source    string
-	RefPath   *string
-	RefKey    *string
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	Name       string
+	Source     string
+	RefPath    *string
+	RefKey     *string
+	ExposeOnPr bool
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
 }
 
 // Names + source/ref + timestamps only — values never leave the DB except
@@ -277,6 +286,7 @@ func (q *Queries) ListSecretsByProject(ctx context.Context, projectID pgtype.UUI
 			&i.Source,
 			&i.RefPath,
 			&i.RefKey,
+			&i.ExposeOnPr,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -291,7 +301,7 @@ func (q *Queries) ListSecretsByProject(ctx context.Context, projectID pgtype.UUI
 }
 
 const listSecretsByProjectPaged = `-- name: ListSecretsByProjectPaged :many
-SELECT name, source, ref_path, ref_key, created_at, updated_at
+SELECT name, source, ref_path, ref_key, expose_on_pr, created_at, updated_at
 FROM secrets
 WHERE project_id = $1
 ORDER BY name
@@ -305,12 +315,13 @@ type ListSecretsByProjectPagedParams struct {
 }
 
 type ListSecretsByProjectPagedRow struct {
-	Name      string
-	Source    string
-	RefPath   *string
-	RefKey    *string
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	Name       string
+	Source     string
+	RefPath    *string
+	RefKey     *string
+	ExposeOnPr bool
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
 }
 
 // Paginated project listing (admin/project secrets page). ORDER BY name so
@@ -329,6 +340,7 @@ func (q *Queries) ListSecretsByProjectPaged(ctx context.Context, arg ListSecrets
 			&i.Source,
 			&i.RefPath,
 			&i.RefKey,
+			&i.ExposeOnPr,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -343,23 +355,25 @@ func (q *Queries) ListSecretsByProjectPaged(ctx context.Context, arg ListSecrets
 }
 
 const upsertGlobalSecret = `-- name: UpsertGlobalSecret :one
-INSERT INTO secrets (project_id, name, value_enc, source, ref_path, ref_key)
-VALUES (NULL, $1, $2, $3, $4, $5)
+INSERT INTO secrets (project_id, name, value_enc, source, ref_path, ref_key, expose_on_pr)
+VALUES (NULL, $1, $2, $3, $4, $5, $6)
 ON CONFLICT (name) WHERE project_id IS NULL DO UPDATE SET
-    value_enc  = EXCLUDED.value_enc,
-    source     = EXCLUDED.source,
-    ref_path   = EXCLUDED.ref_path,
-    ref_key    = EXCLUDED.ref_key,
-    updated_at = NOW()
+    value_enc    = EXCLUDED.value_enc,
+    source       = EXCLUDED.source,
+    ref_path     = EXCLUDED.ref_path,
+    ref_key      = EXCLUDED.ref_key,
+    expose_on_pr = EXCLUDED.expose_on_pr,
+    updated_at   = NOW()
 RETURNING id, name, created_at, updated_at, (xmax = 0) AS created
 `
 
 type UpsertGlobalSecretParams struct {
-	Name     string
-	ValueEnc []byte
-	Source   string
-	RefPath  *string
-	RefKey   *string
+	Name       string
+	ValueEnc   []byte
+	Source     string
+	RefPath    *string
+	RefKey     *string
+	ExposeOnPr bool
 }
 
 type UpsertGlobalSecretRow struct {
@@ -380,6 +394,7 @@ func (q *Queries) UpsertGlobalSecret(ctx context.Context, arg UpsertGlobalSecret
 		arg.Source,
 		arg.RefPath,
 		arg.RefKey,
+		arg.ExposeOnPr,
 	)
 	var i UpsertGlobalSecretRow
 	err := row.Scan(
@@ -393,24 +408,26 @@ func (q *Queries) UpsertGlobalSecret(ctx context.Context, arg UpsertGlobalSecret
 }
 
 const upsertSecret = `-- name: UpsertSecret :one
-INSERT INTO secrets (project_id, name, value_enc, source, ref_path, ref_key)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO secrets (project_id, name, value_enc, source, ref_path, ref_key, expose_on_pr)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (project_id, name) WHERE project_id IS NOT NULL DO UPDATE SET
-    value_enc  = EXCLUDED.value_enc,
-    source     = EXCLUDED.source,
-    ref_path   = EXCLUDED.ref_path,
-    ref_key    = EXCLUDED.ref_key,
-    updated_at = NOW()
+    value_enc    = EXCLUDED.value_enc,
+    source       = EXCLUDED.source,
+    ref_path     = EXCLUDED.ref_path,
+    ref_key      = EXCLUDED.ref_key,
+    expose_on_pr = EXCLUDED.expose_on_pr,
+    updated_at   = NOW()
 RETURNING id, project_id, name, created_at, updated_at, (xmax = 0) AS created
 `
 
 type UpsertSecretParams struct {
-	ProjectID pgtype.UUID
-	Name      string
-	ValueEnc  []byte
-	Source    string
-	RefPath   *string
-	RefKey    *string
+	ProjectID  pgtype.UUID
+	Name       string
+	ValueEnc   []byte
+	Source     string
+	RefPath    *string
+	RefKey     *string
+	ExposeOnPr bool
 }
 
 type UpsertSecretRow struct {
@@ -435,6 +452,7 @@ func (q *Queries) UpsertSecret(ctx context.Context, arg UpsertSecretParams) (Ups
 		arg.Source,
 		arg.RefPath,
 		arg.RefKey,
+		arg.ExposeOnPr,
 	)
 	var i UpsertSecretRow
 	err := row.Scan(
