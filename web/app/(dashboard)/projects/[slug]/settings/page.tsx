@@ -18,6 +18,7 @@ import {
   getProjectLogArchive,
   getProjectCheckReporting,
   getProjectRequiredChecks,
+  type CheckReportingMode,
 } from "@/server/queries/projects";
 import {
   getEffectivePipelinePreview,
@@ -168,6 +169,9 @@ export default async function ProjectSettingsPage({
         <ProjectGithubChecksSettings
           slug={slug}
           initialMode={checkReporting.mode}
+          // default_mode is the server's single source of truth; the API only
+          // ever returns a valid mode, so the cast is safe.
+          defaultMode={checkReporting.default_mode as CheckReportingMode}
         />
       ) : null}
 
