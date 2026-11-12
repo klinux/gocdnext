@@ -10,6 +10,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **Default GitHub check reporting mode for new projects → `commit_status`.**
+  New projects previously defaulted to `both` (a rich Check Run **and** a legacy
+  Commit Status for every run), which doubled GitHub API writes and showed two
+  entries on the PR. The new default is `commit_status` only — the Woodpecker/GoCD
+  model our forge integration is built around (Woodpecker's GitHub forge only ever
+  calls the Commit Status API). It keeps branch-protection required checks and the
+  merge-queue required check working, because those match on the status **context
+  name**, which `commit_status` still posts (only `check_run`-only would strand
+  them). Migration `00095` changes the column **default** only: projects created
+  before it keep their current mode, and any project can still pick `both` or
+  `check_run` in settings. The merge_group reporting path fails loud in every mode;
+  a new test pins that for `commit_status` (a failed status POST → 5xx → GitHub
+  retries). No data is backfilled on upgrade.
 - **web frontend image → node 24 (off EOL node 20), 3 base CRITICAL cleared.**
   Resolves #391. `web/Dockerfile` built and ran the Next.js app on `node:20-alpine`
   across all three stages — including `runner`, the **production** runtime serving

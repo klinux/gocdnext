@@ -56,16 +56,17 @@ func TestCheckReporting_GetPutValidate(t *testing.T) {
 		return rr.Code
 	}
 
-	// Default is 'both', and the default hint is echoed for the UI.
-	if mode, def := getMode(); mode != "both" || def != "both" {
-		t.Fatalf("default mode/def = %q/%q, want both/both", mode, def)
+	// Default is 'commit_status' (Woodpecker/GoCD style — a single status per
+	// run, no duplicate Check Run), and the default hint is echoed for the UI.
+	if mode, def := getMode(); mode != "commit_status" || def != "commit_status" {
+		t.Fatalf("default mode/def = %q/%q, want commit_status/commit_status", mode, def)
 	}
-	// Round-trip a valid value.
-	if code := put("demo", `{"mode":"commit_status"}`); code != http.StatusOK {
+	// Round-trip a valid value away from the default and back-read it.
+	if code := put("demo", `{"mode":"both"}`); code != http.StatusOK {
 		t.Fatalf("put valid = %d, want 200", code)
 	}
-	if mode, _ := getMode(); mode != "commit_status" {
-		t.Errorf("after put, mode = %q, want commit_status", mode)
+	if mode, _ := getMode(); mode != "both" {
+		t.Errorf("after put, mode = %q, want both", mode)
 	}
 	// Invalid mode → 400 at the edge (fail-fast; never reaches the DB).
 	if code := put("demo", `{"mode":"bogus"}`); code != http.StatusBadRequest {

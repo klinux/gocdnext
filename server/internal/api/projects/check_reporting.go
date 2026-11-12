@@ -45,7 +45,7 @@ func (h *Handler) GetCheckReporting(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(checkReportingResponse{
 		Mode:        mode,
-		DefaultMode: store.CheckReportingBoth,
+		DefaultMode: store.CheckReportingDefault,
 	})
 }
 
@@ -90,6 +90,6 @@ func (h *Handler) SetCheckReporting(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(checkReportingResponse{
 		Mode:        req.Mode,
-		DefaultMode: store.CheckReportingBoth,
+		DefaultMode: store.CheckReportingDefault,
 	})
 }
