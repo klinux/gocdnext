@@ -350,6 +350,9 @@ export type Secret = {
   source: SecretSource;
   // Present only for external sources — the address in the backend.
   ref?: SecretRef;
+  // Whether this secret is handed to pull_request-caused runs. Defaults false
+  // for new secrets (server-side); existing secrets were grandfathered to true.
+  expose_on_pr: boolean;
   created_at: string;
   updated_at: string;
 };

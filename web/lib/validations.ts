@@ -43,10 +43,16 @@ export const secretValueSchema = z
 // server re-validates this shape and returns a 400 on a bad combination
 // (or an unconfigured source) — the client schema just keeps the obvious
 // mistakes out of the round-trip.
+// exposeOnPr is orthogonal to source — it opts the secret into pull_request
+// runs. Default false (PR-closed) matches the server, which also defaults new
+// secrets closed.
+const exposeOnPrField = z.boolean().default(false);
+
 const dbVariant = z.object({
   source: z.literal("db"),
   name: secretNameSchema,
   value: secretValueSchema,
+  exposeOnPr: exposeOnPrField,
 });
 
 const externalRef = z.object({
@@ -62,18 +68,21 @@ const vaultVariant = z.object({
   source: z.literal("vault"),
   name: secretNameSchema,
   ref: externalRefWithKey,
+  exposeOnPr: exposeOnPrField,
 });
 
 const gcpVariant = z.object({
   source: z.literal("gcp"),
   name: secretNameSchema,
   ref: externalRef,
+  exposeOnPr: exposeOnPrField,
 });
 
 const awsVariant = z.object({
   source: z.literal("aws"),
   name: secretNameSchema,
   ref: externalRef,
+  exposeOnPr: exposeOnPrField,
 });
 
 export const secretPayloadSchema = z.discriminatedUnion("source", [
