@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -66,8 +67,12 @@ func (s *Scheduler) resolveProfile(ctx context.Context, run store.RunForDispatch
 	// Missing `default` → empty resolved profile, same as before
 	// this fallback existed. The strict path (declared profile not
 	// found) still fails the dispatch.
+	// A pull_request run must not read PR-closed global secrets via a profile's
+	// {{secret:NAME}} templates (the profile is PR-author-selectable), so thread
+	// the PR flag into profile resolution — same gate as job-declared secrets.
+	isPR := run.Cause == string(domain.CausePullRequest)
 	if jobDef.Profile == "" {
-		resolved, err := s.store.ResolveProfileByName(ctx, s.cipher, store.DefaultRunnerProfileName)
+		resolved, err := s.store.ResolveProfileByName(ctx, s.cipher, store.DefaultRunnerProfileName, isPR)
 		if err != nil {
 			if errors.Is(err, store.ErrRunnerProfileNotFound) {
 				return store.ResolvedProfile{}, nil
@@ -76,7 +81,7 @@ func (s *Scheduler) resolveProfile(ctx context.Context, run store.RunForDispatch
 		}
 		return resolved, nil
 	}
-	resolved, err := s.store.ResolveProfileByName(ctx, s.cipher, jobDef.Profile)
+	resolved, err := s.store.ResolveProfileByName(ctx, s.cipher, jobDef.Profile, isPR)
 	if err != nil {
 		return store.ResolvedProfile{}, fmt.Errorf("profile %q: %w", jobDef.Profile, err)
 	}
@@ -98,6 +103,32 @@ func (s *Scheduler) resolveJobSecrets(ctx context.Context, run store.RunForDispa
 	}
 	if s.resolver == nil {
 		return nil, fmt.Errorf("secret %q declared but no secrets backend is configured on this server", names[0])
+	}
+	// PR event-scoping (#223 follow-up): on a pull_request-caused run, withhold any
+	// declared secret that isn't exposed to PRs. A contributor who controls a PR
+	// branch can edit the pipeline at the PR head (when PR-head config is trusted),
+	// so a secret the project hasn't opted into for PRs must not be handed to that
+	// run. Computed BEFORE resolving so a withheld value is never fetched/decrypted,
+	// and it never reaches the assignment or LogMasks. Only PR runs pay the extra
+	// lookup; every other cause takes the original fast path. A name that simply
+	// doesn't exist falls through to the "not set on project" diff below.
+	if run.Cause == string(domain.CausePullRequest) {
+		entries, err := s.store.ResolveSecretEntries(ctx, run.ProjectID, names)
+		if err != nil {
+			return nil, fmt.Errorf("resolve pull_request secret exposure: %w", err)
+		}
+		var withheld []string
+		for _, e := range entries {
+			if !e.ExposeOnPR {
+				withheld = append(withheld, e.Name)
+			}
+		}
+		if len(withheld) > 0 {
+			sort.Strings(withheld)
+			return nil, fmt.Errorf(
+				"secrets not exposed to pull_request runs: %v — enable \"Expose to pull requests\" on each secret in project settings, or remove them from this job",
+				withheld)
+		}
 	}
 	resolved, err := s.resolver.Resolve(ctx, run.ProjectID, names)
 	if err != nil {

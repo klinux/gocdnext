@@ -55,3 +55,10 @@ func ClusterDispatchError(err error) (string, bool) {
 func MintIDTokensForTest(s *Scheduler, ctx context.Context, run store.RunForDispatch, job store.DispatchableJob) (map[string]string, error) {
 	return s.mintIDTokens(ctx, run, job)
 }
+
+// ResolveJobSecretsForTest exposes the dispatch-path secret resolution so a
+// black-box test can lock the pull_request event-scoping gate (a PR-caused run
+// must withhold secrets that aren't exposed to PRs).
+func ResolveJobSecretsForTest(s *Scheduler, ctx context.Context, run store.RunForDispatch, jobName string) (map[string]string, error) {
+	return s.resolveJobSecrets(ctx, run, jobName)
+}

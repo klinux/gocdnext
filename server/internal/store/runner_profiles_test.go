@@ -371,7 +371,7 @@ func TestRunnerProfile_ResolveByName_CarriesScheduling(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	resolved, err := s.ResolveProfileByName(ctx, nil, "scheduling-pool")
+	resolved, err := s.ResolveProfileByName(ctx, nil, "scheduling-pool", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestRunnerProfile_Storage_RoundTrip(t *testing.T) {
 		t.Errorf("storage round-trip on Get: %+v", got)
 	}
 
-	resolved, err := s.ResolveProfileByName(ctx, nil, "image-build")
+	resolved, err := s.ResolveProfileByName(ctx, nil, "image-build", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -586,7 +586,7 @@ func TestRunnerProfile_EnvAndSecrets_RoundTrip(t *testing.T) {
 	// Resolver path (used by scheduler at dispatch): merged env
 	// includes decrypted secret values + secret VALUES echoed for
 	// LogMasks redaction.
-	resolved, err := s.ResolveProfileByName(ctx, cipher, "fast-builds")
+	resolved, err := s.ResolveProfileByName(ctx, cipher, "fast-builds", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestUpdateRunnerProfile_PreserveSentinel(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	resolved, err := s.ResolveProfileByName(ctx, cipher, "preserve-test")
+	resolved, err := s.ResolveProfileByName(ctx, cipher, "preserve-test", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestUpdateRunnerProfile_PreserveSentinel_DropsUnknownKeys(t *testing.T) {
 	if len(got.SecretKeys) != 1 || got.SecretKeys[0] != "KEPT" {
 		t.Errorf("secret keys = %+v, want [KEPT]", got.SecretKeys)
 	}
-	resolved, err := s.ResolveProfileByName(ctx, cipher, "preserve-orphan")
+	resolved, err := s.ResolveProfileByName(ctx, cipher, "preserve-orphan", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -752,7 +752,7 @@ func TestRunnerProfile_SecretTemplate_ResolvesAgainstGlobals(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	resolved, err := s.ResolveProfileByName(ctx, cipher, "fast-builds-with-refs")
+	resolved, err := s.ResolveProfileByName(ctx, cipher, "fast-builds-with-refs", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -790,7 +790,7 @@ func TestRunnerProfile_SecretTemplate_MissingGlobalFailsClosed(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	_, err := s.ResolveProfileByName(ctx, cipher, "broken-ref")
+	_, err := s.ResolveProfileByName(ctx, cipher, "broken-ref", false)
 	if err == nil {
 		t.Fatal("expected error for unresolvable template, got nil")
 	}
@@ -820,7 +820,7 @@ func TestRunnerProfile_SecretTemplate_ExternalGlobalFailsClosed(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	_, err := s.ResolveProfileByName(ctx, cipher, "external-ref")
+	_, err := s.ResolveProfileByName(ctx, cipher, "external-ref", false)
 	if err == nil {
 		t.Fatal("expected error for an external-reference global in a profile template")
 	}
@@ -858,5 +858,61 @@ func TestRunnerProfile_SecretRefs_ExposesCleanReferences(t *testing.T) {
 	}
 	if _, literal := refs["LITERAL_ONLY"]; literal {
 		t.Errorf("literal value should not surface as ref: %+v", refs)
+	}
+}
+
+// A pull_request run must not read a PR-closed global via a profile's
+// {{secret:NAME}} template (the profile is PR-author-selectable). The gate
+// fails closed BEFORE decryption; a PR-exposed global still resolves, and a
+// non-PR resolution ignores the flag.
+func TestRunnerProfile_SecretTemplate_PRClosedGlobalWithheld(t *testing.T) {
+	s, ctx := newProfileStore(t)
+	cipher := newProfileCipher(t)
+
+	// CLOSED defaults PR-closed (expose_on_pr=false); OPEN opts in.
+	if _, err := s.SetGlobalSecret(ctx, cipher, store.SecretSet{Name: "CLOSED", Value: []byte("closed-global")}); err != nil {
+		t.Fatalf("seed CLOSED: %v", err)
+	}
+	if _, err := s.SetGlobalSecret(ctx, cipher, store.SecretSet{Name: "OPEN", Value: []byte("open-global"), ExposeOnPR: true}); err != nil {
+		t.Fatalf("seed OPEN: %v", err)
+	}
+	if _, err := s.InsertRunnerProfile(ctx, cipher, store.RunnerProfileInput{
+		Name:    "pr-closed-ref",
+		Engine:  "kubernetes",
+		Secrets: map[string]string{"TOKEN": "{{secret:CLOSED}}"},
+	}); err != nil {
+		t.Fatalf("insert closed-ref: %v", err)
+	}
+	if _, err := s.InsertRunnerProfile(ctx, cipher, store.RunnerProfileInput{
+		Name:    "pr-open-ref",
+		Engine:  "kubernetes",
+		Secrets: map[string]string{"TOKEN": "{{secret:OPEN}}"},
+	}); err != nil {
+		t.Fatalf("insert open-ref: %v", err)
+	}
+
+	// PR run + PR-closed global → fail closed, naming it, value never produced.
+	if _, err := s.ResolveProfileByName(ctx, cipher, "pr-closed-ref", true); err == nil {
+		t.Fatal("PR resolution of a profile referencing a PR-closed global should fail")
+	} else if !contains(err.Error(), "CLOSED") || !contains(err.Error(), "pull_request") {
+		t.Errorf("error should name CLOSED + pull_request, got: %v", err)
+	}
+
+	// PR run + PR-exposed global → resolves.
+	resolved, err := s.ResolveProfileByName(ctx, cipher, "pr-open-ref", true)
+	if err != nil {
+		t.Fatalf("PR resolution of a PR-exposed global should succeed: %v", err)
+	}
+	if resolved.Env["TOKEN"] != "open-global" {
+		t.Errorf("OPEN not expanded on PR: %q", resolved.Env["TOKEN"])
+	}
+
+	// Non-PR run ignores the flag — the PR-closed global resolves.
+	resolved, err = s.ResolveProfileByName(ctx, cipher, "pr-closed-ref", false)
+	if err != nil {
+		t.Fatalf("non-PR resolution should ignore the flag: %v", err)
+	}
+	if resolved.Env["TOKEN"] != "closed-global" {
+		t.Errorf("CLOSED not expanded on non-PR: %q", resolved.Env["TOKEN"])
 	}
 }

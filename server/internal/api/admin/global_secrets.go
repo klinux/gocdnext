@@ -61,6 +61,9 @@ type setGlobalSecretRequest struct {
 	Value  string          `json:"value"`
 	Source string          `json:"source"`
 	Ref    *secretRefInput `json:"ref"`
+	// ExposeOnPR opts this global secret into pull_request-caused runs. Absent =
+	// false (PR-closed); existing rows grandfathered to true by migration 00096.
+	ExposeOnPR bool `json:"expose_on_pr"`
 }
 
 type globalSecretsListResponse struct {
@@ -102,11 +105,12 @@ func (h *GlobalSecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.store.SetGlobalSecret(r.Context(), h.cipher, store.SecretSet{
-		Name:    req.Name,
-		Source:  source,
-		Value:   []byte(req.Value),
-		RefPath: refPath,
-		RefKey:  refKey,
+		Name:       req.Name,
+		Source:     source,
+		Value:      []byte(req.Value),
+		RefPath:    refPath,
+		RefKey:     refKey,
+		ExposeOnPR: req.ExposeOnPR,
 	})
 	if err != nil {
 		h.log.Error("set global secret", "name", req.Name, "err", err)
@@ -116,7 +120,7 @@ func (h *GlobalSecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("global secret set", "name", req.Name, "source", source, "created", created)
 	audit.Emit(r.Context(), h.log, h.store,
 		store.AuditActionGlobalSecretSet, "global_secret", req.Name,
-		map[string]any{"name": req.Name, "source": source, "created": created})
+		map[string]any{"name": req.Name, "source": source, "created": created, "expose_on_pr": req.ExposeOnPR})
 
 	w.Header().Set("Content-Type", "application/json")
 	if created {

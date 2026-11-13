@@ -35,7 +35,7 @@ func (s *Store) ListSecretsPaged(ctx context.Context, projectID uuid.UUID, limit
 	}
 	out := make([]Secret, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, secretView(r.Name, r.Source, r.RefPath, r.RefKey, r.CreatedAt.Time, r.UpdatedAt.Time))
+		out = append(out, secretView(r.Name, r.Source, r.RefPath, r.RefKey, r.ExposeOnPr, r.CreatedAt.Time, r.UpdatedAt.Time))
 	}
 	return SecretsPage{Secrets: out, Total: total, Limit: limit, Offset: offset}, nil
 }
@@ -55,7 +55,7 @@ func (s *Store) ListGlobalSecretsPaged(ctx context.Context, limit, offset int32)
 	}
 	out := make([]Secret, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, secretView(r.Name, r.Source, r.RefPath, r.RefKey, r.CreatedAt.Time, r.UpdatedAt.Time))
+		out = append(out, secretView(r.Name, r.Source, r.RefPath, r.RefKey, r.ExposeOnPr, r.CreatedAt.Time, r.UpdatedAt.Time))
 	}
 	return SecretsPage{Secrets: out, Total: total, Limit: limit, Offset: offset}, nil
 }
