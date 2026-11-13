@@ -116,6 +116,7 @@ type Cach struct {
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
 	LastAccessedAt pgtype.Timestamptz
+	Scope          string
 }
 
 type Cluster struct {
@@ -464,6 +465,8 @@ type Project struct {
 	RequiredChecks        []byte
 	// SHA-256 hex digest of the project badge token. NULL disables anonymous badges.
 	BadgeTokenHash *string
+	// SHA-256 hex digest of the project build-cache token. NULL disables the embedded build cache endpoint.
+	CacheTokenHash *string
 }
 
 type ProjectCron struct {
@@ -590,15 +593,16 @@ type ScmSource struct {
 }
 
 type Secret struct {
-	ID        pgtype.UUID
-	ProjectID pgtype.UUID
-	Name      string
-	ValueEnc  []byte
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
-	Source    string
-	RefPath   *string
-	RefKey    *string
+	ID         pgtype.UUID
+	ProjectID  pgtype.UUID
+	Name       string
+	ValueEnc   []byte
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+	Source     string
+	RefPath    *string
+	RefKey     *string
+	ExposeOnPr bool
 }
 
 type SecurityFinding struct {

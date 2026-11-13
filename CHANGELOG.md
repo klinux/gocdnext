@@ -8,6 +8,26 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Per-secret `pull_request` exposure (`expose_on_pr`) — server/core.** A secret
+  can now be opted into (or kept out of) runs caused by a pull request. On a
+  pull_request-caused run the scheduler withholds any declared secret that isn't
+  PR-exposed and fails the job with a precise, value-free error, so a contributor
+  who controls a PR branch can't exfiltrate a secret by editing the pipeline at
+  the PR head (the #223 PR-head-config risk; matches Woodpecker's "secrets aren't
+  exposed to pull_request events by default"). Migration `00096` grandfathers every
+  existing secret to exposed (no behavior change on upgrade); secrets created
+  afterwards default to PR-closed. The gate is scoped to the pull_request cause
+  only (push / tag / merge_group / manual / cron / upstream resolve as before) and
+  is computed before resolution, so a withheld value is never fetched, decrypted,
+  put on the assignment, or added to the log masks. The same gate covers a
+  profile's `{{secret:NAME}}` global interpolation — a PR-selectable runner profile
+  can't read a PR-closed global either. API: the project + global secret `POST`
+  (upsert) endpoints accept `expose_on_pr` (absent = PR-closed, safe for CLI/API
+  clients) and record it in the audit event; the settings-UI checkbox lands in a
+  follow-up.
+
 ## v0.128.0 — 2026-11-12
 
 ### Added

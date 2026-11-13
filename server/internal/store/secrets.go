@@ -49,11 +49,12 @@ type SecretRef struct {
 // Secret is the list-side view: no value, ever. `source` + optional `ref`
 // let ops audit "which secrets, from where" without reading any value.
 type Secret struct {
-	Name      string     `json:"name"`
-	Source    string     `json:"source"`
-	Ref       *SecretRef `json:"ref,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	Name       string     `json:"name"`
+	Source     string     `json:"source"`
+	Ref        *SecretRef `json:"ref,omitempty"`
+	ExposeOnPR bool       `json:"expose_on_pr"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // SecretSet is the write-side input. For db, Value carries plaintext (held in
@@ -66,6 +67,11 @@ type SecretSet struct {
 	Value     []byte
 	RefPath   string
 	RefKey    string
+	// ExposeOnPR controls whether this secret is handed to a run whose cause is
+	// pull_request. New secrets default false (PR-closed); the migration
+	// grandfathers existing rows to true. See migration 00096 and the scheduler
+	// gate in resolveJobSecrets.
+	ExposeOnPR bool
 }
 
 // SecretEntry is the raw dispatch-time row. db rows carry ValueEnc; external
@@ -77,6 +83,10 @@ type SecretEntry struct {
 	ValueEnc []byte
 	RefPath  string
 	RefKey   string
+	// ExposeOnPR is the effective flag (project row shadows global). The
+	// scheduler withholds a declared secret with ExposeOnPR=false from a
+	// pull_request-caused run.
+	ExposeOnPR bool
 }
 
 func normalizeSource(s string) string {
@@ -137,12 +147,13 @@ func (s *Store) SetSecret(ctx context.Context, cipher *crypto.Cipher, in SecretS
 		}
 	}
 	row, err := s.q.UpsertSecret(ctx, db.UpsertSecretParams{
-		ProjectID: pgUUID(in.ProjectID),
-		Name:      in.Name,
-		ValueEnc:  enc,
-		Source:    src,
-		RefPath:   strPtrOrNil(in.RefPath),
-		RefKey:    strPtrOrNil(in.RefKey),
+		ProjectID:  pgUUID(in.ProjectID),
+		Name:       in.Name,
+		ValueEnc:   enc,
+		Source:     src,
+		RefPath:    strPtrOrNil(in.RefPath),
+		RefKey:     strPtrOrNil(in.RefKey),
+		ExposeOnPr: in.ExposeOnPR,
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: upsert secret: %w", err)
@@ -171,11 +182,12 @@ func (s *Store) SetGlobalSecret(ctx context.Context, cipher *crypto.Cipher, in S
 		}
 	}
 	row, err := s.q.UpsertGlobalSecret(ctx, db.UpsertGlobalSecretParams{
-		Name:     in.Name,
-		ValueEnc: enc,
-		Source:   src,
-		RefPath:  strPtrOrNil(in.RefPath),
-		RefKey:   strPtrOrNil(in.RefKey),
+		Name:       in.Name,
+		ValueEnc:   enc,
+		Source:     src,
+		RefPath:    strPtrOrNil(in.RefPath),
+		RefKey:     strPtrOrNil(in.RefKey),
+		ExposeOnPr: in.ExposeOnPR,
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: upsert global secret: %w", err)
@@ -228,7 +240,7 @@ func (s *Store) ResolveSecretEntries(ctx context.Context, projectID uuid.UUID, n
 	out := make([]SecretEntry, 0, len(names))
 	seen := make(map[string]bool, len(names))
 	for _, r := range prows {
-		out = append(out, SecretEntry{Name: r.Name, Source: r.Source, ValueEnc: r.ValueEnc, RefPath: derefStr(r.RefPath), RefKey: derefStr(r.RefKey)})
+		out = append(out, SecretEntry{Name: r.Name, Source: r.Source, ValueEnc: r.ValueEnc, RefPath: derefStr(r.RefPath), RefKey: derefStr(r.RefKey), ExposeOnPR: r.ExposeOnPr})
 		seen[r.Name] = true
 	}
 	missing := make([]string, 0, len(names)-len(seen))
@@ -245,7 +257,7 @@ func (s *Store) ResolveSecretEntries(ctx context.Context, projectID uuid.UUID, n
 		return nil, fmt.Errorf("store: get global secret entries: %w", err)
 	}
 	for _, r := range grows {
-		out = append(out, SecretEntry{Name: r.Name, Source: r.Source, ValueEnc: r.ValueEnc, RefPath: derefStr(r.RefPath), RefKey: derefStr(r.RefKey)})
+		out = append(out, SecretEntry{Name: r.Name, Source: r.Source, ValueEnc: r.ValueEnc, RefPath: derefStr(r.RefPath), RefKey: derefStr(r.RefKey), ExposeOnPR: r.ExposeOnPr})
 	}
 	return out, nil
 }
@@ -288,7 +300,7 @@ func (s *Store) ListSecrets(ctx context.Context, projectID uuid.UUID) ([]Secret,
 	}
 	out := make([]Secret, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, secretView(r.Name, r.Source, r.RefPath, r.RefKey, r.CreatedAt.Time, r.UpdatedAt.Time))
+		out = append(out, secretView(r.Name, r.Source, r.RefPath, r.RefKey, r.ExposeOnPr, r.CreatedAt.Time, r.UpdatedAt.Time))
 	}
 	return out, nil
 }
@@ -301,15 +313,15 @@ func (s *Store) ListGlobalSecrets(ctx context.Context) ([]Secret, error) {
 	}
 	out := make([]Secret, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, secretView(r.Name, r.Source, r.RefPath, r.RefKey, r.CreatedAt.Time, r.UpdatedAt.Time))
+		out = append(out, secretView(r.Name, r.Source, r.RefPath, r.RefKey, r.ExposeOnPr, r.CreatedAt.Time, r.UpdatedAt.Time))
 	}
 	return out, nil
 }
 
 // secretView builds the value-free list view, attaching a ref only for
 // external sources.
-func secretView(name, source string, refPath, refKey *string, created, updated time.Time) Secret {
-	sec := Secret{Name: name, Source: source, CreatedAt: created, UpdatedAt: updated}
+func secretView(name, source string, refPath, refKey *string, exposeOnPR bool, created, updated time.Time) Secret {
+	sec := Secret{Name: name, Source: source, ExposeOnPR: exposeOnPR, CreatedAt: created, UpdatedAt: updated}
 	if source != SecretSourceDB {
 		sec.Ref = &SecretRef{Path: derefStr(refPath), Key: derefStr(refKey)}
 	}
