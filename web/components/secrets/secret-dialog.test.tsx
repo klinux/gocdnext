@@ -171,6 +171,7 @@ describe("SecretDialog dispatch", () => {
       source: "vault",
       name: "GH_TOKEN",
       ref: { path: "secret/data/ci/github", key: "token" },
+      exposeOnPr: false,
     });
   });
 
@@ -192,6 +193,75 @@ describe("SecretDialog dispatch", () => {
       source: "db",
       name: "API_KEY",
       value: "s3cr3t",
+      exposeOnPr: false,
+    });
+  });
+
+  it("sends expose_on_pr=true when the PR toggle is on", async () => {
+    render(<SecretDialog slug="demo" configuredSources={[]} />);
+    await openDialog();
+
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "PR_SECRET" },
+    });
+    fireEvent.change(screen.getByLabelText("Value"), {
+      target: { value: "v" },
+    });
+    fireEvent.click(
+      screen.getByRole("switch", { name: /expose to pull requests/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+
+    await waitFor(() => expect(setSecret).toHaveBeenCalledTimes(1));
+    expect(setSecret.mock.calls[0]![0].payload).toMatchObject({
+      exposeOnPr: true,
+    });
+  });
+
+  it("re-syncs expose_on_pr from props on reopen (no stale re-open after save)", async () => {
+    const { rerender } = render(
+      <SecretDialog
+        slug="demo"
+        mode="rotate"
+        name="TOK"
+        current={{ source: "db", exposeOnPr: true }}
+      />,
+    );
+    const toggle = () =>
+      screen.getByRole("switch", { name: /expose to pull requests/i });
+
+    // Open: the switch reflects the persisted true.
+    await openDialog();
+    expect(toggle().getAttribute("aria-checked")).toBe("true");
+
+    // Close it to PRs and save.
+    fireEvent.click(toggle());
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "v1" } });
+    fireEvent.click(screen.getByRole("button", { name: /update value/i }));
+    await waitFor(() => expect(setSecret).toHaveBeenCalledTimes(1));
+    expect(setSecret.mock.calls[0]![0].payload).toMatchObject({
+      exposeOnPr: false,
+    });
+
+    // Revalidation streams the now-closed value back as props.
+    rerender(
+      <SecretDialog
+        slug="demo"
+        mode="rotate"
+        name="TOK"
+        current={{ source: "db", exposeOnPr: false }}
+      />,
+    );
+
+    // Reopen: the switch must reflect false, and a second save must not silently
+    // re-open the secret to PRs.
+    await openDialog();
+    expect(toggle().getAttribute("aria-checked")).toBe("false");
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "v2" } });
+    fireEvent.click(screen.getByRole("button", { name: /update value/i }));
+    await waitFor(() => expect(setSecret).toHaveBeenCalledTimes(2));
+    expect(setSecret.mock.calls[1]![0].payload).toMatchObject({
+      exposeOnPr: false,
     });
   });
 
@@ -216,6 +286,7 @@ describe("SecretDialog dispatch", () => {
       source: "aws",
       name: "SHARED",
       ref: { path: "ci/shared-token" },
+      exposeOnPr: false,
     });
     expect(setSecret).not.toHaveBeenCalled();
   });
