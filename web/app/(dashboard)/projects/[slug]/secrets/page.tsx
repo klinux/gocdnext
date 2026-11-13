@@ -14,6 +14,7 @@ import { RelativeTime } from "@/components/shared/relative-time";
 import { SecretDialog } from "@/components/secrets/secret-dialog.client";
 import { DeleteSecretButton } from "@/components/secrets/delete-secret-button.client";
 import { Pagination } from "@/components/shared/pagination";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { secretSourceSummary } from "@/lib/secrets";
 import {
@@ -101,7 +102,20 @@ export default async function SecretsPage({
               <TableBody>
                 {secrets.map((s) => (
                   <TableRow key={s.name}>
-                    <TableCell className="font-mono">{s.name}</TableCell>
+                    <TableCell className="font-mono">
+                      <span className="inline-flex items-center gap-2">
+                        {s.name}
+                        {s.expose_on_pr ? (
+                          <Badge
+                            variant="outline"
+                            className="font-sans text-[10px]"
+                            title="Exposed to pull_request runs"
+                          >
+                            PR
+                          </Badge>
+                        ) : null}
+                      </span>
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {secretSourceSummary(s)}
                     </TableCell>
@@ -118,7 +132,7 @@ export default async function SecretsPage({
                           mode="rotate"
                           name={s.name}
                           configuredSources={configuredSources}
-                          current={{ source: s.source, path: s.ref?.path, key: s.ref?.key }}
+                          current={{ source: s.source, path: s.ref?.path, key: s.ref?.key, exposeOnPr: s.expose_on_pr }}
                           trigger={
                             <Button variant="ghost" size="sm">
                               Rotate
@@ -174,7 +188,20 @@ export default async function SecretsPage({
               <TableBody>
                 {inherited.map((s) => (
                   <TableRow key={`inh-${s.name}`}>
-                    <TableCell className="font-mono">{s.name}</TableCell>
+                    <TableCell className="font-mono">
+                      <span className="inline-flex items-center gap-2">
+                        {s.name}
+                        {s.expose_on_pr ? (
+                          <Badge
+                            variant="outline"
+                            className="font-sans text-[10px]"
+                            title="Exposed to pull_request runs"
+                          >
+                            PR
+                          </Badge>
+                        ) : null}
+                      </span>
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {secretSourceSummary(s)}
                     </TableCell>

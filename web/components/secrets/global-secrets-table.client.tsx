@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -80,7 +81,20 @@ export function GlobalSecretsTable({ secrets, configuredSources }: Props) {
             <TableBody>
               {filtered.map((s) => (
                 <TableRow key={s.name}>
-                  <TableCell className="font-mono">{s.name}</TableCell>
+                  <TableCell className="font-mono">
+                    <span className="inline-flex items-center gap-2">
+                      {s.name}
+                      {s.expose_on_pr ? (
+                        <Badge
+                          variant="outline"
+                          className="font-sans text-[10px]"
+                          title="Exposed to pull_request runs"
+                        >
+                          PR
+                        </Badge>
+                      ) : null}
+                    </span>
+                  </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     {secretSourceSummary(s)}
                   </TableCell>
@@ -97,7 +111,7 @@ export function GlobalSecretsTable({ secrets, configuredSources }: Props) {
                         mode="rotate"
                         name={s.name}
                         configuredSources={configuredSources}
-                        current={{ source: s.source, path: s.ref?.path, key: s.ref?.key }}
+                        current={{ source: s.source, path: s.ref?.path, key: s.ref?.key, exposeOnPr: s.expose_on_pr }}
                         trigger={
                           <Button variant="ghost" size="sm">
                             Rotate
