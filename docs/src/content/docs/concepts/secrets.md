@@ -93,6 +93,44 @@ secret containing whitespace or tabs is masked as a whole unit.
 Treat the masker as a defense-in-depth line, not the primary
 control. Don't `echo $TOKEN` in scripts; use the env directly.
 
+## Pull request exposure
+
+A pull request can run against **its own** `.gocdnext/` config (so a PR
+that changes a pipeline validates itself) when the project opts in —
+*Project → Settings → GitHub checks → "Pull request config"*. This is
+**off by default**, admin-only, audited, and applies to **GitHub
+same-repo PRs only**: fork PRs never run head config, and the run is
+ephemeral (it never overwrites the project's saved definition).
+
+Because an opted-in PR author then controls the executable graph, a
+secret is **not** handed to a `pull_request`-caused run unless it is
+explicitly exposed. Each secret carries an **"Expose to pull requests"**
+toggle (*Project → Secrets → New/Rotate*, or `expose_on_pr` on the API):
+
+- **New secrets default to closed** (not exposed to PRs). Existing secrets
+  from before this feature were grandfathered to exposed — review them.
+- On a `pull_request` run, a job that declares a closed secret in
+  `secrets:` **fails fast** with a precise error naming the secret — the
+  value is never fetched, decrypted, injected, or masked.
+- The same gate covers a runner profile's `{{secret:NAME}}` global
+  interpolation: a PR-selectable profile can't read a closed global.
+
+:::caution[Literal secrets in runner profiles]
+The gate protects **named** secrets. A **literal** value stored in a runner
+profile's own `secrets:` section is **not** gated — a PR that selects that
+profile would receive it. Before enabling PR config, replace any such
+literal with a named secret, either way:
+
+- move it to a **global** secret, leave "Expose to pull requests" **off**,
+  and reference it from the profile with `{{secret:NAME}}` — profile
+  templates resolve **global** secrets only, so a project secret here won't
+  resolve; or
+- remove it from the profile and declare a project or global secret
+  directly in the job's `secrets:` list.
+
+Either route puts the value behind `expose_on_pr`, so PR runs can't read it.
+:::
+
 ## Storage backends
 
 ### `db` (default)
