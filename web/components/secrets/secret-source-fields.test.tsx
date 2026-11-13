@@ -53,7 +53,7 @@ describe("vaultRequiresKey", () => {
 });
 
 describe("secretSourceSummary", () => {
-  const base = { name: "X", created_at: "", updated_at: "" };
+  const base = { name: "X", created_at: "", updated_at: "", expose_on_pr: false };
 
   it("renders Stored for a db secret", () => {
     expect(secretSourceSummary({ ...base, source: "db" })).toBe("Stored");
@@ -128,7 +128,7 @@ describe("Pagination from the secrets envelope", () => {
   });
 
   const samplePage: Secret[] = [
-    { name: "A", source: "db", created_at: "", updated_at: "" },
+    { name: "A", source: "db", created_at: "", updated_at: "", expose_on_pr: false },
   ];
   it("a page envelope keeps its rows on the current window", () => {
     // Sanity: the page array IS the window the server returned; the

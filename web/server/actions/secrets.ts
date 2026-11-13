@@ -29,9 +29,14 @@ export type ActionResult =
 // send source + ref and never a value.
 function requestBody(payload: z.infer<typeof secretPayloadSchema>): Record<string, unknown> {
   if (payload.source === "db") {
-    return { name: payload.name, value: payload.value };
+    return { name: payload.name, value: payload.value, expose_on_pr: payload.exposeOnPr };
   }
-  return { name: payload.name, source: payload.source, ref: payload.ref };
+  return {
+    name: payload.name,
+    source: payload.source,
+    ref: payload.ref,
+    expose_on_pr: payload.exposeOnPr,
+  };
 }
 
 export async function setSecret(input: z.infer<typeof setSchema>): Promise<ActionResult> {

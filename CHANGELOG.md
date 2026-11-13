@@ -10,6 +10,12 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Added
 
+- **Per-secret `pull_request` exposure — settings UI.** The secret dialog (project
+  + global) now has an **"Expose to pull requests"** toggle (off by default, with a
+  one-line warning that a PR editing the pipeline could otherwise read it); rotate
+  preserves the current value. The project and global secret tables show a **PR**
+  badge on exposed secrets so operators can see at a glance which secrets reach PR
+  builds. Completes the `expose_on_pr` work (the server/core gate landed first).
 - **Per-secret `pull_request` exposure (`expose_on_pr`) — server/core.** A secret
   can now be opted into (or kept out of) runs caused by a pull request. On a
   pull_request-caused run the scheduler withholds any declared secret that isn't

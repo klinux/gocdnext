@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { secretNameSchema, type SecretPayload } from "@/lib/validations";
 import { setGlobalSecret, setSecret } from "@/server/actions/secrets";
@@ -44,7 +45,12 @@ type SharedProps = {
   // pre-filled — a Vault-backed secret opens as Vault with its path/key,
   // not reset to "Stored value" (which would silently repoint it to db on
   // submit). The value itself is never echoed back, so it stays empty.
-  current?: { source: SecretSource; path?: string; key?: string };
+  current?: {
+    source: SecretSource;
+    path?: string;
+    key?: string;
+    exposeOnPr?: boolean;
+  };
 };
 
 type Props =
@@ -60,6 +66,7 @@ function buildPayload(
   value: string,
   path: string,
   refKey: string,
+  exposeOnPr: boolean,
 ): SecretPayload | string {
   const nameCheck = secretNameSchema.safeParse(name);
   if (!nameCheck.success) {
@@ -67,7 +74,7 @@ function buildPayload(
   }
   if (source === "db") {
     if (value.length === 0) return "value cannot be empty";
-    return { source: "db", name, value };
+    return { source: "db", name, value, exposeOnPr };
   }
   if (path.trim().length === 0) return "path is required";
   const key = refKey.trim();
@@ -77,9 +84,9 @@ function buildPayload(
   const ref = key.length > 0 ? { path, key } : { path };
   if (source === "vault") {
     // Narrowed above: vault always has a non-empty key here.
-    return { source: "vault", name, ref: { path, key } };
+    return { source: "vault", name, ref: { path, key }, exposeOnPr };
   }
-  return { source, name, ref };
+  return { source, name, ref, exposeOnPr };
 }
 
 // SecretDialog handles both creating a new secret (trigger = "New secret"
@@ -119,18 +126,29 @@ export function SecretDialog(props: Props) {
   const [value, setValue] = useState("");
   const [path, setPath] = useState(current?.path ?? "");
   const [refKey, setRefKey] = useState(current?.key ?? "");
+  const [exposeOnPr, setExposeOnPr] = useState(current?.exposeOnPr ?? false);
   const [clientError, setClientError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
   const rotating = mode === "rotate";
 
-  function resetAndClose() {
+  // syncFromProps re-seeds every field from the CURRENT props. It runs on each
+  // open (not just at mount) so a prior save — which revalidates the page and
+  // streams fresh props into this still-mounted dialog — can't leave the form
+  // showing stale values. Without this, rotating a secret to expose_on_pr=false
+  // and reopening could silently re-submit the old true (re-opening it to PRs).
+  function syncFromProps() {
     setFormName(name);
     setSource(initialSource);
     setValue("");
     setPath(current?.path ?? "");
     setRefKey(current?.key ?? "");
+    setExposeOnPr(current?.exposeOnPr ?? false);
     setClientError(null);
+  }
+
+  function resetAndClose() {
+    syncFromProps();
     setOpen(false);
   }
 
@@ -138,7 +156,7 @@ export function SecretDialog(props: Props) {
     e.preventDefault();
     setClientError(null);
 
-    const payload = buildPayload(source, formName, value, path, refKey);
+    const payload = buildPayload(source, formName, value, path, refKey, exposeOnPr);
     if (typeof payload === "string") {
       setClientError(payload);
       return;
@@ -166,8 +184,14 @@ export function SecretDialog(props: Props) {
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) resetAndClose();
-        else setOpen(true);
+        if (!next) {
+          resetAndClose();
+        } else {
+          // Re-sync from the latest persisted props on every open, so a prior
+          // save's revalidation is reflected and no stale value is re-submitted.
+          syncFromProps();
+          setOpen(true);
+        }
       }}
     >
       <DialogTrigger render={
@@ -225,6 +249,25 @@ export function SecretDialog(props: Props) {
             refKey={refKey}
             onRefKeyChange={setRefKey}
           />
+
+          <div className="flex items-start gap-3 rounded-md border border-border p-3">
+            <Switch
+              id="secret-expose-on-pr"
+              checked={exposeOnPr}
+              onCheckedChange={(v) => setExposeOnPr(Boolean(v))}
+              aria-label="Expose to pull requests"
+            />
+            <div className="space-y-1">
+              <Label htmlFor="secret-expose-on-pr" className="text-sm">
+                Expose to pull requests
+              </Label>
+              <p className="text-[11px] text-muted-foreground">
+                Off by default. When off, this secret is withheld from runs
+                triggered by a pull request — so a PR that edits the pipeline
+                can&apos;t read it. Turn on only if PR builds genuinely need it.
+              </p>
+            </div>
+          </div>
 
           {clientError ? (
             <div
