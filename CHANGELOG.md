@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.129.0 — 2026-11-13
+
 ### Added
 
 - **Per-secret `pull_request` exposure — settings UI.** The secret dialog (project
