@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.131.0 — 2026-11-14
+
 ### Added
 
 - **Reproducible iOS toolchain and ephemeral code signing for macOS agents.**
