@@ -19,6 +19,12 @@ convention that minor bumps may carry breaking changes until 1.0).
   certificate/profile into a per-run keychain, and cleans both on exit. The
   runbook covers initial signing-repository provisioning, non-PR exposure, and
   the real-Mac verification contract.
+- **Native iOS build convention for macOS agents.** A copyable project example
+  routes `scan` and `gym` jobs by the `macos` tag, selects side-by-side Xcode
+  versions through `DEVELOPER_DIR`, resolves App Store signing into a per-run
+  keychain, and publishes a fail-loud `.ipa` plus dSYM artifact pair. Its
+  locked Fastlane/CocoaPods toolchain, pipeline, Fastfile, secret-safe build
+  wrapper and recipe cover the path from Simulator tests to a signed archive.
 - **Native macOS agents for iOS/Xcode build hosts.** Releases now attach
   `darwin/arm64` and `darwin/amd64` agent binaries to the same signed checksum
   set as the CLI. A Cosign-verifying installer provisions the matching binary,

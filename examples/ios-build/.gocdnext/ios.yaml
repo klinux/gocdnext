@@ -1,0 +1,62 @@
+name: ios
+
+materials:
+  - git:
+      url: https://github.com/acme/mobile-app
+      branch: main
+      on: [push]
+      auto_register_webhook: true
+
+# Signing credentials never enter pull-request runs. Operators may also start
+# this pipeline manually against the latest main revision.
+when:
+  event: [push, manual]
+  branch: [main]
+
+stages: [test, archive]
+
+variables:
+  # Install Xcodes side by side and select one per pipeline without changing
+  # the machine-wide xcode-select setting.
+  DEVELOPER_DIR: /Applications/Xcode_18.1.app/Contents/Developer
+  IOS_WORKSPACE: MobileApp.xcworkspace
+  IOS_SCHEME: MobileApp
+  IOS_BUNDLE_ID: com.acme.mobile
+  IOS_SIMULATOR_DEVICE: iPhone 16 Pro
+  IOS_EXPORT_METHOD: app-store
+  IOS_OUTPUT_NAME: MobileApp.ipa
+  MATCH_GIT_URL: https://github.com/acme/ios-signing.git
+
+jobs:
+  test:
+    stage: test
+    tags: [macos]
+    script:
+      - source "$HOME/.config/gocdnext/ios-toolchain.env"
+      - bundle config set --local path .bundle-cache
+      - bundle check || bundle install --jobs 4 --retry 3
+      - if [ -f Podfile ]; then bundle exec pod install; fi
+      - bundle exec fastlane test
+    test_reports: [build/test-results/junit.xml]
+    artifacts:
+      paths: [build/test-results/]
+
+  archive:
+    stage: archive
+    tags: [macos]
+    secrets:
+      - ASC_KEY_ID
+      - ASC_ISSUER_ID
+      - ASC_KEY_P8_BASE64
+      - MATCH_PASSWORD
+      - MATCH_GIT_BASIC_AUTHORIZATION
+    script:
+      - source "$HOME/.config/gocdnext/ios-toolchain.env"
+      - bundle config set --local path .bundle-cache
+      - bundle check || bundle install --jobs 4 --retry 3
+      - if [ -f Podfile ]; then bundle exec pod install; fi
+      - ./scripts/ios-build.sh
+    artifacts:
+      paths:
+        - build/artifacts/*.ipa
+        - build/artifacts/*.app.dSYM.zip
