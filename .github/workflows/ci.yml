@@ -60,6 +60,27 @@ jobs:
       - name: Build
         run: make build
 
+      - name: macOS agent distribution checks
+        run: |
+          set -euo pipefail
+          bash -n scripts/macos/install-agent.sh
+          bash scripts/macos/install-agent_test.sh
+          python3 -c 'import plistlib; plistlib.load(open("scripts/macos/io.gocdnext.agent.plist", "rb"))'
+          for arch in amd64 arm64; do
+            out="/tmp/gocdnext-agent-darwin-${arch}"
+            CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X main.Version=ci-test" \
+                -o "$out" ./agent/cmd/gocdnext-agent
+            metadata="$(go version -m "$out")"
+            grep -Fq 'GOOS=darwin' <<<"$metadata"
+            grep -Fq "GOARCH=${arch}" <<<"$metadata"
+          done
+          native_smoke="$(mktemp)"
+          trap 'rm -f "$native_smoke"' EXIT
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.Version=ci-test" \
+            -o "$native_smoke" ./agent/cmd/gocdnext-agent
+          [ "$("$native_smoke" --version)" = "ci-test" ]
+
   web:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: web } }

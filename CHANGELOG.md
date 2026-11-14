@@ -8,6 +8,18 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Native macOS agents for iOS/Xcode build hosts.** Releases now attach
+  `darwin/arm64` and `darwin/amd64` agent binaries to the same signed checksum
+  set as the CLI. A Cosign-verifying installer provisions the matching binary,
+  a token-free LaunchDaemon plist, a mode-`0600` configuration outside the
+  workspace, and an unprivileged `shell`-engine service tagged `macos` plus the
+  host architecture. The new macOS runbook covers private gRPC reachability,
+  shared-token auto-registration, installation, routing smoke, upgrades, and
+  removal. The agent now registers the same ldflags-stamped version reported by
+  `--version` instead of the old static development string.
+
 ## v0.130.0 — 2026-11-13
 
 ### Added

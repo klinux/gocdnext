@@ -20,6 +20,7 @@ for the value-side names.
 | `GOCDNEXT_LOG_LEVEL` | `info` | `debug \| info \| warn \| error` |
 | `GOCDNEXT_WEBHOOK_TOKEN` | empty | Pre-shared token for the legacy `/webhook?token=…` endpoint |
 | `GOCDNEXT_WEBHOOK_PUBLIC_URL` | empty | Override for the URL handed to GitHub when registering a repo webhook. Defaults to `GOCDNEXT_PUBLIC_BASE`. |
+| `GOCDNEXT_AGENT_REGISTRATION_TOKEN` | empty | Shared fleet token that lets an unknown agent name auto-register on first contact. Empty requires pre-provisioning every agent. |
 
 ## Secrets backend
 
@@ -147,8 +148,9 @@ the chart's `agent:` values block.
 | `GOCDNEXT_AGENT_NAME` | (required) | Unique per agent — must match a registered name on the server |
 | `GOCDNEXT_AGENT_TOKEN` | (required) | Pre-provisioned auth token |
 | `GOCDNEXT_AGENT_TAGS` | empty | Comma-separated. Used to route jobs (`agent.tags:` in YAML). |
-| `GOCDNEXT_AGENT_CAPACITY` | `2` | Max concurrent jobs |
-| `GOCDNEXT_AGENT_ENGINE` | `docker` | `docker \| kubernetes \| shell` |
+| `GOCDNEXT_AGENT_CAPACITY` | `1` | Max concurrent jobs |
+| `GOCDNEXT_AGENT_ENGINE` | `shell` | `docker \| kubernetes \| shell`. The Helm chart explicitly overrides this to `kubernetes` by default. |
+| `GOCDNEXT_WORKSPACE_ROOT` | empty | Checkout root. Empty uses the agent's temporary-directory default; native macOS installs set a persistent absolute path. |
 | `GOCDNEXT_DOCKER_SOCKET` | `/var/run/docker.sock` | (engine=docker) |
 | `GOCDNEXT_DOCKER_PULL_POLICY` | empty | `always \| missing \| never`. Empty = docker default (`missing`). |
 | `GOCDNEXT_DOCKER_STRICT` | `false` | Reject `image:` references not in the plugin catalog |
