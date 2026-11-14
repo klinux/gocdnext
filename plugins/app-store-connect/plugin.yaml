@@ -1,0 +1,116 @@
+name: app-store-connect
+category: deploy
+description: >
+  Upload an already-built `.ipa` to App Store Connect from a Linux
+  plugin container using Apple's Build Upload API (4.1+): reserve
+  the build/file, stream every prescribed byte range, and commit it
+  with a SHA-256 checksum. `track: upload` returns after Apple
+  accepts the binary for asynchronous processing, ready for later
+  TestFlight or App Store workflows. `track: testflight` waits for
+  processing, applies localized release notes, and assigns the
+  build to named beta groups. The App Store Connect `.p8` key comes
+  from `secrets:`, is decoded to a mode-0600 file outside the
+  workspace, removed on exit, and never reaches argv or logs.
+
+inputs:
+  app-id:
+    required: true
+    description: >
+      Numeric App Store Connect app resource ID (the Apple ID shown
+      under App Information), e.g. `1234567890`. This is not the
+      bundle identifier; the plugin reads bundle/version/build from
+      the IPA's `Info.plist`.
+  ipa:
+    required: true
+    description: >
+      Path under the workspace to the signed `.ipa` produced by the
+      native macOS build, e.g. `build/artifacts/MobileApp.ipa`.
+  api-key-id:
+    required: true
+    description: >
+      App Store Connect team API key ID, supplied from `secrets:`.
+  api-issuer-id:
+    required: true
+    description: >
+      App Store Connect API issuer UUID, supplied from `secrets:`.
+  api-key:
+    required: true
+    description: >
+      Base64 of the complete App Store Connect `.p8` private key,
+      supplied from `secrets:`. Decoded to a private tempfile; never
+      passed in argv.
+  track:
+    required: false
+    default: upload
+    description: >
+      `upload` commits the IPA and exits while Apple processes it;
+      use this when a separate App Store submission workflow selects
+      the build. `testflight` waits (up to `wait-timeout`) and then
+      applies release notes / beta groups.
+  beta-groups:
+    required: false
+    description: >
+      Comma-separated exact TestFlight beta group names to receive
+      the processed build, e.g. `Internal QA,External Beta`.
+      Requires `track: testflight`. External groups may still require
+      Apple's Beta App Review before testers gain access.
+  release-notes:
+    required: false
+    description: >
+      TestFlight "What to Test" text. Requires `track: testflight`;
+      read from the environment and never put in argv.
+  language:
+    required: false
+    default: en-US
+    description: >
+      Locale for TestFlight release notes, e.g. `en-US` or `pt-BR`.
+  platform:
+    required: false
+    default: IOS
+    description: >
+      IPA target platform: `IOS`, `TV_OS`, or `VISION_OS`.
+  wait-timeout:
+    required: false
+    default: "1800"
+    description: >
+      Maximum seconds (1–7200) to wait for Apple processing in
+      `testflight` mode. Upload mode never waits.
+  working-dir:
+    required: false
+    description: >
+      Workspace-relative directory to enter before resolving `ipa`.
+
+examples:
+  - name: distribute a processed build to TestFlight groups
+    description: >
+      Upload the signed IPA, wait for Apple processing, add localized
+      notes, and assign the result to two exact beta group names.
+    yaml: |
+      secrets: [ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8_BASE64]
+      uses: ghcr.io/klinux/gocdnext-plugin-app-store-connect@v1
+      with:
+        app-id: "1234567890"
+        ipa: build/artifacts/MobileApp.ipa
+        track: testflight
+        beta-groups: "Internal QA,External Beta"
+        release-notes: "What to test in this build."
+        language: en-US
+        api-key-id: ${{ ASC_KEY_ID }}
+        api-issuer-id: ${{ ASC_ISSUER_ID }}
+        api-key: ${{ ASC_KEY_P8_BASE64 }}
+
+  - name: upload for a later App Store submission
+    description: >
+      Commit the binary and return as soon as Apple accepts the
+      bytes. Processing is asynchronous; this does not submit a
+      version for App Review or release it automatically.
+    yaml: |
+      secrets: [ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8_BASE64]
+      uses: ghcr.io/klinux/gocdnext-plugin-app-store-connect@v1
+      with:
+        app-id: "1234567890"
+        ipa: build/artifacts/MobileApp.ipa
+        track: upload
+        api-key-id: ${{ ASC_KEY_ID }}
+        api-issuer-id: ${{ ASC_ISSUER_ID }}
+        api-key: ${{ ASC_KEY_P8_BASE64 }}
