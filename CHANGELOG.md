@@ -22,6 +22,17 @@ convention that minor bumps may carry breaking changes until 1.0).
   workspace (removed on exit), and never reaches argv or the logs. Ships a
   hermetic entrypoint suite plus an in-image unit test that drives the full
   edit transaction against a fake Play service.
+- **`firebase-app-distribution` plugin — distribute builds to testers.** Uploads
+  a signed `.apk`/`.aab` to Firebase App Distribution and releases it to tester
+  groups and/or individual testers, with optional release notes, via the
+  Firebase CLI authenticated by a service account. Pairs with the `android`
+  plugin (covers the "ship the build to the team to test" flow; store releases
+  use `google-play`). The service-account JSON comes from `secrets:`, is written
+  to a `0600` tempfile outside the workspace (removed on exit) and exposed only
+  via `GOOGLE_APPLICATION_CREDENTIALS`; release notes are passed through a file
+  so neither the credentials nor the notes ever reach argv. Ships a hermetic
+  entrypoint suite plus an image smoke that verifies the CLI + the
+  `appdistribution:distribute` subcommand and flags the entrypoint relies on.
 
 ## v0.129.0 — 2026-11-13
 

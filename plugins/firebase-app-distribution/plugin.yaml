@@ -1,0 +1,74 @@
+name: firebase-app-distribution
+category: deploy
+description: >
+  Distribute an Android build to testers via Firebase App
+  Distribution. Uploads an `.apk` or `.aab` to a Firebase app and
+  releases it to tester groups and/or individual testers, with
+  optional release notes. Pairs with the `android` plugin — point
+  `artifact` at the APK/AAB it produced. Authenticated with a
+  Google service account supplied from `secrets:`; the credentials
+  are written to a private tempfile and never reach the command
+  line or the logs. This covers the "ship the build to the team to
+  test" flow; store releases use the `google-play` plugin.
+
+inputs:
+  app-id:
+    required: true
+    description: >
+      The Firebase App ID, e.g. `1:1234567890:android:abcdef`
+      (Project settings → Your apps).
+  artifact:
+    required: true
+    description: >
+      Path (under the workspace) to the `.apk` or `.aab` to
+      distribute — typically the `android` plugin's output.
+  service-account-json:
+    required: true
+    description: >
+      Google service-account key JSON, supplied from `secrets:` via
+      `${{ FIREBASE_SERVICE_ACCOUNT }}`. The account needs the
+      Firebase App Distribution Admin role. Written to a private
+      tempfile at dispatch; never on argv.
+  groups:
+    required: false
+    description: >
+      Comma-separated tester GROUP aliases to release to, e.g.
+      `qa,beta`. At least one of `groups` or `testers` is required.
+  testers:
+    required: false
+    description: >
+      Comma-separated individual tester emails to release to. At
+      least one of `groups` or `testers` is required.
+  release-notes:
+    required: false
+    description: >
+      Release notes shown to testers. Passed to the CLI via a file
+      so multiline text is preserved and never hits the command
+      line.
+
+examples:
+  - name: distribute every green build to the QA group
+    description: >
+      Upload the APK the android plugin built and release it to the
+      `qa` tester group with notes. Service account from secrets.
+    yaml: |
+      secrets: [FIREBASE_SERVICE_ACCOUNT]
+      uses: ghcr.io/klinux/gocdnext-plugin-firebase-app-distribution@v1
+      with:
+        app-id: "1:1234567890:android:abcdef"
+        artifact: app/build/outputs/apk/release/app-release.apk
+        groups: qa
+        release-notes: "Nightly build from main."
+        service-account-json: ${{ FIREBASE_SERVICE_ACCOUNT }}
+
+  - name: release a bundle to named testers
+    description: >
+      Distribute an AAB to specific tester emails (no group).
+    yaml: |
+      secrets: [FIREBASE_SERVICE_ACCOUNT]
+      uses: ghcr.io/klinux/gocdnext-plugin-firebase-app-distribution@v1
+      with:
+        app-id: "1:1234567890:android:abcdef"
+        artifact: app/build/outputs/bundle/release/app-release.aab
+        testers: "alice@example.com,bob@example.com"
+        service-account-json: ${{ FIREBASE_SERVICE_ACCOUNT }}
