@@ -65,6 +65,11 @@ jobs:
           set -euo pipefail
           bash -n scripts/macos/install-agent.sh
           bash scripts/macos/install-agent_test.sh
+          bash -n scripts/macos/bootstrap-ios.sh
+          bash scripts/macos/bootstrap-ios_test.sh
+          bash -n examples/ios-signing/scripts/sync-signing.sh
+          bash examples/ios-signing/scripts/sync-signing_test.sh
+          ruby -c examples/ios-signing/fastlane/Fastfile
           python3 -c 'import plistlib; plistlib.load(open("scripts/macos/io.gocdnext.agent.plist", "rb"))'
           for arch in amd64 arm64; do
             out="/tmp/gocdnext-agent-darwin-${arch}"
