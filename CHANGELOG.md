@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **`google-play` plugin — publish to the Play Store.** Deploys a signed
+  `.aab`/`.apk` to Google Play via the Developer API edit transaction
+  (insert → upload → assign-to-track → commit), which is atomic — a failure
+  before commit leaves the listing untouched. Supports tracks
+  (internal/alpha/beta/production or custom closed tracks), staged rollout
+  (`status: inProgress` + `rollout`), release notes, and R8/ProGuard
+  `mapping.txt` upload for crash de-obfuscation. Pairs with the `android`
+  plugin (point `artifact` at the signed bundle). The service-account JSON
+  comes from `secrets:`, is written to a `0600` tempfile outside the
+  workspace (removed on exit), and never reaches argv or the logs. Ships a
+  hermetic entrypoint suite plus an in-image unit test that drives the full
+  edit transaction against a fake Play service.
+
 ## v0.129.0 — 2026-11-13
 
 ### Added
