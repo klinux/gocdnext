@@ -51,6 +51,7 @@ export default defineConfig({
           items: [
             { label: "Helm install", link: "/install/helm/" },
             { label: "macOS agent", link: "/install/macos-agent/" },
+            { label: "iOS toolchain & signing", link: "/install/ios-toolchain-signing/" },
             { label: "Local dev", link: "/install/local-dev/" },
             { label: "Authentication", link: "/install/auth/" },
             { label: "Webhook setup", link: "/install/webhooks/" },
