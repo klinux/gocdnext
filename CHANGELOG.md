@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.130.0 — 2026-11-13
+
 ### Added
 
 - **`google-play` plugin — publish to the Play Store.** Deploys a signed
