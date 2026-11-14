@@ -78,6 +78,7 @@ export default defineConfig({
                 { label: "Go monorepo", link: "/pipelines/recipes/go-monorepo/" },
                 { label: "Maven (Java/Kotlin)", link: "/pipelines/recipes/maven/" },
                 { label: "Gradle (Android, JVM)", link: "/pipelines/recipes/gradle/" },
+                { label: "iOS (Xcode, Fastlane)", link: "/pipelines/recipes/ios/" },
                 { label: "Node frontend", link: "/pipelines/recipes/node/" },
                 { label: "Python (pip / Poetry / uv)", link: "/pipelines/recipes/python/" },
                 { label: "Docker build & push", link: "/pipelines/recipes/docker-build/" },

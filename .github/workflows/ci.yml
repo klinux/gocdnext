@@ -70,6 +70,9 @@ jobs:
           bash -n examples/ios-signing/scripts/sync-signing.sh
           bash examples/ios-signing/scripts/sync-signing_test.sh
           ruby -c examples/ios-signing/fastlane/Fastfile
+          bash -n examples/ios-build/scripts/ios-build.sh
+          bash examples/ios-build/scripts/ios-build_test.sh
+          ruby -c examples/ios-build/fastlane/Fastfile
           python3 -c 'import plistlib; plistlib.load(open("scripts/macos/io.gocdnext.agent.plist", "rb"))'
           for arch in amd64 arm64; do
             out="/tmp/gocdnext-agent-darwin-${arch}"
