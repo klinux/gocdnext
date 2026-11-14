@@ -1,0 +1,102 @@
+name: google-play
+category: deploy
+description: >
+  Publish a signed Android artifact to Google Play. Runs the Play
+  Developer API edit transaction (insert → upload → assign to
+  track → commit), which is atomic: nothing goes live unless the
+  commit succeeds, so a mid-flight failure leaves the listing
+  untouched. Uploads a `.aab` (recommended) or `.apk` to a track
+  (internal / alpha / beta / production, or a custom closed track),
+  with optional staged rollout, release notes, and an R8/ProGuard
+  `mapping.txt` for crash de-obfuscation. Pairs with the `android`
+  plugin — point `artifact` at the signed bundle it produced. The
+  service-account credentials come from `secrets:` and are never
+  written to the command line or the logs.
+
+inputs:
+  package-name:
+    required: true
+    description: >
+      The app's applicationId, e.g. `com.example.app`.
+  artifact:
+    required: true
+    description: >
+      Path (under the workspace) to the signed `.aab` or `.apk` to
+      upload — typically the `android` plugin's output, e.g.
+      `app/build/outputs/bundle/release/app-release.aab`.
+  track:
+    required: true
+    description: >
+      Release track: `internal`, `alpha`, `beta`, `production`, or
+      a custom closed-testing track name configured in the Play
+      Console.
+  service-account-json:
+    required: true
+    description: >
+      The Google service-account key JSON, supplied from
+      `secrets:` via `${{ PLAY_SERVICE_ACCOUNT }}`. The account
+      needs the "Release to testing/production" permission on the
+      app. Written to a private tempfile at dispatch; never on argv.
+  status:
+    required: false
+    default: completed
+    description: >
+      Release status: `completed` (fully live), `draft` (upload
+      only, publish later in the console), `inProgress` (staged
+      rollout), or `halted`. `inProgress`/`halted` require
+      `rollout`.
+  rollout:
+    required: false
+    description: >
+      Staged-rollout fraction in (0,1), e.g. `0.1` for 10%.
+      Required when `status` is `inProgress` or `halted`; ignored
+      otherwise. For a full 100% release use `status: completed`
+      (the Play API rejects a rollout of 1).
+  release-notes:
+    required: false
+    description: >
+      Release notes text shown to testers/users for this release.
+  language:
+    required: false
+    default: en-US
+    description: >
+      BCP-47 language tag for the release notes (e.g. `en-US`,
+      `pt-BR`).
+  mapping:
+    required: false
+    description: >
+      Path to the R8/ProGuard `mapping.txt` to upload for this
+      version so Play de-obfuscates crash stack traces. Typically
+      `app/build/outputs/mapping/release/mapping.txt`.
+
+examples:
+  - name: staged rollout to production (10%)
+    description: >
+      Upload the signed bundle the android plugin produced, start a
+      10% staged rollout, and attach the mapping for crash
+      de-obfuscation. The service account comes from secrets.
+    yaml: |
+      secrets: [PLAY_SERVICE_ACCOUNT]
+      uses: ghcr.io/klinux/gocdnext-plugin-google-play@v1
+      with:
+        package-name: com.example.app
+        artifact: app/build/outputs/bundle/release/app-release.aab
+        track: production
+        status: inProgress
+        rollout: "0.1"
+        release-notes: "Bug fixes and performance improvements."
+        mapping: app/build/outputs/mapping/release/mapping.txt
+        service-account-json: ${{ PLAY_SERVICE_ACCOUNT }}
+
+  - name: internal testing track
+    description: >
+      Push every green build to the internal track for the QA team
+      (fully released, no staged rollout).
+    yaml: |
+      secrets: [PLAY_SERVICE_ACCOUNT]
+      uses: ghcr.io/klinux/gocdnext-plugin-google-play@v1
+      with:
+        package-name: com.example.app
+        artifact: app/build/outputs/bundle/release/app-release.aab
+        track: internal
+        service-account-json: ${{ PLAY_SERVICE_ACCOUNT }}
