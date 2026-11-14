@@ -1,0 +1,49 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Resolve App Store certificates and profiles into an ephemeral keychain"
+  lane :sync_signing do
+    required = %w[
+      ASC_KEY_ID
+      ASC_ISSUER_ID
+      ASC_KEY_PATH
+      MATCH_GIT_URL
+      MATCH_PASSWORD
+      GOCDNEXT_TEMP_KEYCHAIN_NAME
+      GOCDNEXT_TEMP_KEYCHAIN_PASSWORD
+    ]
+    missing = required.select { |name| ENV[name].to_s.empty? }
+    UI.user_error!("missing required signing environment: #{missing.join(', ')}") unless missing.empty?
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_filepath: ENV.fetch("ASC_KEY_PATH"),
+      duration: 1_200
+    )
+
+    keychain_name = ENV.fetch("GOCDNEXT_TEMP_KEYCHAIN_NAME")
+    keychain_created = false
+    begin
+      create_keychain(
+        name: keychain_name,
+        password: ENV.fetch("GOCDNEXT_TEMP_KEYCHAIN_PASSWORD"),
+        default_keychain: false,
+        unlock: true,
+        timeout: 3_600,
+        lock_when_sleeps: true
+      )
+      keychain_created = true
+      match(
+        type: ENV.fetch("MATCH_TYPE", "appstore"),
+        readonly: true,
+        git_url: ENV.fetch("MATCH_GIT_URL"),
+        api_key: api_key,
+        keychain_name: keychain_name,
+        keychain_password: ENV.fetch("GOCDNEXT_TEMP_KEYCHAIN_PASSWORD")
+      )
+    ensure
+      delete_keychain(name: keychain_name) if keychain_created
+    end
+  end
+end

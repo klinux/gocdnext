@@ -1,0 +1,34 @@
+name: ios-signing-smoke
+
+materials:
+  - git:
+      url: https://github.com/acme/mobile-app
+      branch: main
+      on: [push]
+      auto_register_webhook: true
+
+# Keep signing credentials out of automatic PR runs. Trigger this only after an
+# operator has configured the Mac and the project's non-PR-exposed secrets.
+when:
+  event: [manual]
+
+stages: [verify]
+
+variables:
+  MATCH_GIT_URL: https://github.com/acme/ios-signing.git
+
+jobs:
+  match:
+    stage: verify
+    tags: [macos]
+    secrets:
+      - ASC_KEY_ID
+      - ASC_ISSUER_ID
+      - ASC_KEY_P8_BASE64
+      - MATCH_PASSWORD
+      - MATCH_GIT_BASIC_AUTHORIZATION
+    script:
+      - source "$HOME/.config/gocdnext/ios-toolchain.env"
+      - bundle config set --local path .bundle-cache
+      - bundle install --jobs 4 --retry 3
+      - ./scripts/sync-signing.sh
