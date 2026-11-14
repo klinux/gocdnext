@@ -215,8 +215,8 @@ hits a terminal status:
 jobs:
   <name>:
     stage: <stage-name>        # required, must be in `stages:`
-    image: alpine:3.20         # OR `uses:` (mutually exclusive)
-    script:                    # shell lines; requires `image:`
+    image: alpine:3.20         # container image for a script job; omit on a host shell agent
+    script:                    # shell lines, run by the selected agent engine
       - go test ./...
     uses: ghcr.io/klinux/gocdnext-plugin-go@v1       # plugin reference; mutually exclusive
     with:                      # inputs passed as PLUGIN_* env to the image

@@ -393,7 +393,8 @@ jobs:
           # bad state: `gh release edit v0.18.1 --latest`.
           make_latest: legacy
 
-  # Cross-compiled CLI binaries attached to the same GitHub Release,
+  # Cross-compiled CLI binaries plus native macOS agent binaries attached
+  # to the same GitHub Release,
   # so the docs' "download a prebuilt binary from the release page"
   # is a real artefact — the escape hatch for anyone who can't or
   # won't `go install` (no Go toolchain, air-gapped, a bot image).
@@ -453,6 +454,48 @@ jobs:
                 -o "$out" ./cli/cmd/gocdnext
           done
 
+      # iOS builds have to run on a macOS host with Xcode. The shell engine
+      # already executes script jobs natively, so distribution only needs the
+      # same agent binary the container image uses, cross-compiled for both
+      # supported Mac architectures. No Darwin build tags or alternate runtime.
+      - name: Cross-compile macOS agent
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${REF_NAME#v}"
+          for arch in amd64 arm64; do
+            out="dist/gocdnext-agent_${version}_darwin_${arch}"
+            echo "building $out"
+            CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
+              go build -trimpath \
+                -ldflags "-s -w -X main.Version=${REF_NAME}" \
+                -o "$out" ./agent/cmd/gocdnext-agent
+
+            # A Linux runner cannot execute a Mach-O binary, but Go can inspect
+            # its embedded build settings. Fail before publishing if an asset
+            # was accidentally built for the runner instead of the target Mac.
+            metadata="$(go version -m "$out")"
+            grep -Fq 'GOOS=darwin' <<<"$metadata"
+            grep -Fq "GOARCH=${arch}" <<<"$metadata"
+          done
+
+          # Mach-O assets cannot execute on this runner. Build the identical
+          # package natively once to prove the ldflags contract itself still
+          # drives --version (and, through versionString, registration).
+          native_smoke="$(mktemp)"
+          trap 'rm -f "$native_smoke"' EXIT
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.Version=${REF_NAME}" \
+            -o "$native_smoke" ./agent/cmd/gocdnext-agent
+          [ "$("$native_smoke" --version)" = "$REF_NAME" ]
+
+          # Ship the idempotent launchd bootstrap next to the binaries. The
+          # installer verifies the signed checksums before it installs either
+          # the selected binary or the plist template.
+          cp scripts/macos/install-agent.sh dist/gocdnext-agent-install-macos.sh
+          cp scripts/macos/io.gocdnext.agent.plist dist/io.gocdnext.agent.plist
+
       - name: Smoke-test the native binary
         env:
           REF_NAME: ${{ github.ref_name }}
@@ -471,7 +514,11 @@ jobs:
       - name: Checksums + keyless signature
         run: |
           set -euo pipefail
-          ( cd dist && sha256sum gocdnext_* > checksums.txt )
+          ( cd dist && sha256sum \
+              gocdnext_* \
+              gocdnext-agent_* \
+              gocdnext-agent-install-macos.sh \
+              io.gocdnext.agent.plist > checksums.txt )
           cosign sign-blob --yes dist/checksums.txt \
             --output-signature dist/checksums.txt.sig \
             --output-certificate dist/checksums.txt.pem

@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestVersionStringUsesBuildVersion(t *testing.T) {
+	original := Version
+	t.Cleanup(func() { Version = original })
+
+	Version = "v1.2.3-test"
+	if got := versionString(); got != Version {
+		t.Fatalf("versionString() = %q, want stamped Version %q", got, Version)
+	}
+}
+
 // TestResolveWorkspaceRoot locks the inference matrix that v0.4.14
 // settled: the agent picks the right path on its own from the
 // engine choice, so an operator never has to set two env vars that
