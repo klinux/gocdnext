@@ -380,9 +380,11 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 	}
 }
 
-// versionString returns a static version string until we wire ldflags at build
-// time. Keeping it here lets us bump once instead of hunting the literal.
-func versionString() string { return "0.1.0-dev" }
+// versionString is kept behind a helper because loadConfig is exercised without
+// starting the long-running client in tests. Release builds stamp Version via
+// -ldflags; using the same value here makes the version shown by --version match
+// the one the agent registers with the server.
+func versionString() string { return Version }
 
 // runPrep is the entrypoint for `gocdnext-agent prep`, executed
 // inside the "prep" init container of an isolated-mode job pod.

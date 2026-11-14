@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.gocdnext.agent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__GOCDNEXT_WRAPPER__</string>
+  </array>
+
+  <!-- Rendered by install-agent.sh. The daemon is system-managed but job
+       scripts run as this unprivileged macOS account, never as root. -->
+  <key>UserName</key>
+  <string>__GOCDNEXT_RUN_USER__</string>
+  <key>GroupName</key>
+  <string>__GOCDNEXT_RUN_GROUP__</string>
+  <key>WorkingDirectory</key>
+  <string>__GOCDNEXT_SUPPORT_DIR__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GOCDNEXT_AGENT_CONFIG</key>
+    <string>__GOCDNEXT_CONFIG__</string>
+    <key>HOME</key>
+    <string>__GOCDNEXT_RUN_HOME__</string>
+    <!-- launchd does not read the user's shell profile. Include both Homebrew
+         prefixes so later fastlane/Xcode bootstrap tools are discoverable. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Restart on crash or a non-zero exit (lost server connection, panic), but
+       NOT after a clean exit 0. Graceful drain (SIGTERM, #178) exits 0, so the
+       agent stays down instead of being relaunched mid-drain. To stop it
+       deliberately, bootout the service (see the runbook). -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <!-- Standard, NOT Background: macOS throttles CPU/I/O for Background jobs to
+       protect interactive use, which would starve xcodebuild/compilation and
+       cause build timeouts. A build host is the foreground workload. -->
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>__GOCDNEXT_STDOUT_LOG__</string>
+  <key>StandardErrorPath</key>
+  <string>__GOCDNEXT_STDERR_LOG__</string>
+</dict>
+</plist>
