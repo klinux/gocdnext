@@ -1,0 +1,85 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Run the app's unit/UI test plan on an iOS Simulator"
+  lane :test do
+    scan(
+      workspace: ENV.fetch("IOS_WORKSPACE"),
+      scheme: ENV.fetch("IOS_SCHEME"),
+      devices: [ENV.fetch("IOS_SIMULATOR_DEVICE", "iPhone 16 Pro")],
+      clean: true,
+      result_bundle: true,
+      derived_data_path: "build/derived-data/test",
+      output_directory: "build/test-results",
+      output_types: "junit",
+      output_files: "junit.xml"
+    )
+  end
+
+  desc "Resolve signing, archive with gym, and emit an IPA plus dSYM"
+  lane :build do
+    required = %w[
+      ASC_KEY_ID
+      ASC_ISSUER_ID
+      ASC_KEY_PATH
+      MATCH_GIT_URL
+      MATCH_PASSWORD
+      IOS_WORKSPACE
+      IOS_SCHEME
+      IOS_BUNDLE_ID
+      GOCDNEXT_TEMP_KEYCHAIN_NAME
+      GOCDNEXT_TEMP_KEYCHAIN_PASSWORD
+    ]
+    missing = required.select { |name| ENV[name].to_s.empty? }
+    UI.user_error!("missing required build environment: #{missing.join(', ')}") unless missing.empty?
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_filepath: ENV.fetch("ASC_KEY_PATH"),
+      duration: 1_200
+    )
+
+    keychain_name = ENV.fetch("GOCDNEXT_TEMP_KEYCHAIN_NAME")
+    keychain_created = false
+    begin
+      create_keychain(
+        name: keychain_name,
+        password: ENV.fetch("GOCDNEXT_TEMP_KEYCHAIN_PASSWORD"),
+        default_keychain: false,
+        unlock: true,
+        timeout: 3_600,
+        lock_when_sleeps: true
+      )
+      keychain_created = true
+
+      match(
+        type: "appstore",
+        readonly: true,
+        app_identifier: [ENV.fetch("IOS_BUNDLE_ID")],
+        git_url: ENV.fetch("MATCH_GIT_URL"),
+        api_key: api_key,
+        keychain_name: keychain_name,
+        keychain_password: ENV.fetch("GOCDNEXT_TEMP_KEYCHAIN_PASSWORD")
+      )
+
+      output_name = ENV.fetch("IOS_OUTPUT_NAME", "App.ipa")
+      ipa_path = gym(
+        workspace: ENV.fetch("IOS_WORKSPACE"),
+        scheme: ENV.fetch("IOS_SCHEME"),
+        clean: true,
+        export_method: ENV.fetch("IOS_EXPORT_METHOD", "app-store"),
+        output_directory: "build/artifacts",
+        output_name: output_name,
+        archive_path: "build/archive/#{File.basename(output_name, '.ipa')}.xcarchive",
+        derived_data_path: "build/derived-data/archive",
+        include_symbols: true
+      )
+      dsym_path = lane_context[SharedValues::DSYM_OUTPUT_PATH]
+      UI.user_error!("gym did not produce the expected IPA") unless ipa_path && File.file?(ipa_path)
+      UI.user_error!("gym did not produce the expected dSYM zip") unless dsym_path && File.file?(dsym_path)
+    ensure
+      delete_keychain(name: keychain_name) if keychain_created
+    end
+  end
+end
