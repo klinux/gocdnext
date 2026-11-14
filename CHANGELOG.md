@@ -25,6 +25,15 @@ convention that minor bumps may carry breaking changes until 1.0).
   keychain, and publishes a fail-loud `.ipa` plus dSYM artifact pair. Its
   locked Fastlane/CocoaPods toolchain, pipeline, Fastfile, secret-safe build
   wrapper and recipe cover the path from Simulator tests to a signed archive.
+- **`app-store-connect` plugin — upload iOS builds and distribute to
+  TestFlight.** Runs on Linux and uses Apple's Build Upload API to reserve an
+  `.ipa`, stream every server-prescribed byte range, and commit the complete
+  file with SHA-256. Upload-only mode exits after Apple accepts the binary for
+  asynchronous processing; TestFlight mode waits for a processed build, adds
+  localized release notes, and assigns exact beta groups. The base64 `.p8`
+  team key comes from `secrets:`, is decoded mode `0600` outside the workspace,
+  removed on exit, and never enters argv/logs. Hermetic entrypoint tests and an
+  in-image fake-service smoke pin the complete upload/processing/group flow.
 - **Native macOS agents for iOS/Xcode build hosts.** Releases now attach
   `darwin/arm64` and `darwin/amd64` agent binaries to the same signed checksum
   set as the CLI. A Cosign-verifying installer provisions the matching binary,
