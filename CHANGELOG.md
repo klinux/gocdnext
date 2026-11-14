@@ -33,6 +33,20 @@ convention that minor bumps may carry breaking changes until 1.0).
   so neither the credentials nor the notes ever reach argv. Ships a hermetic
   entrypoint suite plus an image smoke that verifies the CLI + the
   `appdistribution:distribute` subcommand and flags the entrypoint relies on.
+- **`android` plugin — build + sign Android apps.** A Bitrise-comparable Android
+  *build* step: runs Gradle (wrapper-first, same semantics as the `gradle` plugin)
+  on an image that ships the Android SDK (command-line tools pinned by SHA256,
+  platform-tools, and the latest stable platform + build-tools, API 36). When a
+  keystore is supplied via `secrets:`, the built artifacts are signed — `.apk` with
+  `apksigner` (zipaligned first), `.aab` with `jarsigner` (upload key; Play App
+  Signing re-signs). The signing password never reaches argv (apksigner `env:` /
+  jarsigner `:env` references) and the keystore is base64-decoded to a `0600`
+  tempfile outside the workspace, removed on exit. Projects on a different
+  `compileSdk` add packages via `sdk-components:` (installed per job; bake a
+  derived image to avoid re-downloading). Device testing and deploys to Google
+  Play / Firebase are intentionally out of scope (separate plugins). Ships a
+  hermetic entrypoint unit suite plus a real image smoke that signs an
+  aapt2-built APK and a bundle and verifies both signatures.
 
 ## v0.129.0 — 2026-11-13
 
