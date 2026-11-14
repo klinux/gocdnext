@@ -32,7 +32,7 @@ env:
   # consumer touching only entrypoint.sh and a base toolchain
   # bump don't ship out of sync. New JVM plugins (sbt, ant,
   # kotlin-cli) join this list when they land.
-  JDK_BASE_CONSUMERS: "gradle maven"
+  JDK_BASE_CONSUMERS: "gradle maven android"
 
 jobs:
   changed:
