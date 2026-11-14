@@ -10,6 +10,15 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Added
 
+- **Reproducible iOS toolchain and ephemeral code signing for macOS agents.**
+  An idempotent host bootstrap selects full Xcode, completes its explicit
+  one-time setup, and installs a pinned Ruby series plus exact Bundler, Fastlane and CocoaPods
+  versions outside the system Ruby. A production-ready `fastlane match`
+  example receives the App Store Connect key and match credentials only from
+  job secrets, writes the `.p8` mode `0600` outside the workspace, imports the
+  certificate/profile into a per-run keychain, and cleans both on exit. The
+  runbook covers initial signing-repository provisioning, non-PR exposure, and
+  the real-Mac verification contract.
 - **Native macOS agents for iOS/Xcode build hosts.** Releases now attach
   `darwin/arm64` and `darwin/amd64` agent binaries to the same signed checksum
   set as the CLI. A Cosign-verifying installer provisions the matching binary,
