@@ -3,6 +3,8 @@ title: Architecture deep-dive
 description: How the control plane, the agents, the scheduler, and the database fit together.
 ---
 
+![Isometric overview of the gocdnext architecture: git sources send an HMAC-verified webhook to the control-plane server and Postgres, which dispatches jobs over a bidirectional gRPC stream to an agent fleet running Kubernetes pods, a macOS host and OCI plugins, then deploys via ArgoCD to clusters and app stores; secrets and observability run across.](/gocdnext/docs/imgs/architecture-isometric.svg)
+
 gocdnext is three Go binaries + a Postgres + an artefact backend.
 This page walks the moving parts so an operator can debug or
 extend without reading the whole codebase.
