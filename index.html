@@ -478,6 +478,18 @@
     </div>
   </div>
 
+  <!-- ================= ARCHITECTURE ================= -->
+  <section id="architecture">
+    <div class="wrap" style="text-align:center">
+      <span class="eyebrow">How it fits together</span>
+      <h2 style="margin-top:12px; font-size:clamp(1.7rem,3.6vw,2.3rem); font-weight:700">One run, from push to deploy</h2>
+      <p style="max-width:62ch; margin:12px auto 28px; color:var(--muted)">A Go control-plane core and Postgres, a gRPC-streamed agent fleet, and OCI plugins — with secrets and telemetry woven across.</p>
+      <div style="border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:#061a20; box-shadow:var(--shadow)">
+        <img src="architecture.svg" alt="Isometric diagram of the gocdnext architecture: git sources (GitHub, GitLab, Bitbucket) send an HMAC-verified webhook to the control-plane server and Postgres, which dispatches jobs over a bidirectional gRPC stream to an agent fleet running Kubernetes pods, a macOS host and OCI plugins, then deploys via ArgoCD to Kubernetes clusters and app stores; a secrets group injects at dispatch and an observability group collects OpenTelemetry traces and Prometheus metrics." loading="lazy" style="display:block; width:100%; height:auto" />
+      </div>
+    </div>
+  </section>
+
   <!-- ================= WHY ================= -->
   <section class="why" id="why">
     <div class="wrap why-grid">
