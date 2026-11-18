@@ -102,6 +102,17 @@ func TestMarkArtifactReady_FlipsStatus(t *testing.T) {
 		t.Errorf("sha = %q", got.ContentSHA256)
 	}
 
+	// Marking ready durably flags the run as having produced an artifact (the
+	// build-time analytics read this flag, not the artifact row, so it survives
+	// retention).
+	var produced bool
+	if err := pool.QueryRow(ctx, `SELECT produced_artifact FROM runs WHERE id=$1`, runID).Scan(&produced); err != nil {
+		t.Fatalf("read produced flag: %v", err)
+	}
+	if !produced {
+		t.Error("expected runs.produced_artifact = true after MarkArtifactReady")
+	}
+
 	// Second call must be a no-op (already ready).
 	updated2, err := s.MarkArtifactReady(ctx, key, 9999, "cafebabe", "application/gzip")
 	if err != nil {

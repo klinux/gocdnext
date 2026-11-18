@@ -8,6 +8,26 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Analytics: build-time percentiles panel.** The org analytics dashboard now
+  has a **Build time (p50 · p85 · p95)** section — build-pipeline duration
+  percentiles over the window, org-wide plus a per-group breakdown. A "build" is
+  a successful, non-PR, non-deploy run that produced a `ready` artifact, so it
+  isolates the pipelines that build the artifact/image from pull-request
+  validation noise (excluded) and from deploy runs (whose duration isn't build
+  time, excluded). Percentiles are computed live from run history. New
+  `GET /api/v1/analytics/build-times?key=&window_days=` endpoint.
+
+### Changed
+
+- **Analytics: the "Group by" picker only lists label keys with activity in the
+  window.** An unused project label (e.g. `app` with no runs) no longer appears
+  as a group-by option that renders an all-zero dashboard. `GET
+  /api/v1/analytics/label-keys` accepts an optional `window_days` to return the
+  filtered set (falls back to all keys when nothing has activity, so the picker
+  is never empty).
+
 ## v0.131.0 — 2026-11-14
 
 ### Added

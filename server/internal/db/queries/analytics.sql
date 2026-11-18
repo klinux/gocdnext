@@ -5,6 +5,27 @@
 -- Distinct label keys across all projects — the dashboard's "group by" picker.
 SELECT DISTINCT key FROM project_labels ORDER BY key;
 
+-- name: ListLabelKeysWithData :many
+-- Label keys worth grouping by: only those on a project that has had a terminal
+-- run within the window. Keeps an unused label (e.g. "app" with no activity) out
+-- of the "group by" picker, where it would otherwise show an all-zero dashboard.
+SELECT DISTINCT pl.key
+FROM project_labels pl
+WHERE EXISTS (
+        SELECT 1
+        FROM pipelines p
+        JOIN runs r ON r.pipeline_id = p.id
+        WHERE p.project_id = pl.project_id
+          -- terminal states only (matches the analytics panels, which ignore
+          -- canceled runs) so a project with nothing but canceled runs doesn't
+          -- surface a label whose dashboard is all zeros; also lets this use the
+          -- partial idx_runs_reliability_window index.
+          AND r.status IN ('success', 'failed', 'errored')
+          AND r.finished_at IS NOT NULL
+          AND r.finished_at >= current_date - make_interval(days => sqlc.arg(window_days)::int - 1)
+    )
+ORDER BY pl.key;
+
 -- name: ListAnalyticsEnvironments :many
 -- Distinct environment names that have terminal deploys and belong to a project
 -- carrying the group-by key — the dashboard's "environment" filter options.

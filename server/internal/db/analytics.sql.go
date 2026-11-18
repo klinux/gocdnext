@@ -670,3 +670,45 @@ func (q *Queries) ListLabelKeys(ctx context.Context) ([]string, error) {
 	}
 	return items, nil
 }
+
+const listLabelKeysWithData = `-- name: ListLabelKeysWithData :many
+SELECT DISTINCT pl.key
+FROM project_labels pl
+WHERE EXISTS (
+        SELECT 1
+        FROM pipelines p
+        JOIN runs r ON r.pipeline_id = p.id
+        WHERE p.project_id = pl.project_id
+          -- terminal states only (matches the analytics panels, which ignore
+          -- canceled runs) so a project with nothing but canceled runs doesn't
+          -- surface a label whose dashboard is all zeros; also lets this use the
+          -- partial idx_runs_reliability_window index.
+          AND r.status IN ('success', 'failed', 'errored')
+          AND r.finished_at IS NOT NULL
+          AND r.finished_at >= current_date - make_interval(days => $1::int - 1)
+    )
+ORDER BY pl.key
+`
+
+// Label keys worth grouping by: only those on a project that has had a terminal
+// run within the window. Keeps an unused label (e.g. "app" with no activity) out
+// of the "group by" picker, where it would otherwise show an all-zero dashboard.
+func (q *Queries) ListLabelKeysWithData(ctx context.Context, windowDays int32) ([]string, error) {
+	rows, err := q.db.Query(ctx, listLabelKeysWithData, windowDays)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

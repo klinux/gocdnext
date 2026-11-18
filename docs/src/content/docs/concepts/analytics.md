@@ -25,7 +25,9 @@ run that reaches it feeds Analytics.
 
 Open the dashboard from the sidebar (**Analytics**). The toolbar drives
 everything: **Group by** (label key), **Window** (7 / 30 / 90 days), and
-**Environment**.
+**Environment**. **Group by** only lists label keys that have activity in the
+selected window — an unused label (one with no runs) is kept out of the picker
+so it can't show an all-zero dashboard.
 
 ## The four metrics
 
@@ -127,6 +129,15 @@ the environments that actually have deploys under the active group-by key.
 - **Performance by `<key>`** — a sortable leaderboard ranking every group across
   all four metrics plus its tier. Click a column header to sort; click again to
   flip direction.
+- **Build time (p50 · p85 · p95)** — build-pipeline duration percentiles over the
+  window, org-wide plus a per-group breakdown. A *build* is a **successful,
+  non-PR, non-deploy run that produced a `ready` artifact** — i.e. the pipelines
+  that build the artifact/image. Pull-request and merge-queue runs are excluded
+  (they carry too much variance to compare), and deploy runs are excluded (their
+  duration is deploy time, not build time). Percentiles are computed live from
+  run history (a median/p95 can't be summed from a daily rollup). Note: a build
+  that only pushes an image without uploading a file `artifacts:` output won't be
+  counted — add an artifact to include it.
 - **Highlights** — the window's biggest improvement, biggest regression, and a
   watch item (stalled cadence), derived per-group from the current vs. prior
   window. Captions are data-derived, not editorial.
