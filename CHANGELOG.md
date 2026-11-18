@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.132.0 — 2026-11-18
+
 ### Added
 
 - **Analytics: build-time percentiles panel.** The org analytics dashboard now
