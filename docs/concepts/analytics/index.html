@@ -91,7 +91,9 @@ appear under any group.</li>
 </ol>
 <p>Open the dashboard from the sidebar (<strong>Analytics</strong>). The toolbar drives
 everything: <strong>Group by</strong> (label key), <strong>Window</strong> (7 / 30 / 90 days), and
-<strong>Environment</strong>.</p>
+<strong>Environment</strong>. <strong>Group by</strong> only lists label keys that have activity in the
+selected window — an unused label (one with no runs) is kept out of the picker
+so it can’t show an all-zero dashboard.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-four-metrics">The four metrics</h2><a class="sl-anchor-link" href="#the-four-metrics"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The four metrics”</span></a></div>
 <p>Every metric is computed over the selected trailing window and, where a median
 is involved, as the <strong>p50</strong> so one outlier deploy can’t skew the picture.</p>
@@ -193,6 +195,15 @@ with the biggest stage flagged as the top lever (see below).</li>
 <li><strong>Performance by <code dir="auto">&lt;key&gt;</code></strong> — a sortable leaderboard ranking every group across
 all four metrics plus its tier. Click a column header to sort; click again to
 flip direction.</li>
+<li><strong>Build time (p50 · p85 · p95)</strong> — build-pipeline duration percentiles over the
+window, org-wide plus a per-group breakdown. A <em>build</em> is a <strong>successful,
+non-PR, non-deploy run that produced a <code dir="auto">ready</code> artifact</strong> — i.e. the pipelines
+that build the artifact/image. Pull-request and merge-queue runs are excluded
+(they carry too much variance to compare), and deploy runs are excluded (their
+duration is deploy time, not build time). Percentiles are computed live from
+run history (a median/p95 can’t be summed from a daily rollup). Note: a build
+that only pushes an image without uploading a file <code dir="auto">artifacts:</code> output won’t be
+counted — add an artifact to include it.</li>
 <li><strong>Highlights</strong> — the window’s biggest improvement, biggest regression, and a
 watch item (stalled cadence), derived per-group from the current vs. prior
 window. Captions are data-derived, not editorial.</li>
