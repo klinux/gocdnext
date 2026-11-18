@@ -46,6 +46,20 @@ type Querier interface {
 	// whose job got redispatched to the same agent_id on a higher
 	// attempt. See sessions.Session.RecordAssignment.
 	AssignJob(ctx context.Context, arg AssignJobParams) (AssignJobRow, error)
+	// Same build-duration percentiles, split per label-value group (a project under
+	// several values of the key contributes to each, via the JOIN).
+	BuildTimesByGroup(ctx context.Context, arg BuildTimesByGroupParams) ([]BuildTimesByGroupRow, error)
+	// Build-time percentiles (#107 analytics). "Build run" = a terminal SUCCESS run
+	// that produced a ready artifact and did NOT deploy, triggered by something
+	// other than a pull request / merge-group probe. This isolates the pipelines
+	// that build the artifact+image from PR validation noise (PRs carry lots of
+	// variance) and from deploy runs (whose duration is deploy, not build). Duration
+	// is start→finish of that run; percentiles are computed LIVE (a median/pXX can't
+	// be summed from the daily rollup). The window predicate is the same
+	// midnight-aligned, index-friendly form the throughput queries use.
+	// Org-wide build-duration percentiles over the window, across projects that
+	// carry the group-by key (so the card matches the rest of the key-scoped page).
+	BuildTimesOverall(ctx context.Context, arg BuildTimesOverallParams) (BuildTimesOverallRow, error)
 	// Flips a run to 'canceled' only if it was still active. Idempotent:
 	// a second call on a terminal run returns no rows so the handler
 	// can answer 409. Returns the row id so the caller can tell the
@@ -1349,6 +1363,10 @@ type Querier interface {
 	// epic). All metrics derive from deployment_revisions + the producing run.
 	// Distinct label keys across all projects — the dashboard's "group by" picker.
 	ListLabelKeys(ctx context.Context) ([]string, error)
+	// Label keys worth grouping by: only those on a project that has had a terminal
+	// run within the window. Keeps an unused label (e.g. "app" with no activity) out
+	// of the "group by" picker, where it would otherwise show an all-zero dashboard.
+	ListLabelKeysWithData(ctx context.Context, windowDays int32) ([]string, error)
 	// For the matched PR materials, resolve each to its pipeline identity + owning
 	// project, so the wiring can partition system_managed (base flow) from repo
 	// pipelines (head flow) and build the authorized set. Read-only, pre-tx.
@@ -1745,10 +1763,13 @@ type Querier interface {
 	// authorised for, so this returns no rows and the whole expiry aborts instead
 	// of cancelling a run under a window that was just reset.
 	MarkApprovalGateExpired(ctx context.Context, arg MarkApprovalGateExpiredParams) (pgtype.UUID, error)
-	// Called after the server reads the storage object and verifies the bytes
-	// match the agent's ArtifactRef. Bumps status + records the server-observed
-	// size/sha. Safe to call once; subsequent calls update nothing (status
-	// already 'ready'), returning 0 rows.
+	// Called after the server reads the storage object and verifies the bytes match
+	// the agent's ArtifactRef. Bumps status + records the server-observed size/sha
+	// AND durably flags the producing run (build-time analytics) — both in ONE
+	// atomic statement so a crash can never leave the artifact ready without the
+	// run flag (a later retry sees 'ready' and skips this call). Safe to call once;
+	// subsequent calls flip nothing and return 0. Returns the number of artifacts
+	// flipped (0 or 1).
 	MarkArtifactReady(ctx context.Context, arg MarkArtifactReadyParams) (int64, error)
 	// Stamp the correlation anchor right after Sync fires. Fenced on claim_id.
 	MarkDeployWatchSyncRequested(ctx context.Context, arg MarkDeployWatchSyncRequestedParams) (int64, error)

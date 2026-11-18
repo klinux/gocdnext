@@ -13,9 +13,25 @@ const (
 )
 
 // LabelKeys handles GET /api/v1/analytics/label-keys — the distinct project
-// label keys available as a "group by" dimension.
+// label keys available as a "group by" dimension. With `window_days` (1..365),
+// it returns only keys on a project that has had a run in that window, so an
+// unused label never clutters the picker with an all-zero dashboard; without it,
+// all keys (the picker's fallback when nothing has activity in the window).
 func (h *Handler) LabelKeys(w http.ResponseWriter, r *http.Request) {
-	keys, err := h.store.LabelKeys(r.Context())
+	var (
+		keys []string
+		err  error
+	)
+	if v := r.URL.Query().Get("window_days"); v != "" {
+		n, convErr := strconv.Atoi(v)
+		if convErr != nil || n < 1 || n > 365 {
+			http.Error(w, "window_days must be 1..365", http.StatusBadRequest)
+			return
+		}
+		keys, err = h.store.LabelKeysWithData(r.Context(), n)
+	} else {
+		keys, err = h.store.LabelKeys(r.Context())
+	}
 	if err != nil {
 		h.log.Error("analytics: label keys", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -158,6 +174,25 @@ func (h *Handler) Reliability(w http.ResponseWriter, r *http.Request) {
 	rep, err := h.store.ReliabilityReport(r.Context(), key, windowDays)
 	if err != nil {
 		h.log.Error("analytics: reliability", "key", key, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeAnalyticsJSON(w, rep)
+}
+
+// BuildTimes handles GET /api/v1/analytics/build-times?key=&window_days=. It
+// returns build-duration percentiles (p50/p85/p95) org-wide and per label-value
+// group. A "build" is a successful, non-PR, non-deploy run that produced a ready
+// artifact — the pipelines that build the artifact/image, isolated from PR noise
+// and from deploy runs. No environment filter (runs aren't environment-scoped).
+func (h *Handler) BuildTimes(w http.ResponseWriter, r *http.Request) {
+	key, windowDays, ok := parseDoraParams(w, r)
+	if !ok {
+		return
+	}
+	rep, err := h.store.BuildTimesReport(r.Context(), key, windowDays)
+	if err != nil {
+		h.log.Error("analytics: build times", "key", key, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
