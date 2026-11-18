@@ -855,7 +855,16 @@ paths:
   /api/v1/analytics/label-keys:
     get:
       tags: [analytics]
-      summary: Distinct project label keys available as a group-by dimension.
+      summary: Project label keys available as a group-by dimension.
+      description: >
+        With window_days, only keys on a project that has had a run in that
+        window (so an unused label is kept out of the picker); without it, all
+        distinct keys (the picker's fallback when nothing has activity).
+      parameters:
+        - in: query
+          name: window_days
+          schema: { type: integer, minimum: 1, maximum: 365 }
+          description: Optional — restrict to keys with activity in this window.
       responses:
         "200":
           description: keys
@@ -865,6 +874,7 @@ paths:
                 type: object
                 properties:
                   keys: { type: array, items: { type: string } }
+        "400": { description: invalid window_days }
   /api/v1/analytics/environments:
     get:
       tags: [analytics]
@@ -961,6 +971,45 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ReliabilityReport" }
+        "400": { description: missing/invalid key or window_days }
+  /api/v1/analytics/build-times:
+    get:
+      tags: [analytics]
+      summary: Build-duration percentiles (p50/p85/p95) over a window.
+      description: >
+        Build-pipeline duration percentiles, org-wide plus per label-value group.
+        A build is a successful, non-PR, non-deploy run that produced a ready
+        artifact — the pipelines that build the artifact/image, isolated from
+        pull-request noise and from deploy runs. Run-based, so no environment
+        filter. Percentiles are computed live from run history.
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: Project label key to group by (e.g. team).
+        - in: query
+          name: window_days
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        "200":
+          description: build-times report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string }
+                  window_days: { type: integer }
+                  overall: { $ref: "#/components/schemas/BuildTimeStats" }
+                  groups:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/BuildTimeStats"
+                        - type: object
+                          properties:
+                            group: { type: string }
         "400": { description: missing/invalid key or window_days }
   /api/v1/analytics/compliance:
     get:
@@ -2276,6 +2325,16 @@ components:
           type: array
           description: worst-failing pipelines (≥5 runs), worst first
           items: { $ref: "#/components/schemas/ReliabilityHotspot" }
+
+    BuildTimeStats:
+      type: object
+      description: Build-duration percentiles (seconds) + the sample size.
+      required: [builds, p50_seconds, p85_seconds, p95_seconds]
+      properties:
+        builds: { type: integer, format: int64 }
+        p50_seconds: { type: number, format: double }
+        p85_seconds: { type: number, format: double }
+        p95_seconds: { type: number, format: double }
 
     FrameworkCoverage:
       type: object

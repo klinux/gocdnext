@@ -209,6 +209,10 @@ func (s *Store) MarkArtifactReady(ctx context.Context, storageKey string, size i
 	if contentType == "" {
 		contentType = "application/gzip" // fail-safe: never write an empty codec
 	}
+	// MarkArtifactReady flips the artifact to ready AND sets the producing run's
+	// durable produced_artifact flag in one atomic statement, so a failure can
+	// never leave the artifact ready without the flag (a retry would then see
+	// 'ready' and skip this call). Returns the number of artifacts flipped.
 	n, err := s.q.MarkArtifactReady(ctx, db.MarkArtifactReadyParams{
 		StorageKey:    storageKey,
 		SizeBytes:     size,

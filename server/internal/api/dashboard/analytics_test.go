@@ -198,6 +198,48 @@ func TestAnalytics_LabelKeys(t *testing.T) {
 	if !json.Valid(rr.Body.Bytes()) || !strings.Contains(rr.Body.String(), `"keys"`) {
 		t.Fatalf("body = %s", rr.Body.String())
 	}
+
+	// window_days out of range → 400.
+	rr = httptest.NewRecorder()
+	h.LabelKeys(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/label-keys?window_days=999", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad window status = %d, want 400", rr.Code)
+	}
+
+	// valid window_days → 200 with the filtered keys array.
+	rr = httptest.NewRecorder()
+	h.LabelKeys(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/label-keys?window_days=30", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"keys"`) {
+		t.Fatalf("windowed keys status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAnalytics_BuildTimes(t *testing.T) {
+	h, _ := newHandler(t)
+
+	// key required.
+	rr := httptest.NewRecorder()
+	h.BuildTimes(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/build-times", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing key status = %d, want 400", rr.Code)
+	}
+
+	// window_days out of range.
+	rr = httptest.NewRecorder()
+	h.BuildTimes(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/build-times?key=team&window_days=0", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad window status = %d, want 400", rr.Code)
+	}
+
+	// Happy path (no data) → 200 with the overall shape, echoing inputs.
+	rr = httptest.NewRecorder()
+	h.BuildTimes(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/build-times?key=team&window_days=30", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if !json.Valid(rr.Body.Bytes()) || !strings.Contains(rr.Body.String(), `"overall"`) {
+		t.Fatalf("body = %s", rr.Body.String())
+	}
 }
 
 func TestAnalytics_Environments(t *testing.T) {

@@ -527,6 +527,7 @@ type Run struct {
 	TerminalEffectsClaimedAt pgtype.Timestamptz
 	// Set once generic terminal run effects have resolved; service cleanup is durable, GitHub is best-effort.
 	TerminalEffectsAt pgtype.Timestamptz
+	ProducedArtifact  bool
 }
 
 type RunGatePass struct {
