@@ -703,13 +703,23 @@ func (q *Queries) ListReadyArtifactsByRunAndJobName(ctx context.Context, arg Lis
 	return items, nil
 }
 
-const markArtifactReady = `-- name: MarkArtifactReady :execrows
-UPDATE artifacts
-SET status = 'ready',
-    size_bytes = $2,
-    content_sha256 = $3,
-    content_type = $4
-WHERE storage_key = $1 AND status = 'pending'
+const markArtifactReady = `-- name: MarkArtifactReady :one
+WITH flip AS (
+    UPDATE artifacts
+    SET status = 'ready',
+        size_bytes = $2,
+        content_sha256 = $3,
+        content_type = $4
+    WHERE storage_key = $1 AND status = 'pending'
+    RETURNING run_id
+), mark_run AS (
+    UPDATE runs
+    SET produced_artifact = true
+    WHERE id IN (SELECT run_id FROM flip)
+      AND produced_artifact = false
+    RETURNING id
+)
+SELECT count(*) FROM flip
 `
 
 type MarkArtifactReadyParams struct {
@@ -719,21 +729,23 @@ type MarkArtifactReadyParams struct {
 	ContentType   string
 }
 
-// Called after the server reads the storage object and verifies the bytes
-// match the agent's ArtifactRef. Bumps status + records the server-observed
-// size/sha. Safe to call once; subsequent calls update nothing (status
-// already 'ready'), returning 0 rows.
+// Called after the server reads the storage object and verifies the bytes match
+// the agent's ArtifactRef. Bumps status + records the server-observed size/sha
+// AND durably flags the producing run (build-time analytics) — both in ONE
+// atomic statement so a crash can never leave the artifact ready without the
+// run flag (a later retry sees 'ready' and skips this call). Safe to call once;
+// subsequent calls flip nothing and return 0. Returns the number of artifacts
+// flipped (0 or 1).
 func (q *Queries) MarkArtifactReady(ctx context.Context, arg MarkArtifactReadyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markArtifactReady,
+	row := q.db.QueryRow(ctx, markArtifactReady,
 		arg.StorageKey,
 		arg.SizeBytes,
 		arg.ContentSha256,
 		arg.ContentType,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const removeArtifactRow = `-- name: RemoveArtifactRow :execrows

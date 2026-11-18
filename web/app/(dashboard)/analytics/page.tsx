@@ -4,6 +4,7 @@ import { LineChart } from "lucide-react";
 
 import { DoraBenchmark } from "@/components/analytics/dora-benchmark";
 import { DoraBottleneck } from "@/components/analytics/dora-bottleneck";
+import { DoraBuildTimes } from "@/components/analytics/dora-build-times";
 import { DoraDeployFrequency } from "@/components/analytics/dora-deploy-frequency";
 import { DoraHeroCards, TierChip } from "@/components/analytics/dora-hero-cards";
 import { DoraLeaderboard } from "@/components/analytics/dora-leaderboard.client";
@@ -15,6 +16,7 @@ import { DoraReliability } from "@/components/analytics/dora-reliability";
 import { DoraToolbar } from "@/components/analytics/dora-toolbar.client";
 import { TIER_LABEL } from "@/lib/dora";
 import {
+  getBuildTimes,
   getComplianceCoverage,
   getSecurityRollup,
   getDoraOverview,
@@ -52,7 +54,9 @@ export default async function AnalyticsPage({
   searchParams: Promise<Search>;
 }) {
   const sp = await searchParams;
-  const keys = await listLabelKeys();
+  // Unfiltered keys decide the empty state (any labels at all?); the picker
+  // itself is filtered to keys-with-data inside Dashboard (needs the window).
+  const allKeys = await listLabelKeys();
 
   return (
     <div className="space-y-6">
@@ -68,21 +72,26 @@ export default async function AnalyticsPage({
         </p>
       </header>
 
-      {keys.length === 0 ? <EmptyState /> : <Dashboard sp={sp} keys={keys} />}
+      {allKeys.length === 0 ? <EmptyState /> : <Dashboard sp={sp} allKeys={allKeys} />}
     </div>
   );
 }
 
-async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
+async function Dashboard({ sp, allKeys }: { sp: Search; allKeys: string[] }) {
   const windowDays = clampWindow(sp.window);
+  // Only offer labels that have activity in the window; if nothing does, fall
+  // back to all labels so the picker is never empty.
+  const withData = await listLabelKeys(windowDays);
+  const keys = withData.length > 0 ? withData : allKeys;
   const activeKey = sp.key && keys.includes(sp.key) ? sp.key : (keys[0] ?? "");
   const environments = await listEnvironments(activeKey);
   const activeEnv = sp.env && environments.includes(sp.env) ? sp.env : "";
-  const [ov, reliability, compliance, security] = await Promise.all([
+  const [ov, reliability, compliance, security, buildTimes] = await Promise.all([
     getDoraOverview(activeKey, windowDays, activeEnv),
     getReliability(activeKey, windowDays),
     getComplianceCoverage(activeKey),
     getSecurityRollup(activeKey),
+    getBuildTimes(activeKey, windowDays),
   ]);
   const tier = orgTier(ov);
 
@@ -147,6 +156,11 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
           groupKey={activeKey}
           envFiltered={activeEnv !== ""}
         />
+      </div>
+
+      <div className="space-y-3.5">
+        <SectionLabel>Build time (p50 · p85 · p95)</SectionLabel>
+        <DoraBuildTimes report={buildTimes} groupKey={activeKey} />
       </div>
 
       <div className="space-y-3.5">

@@ -158,9 +158,12 @@ async function readJSON<T>(path: string): Promise<T> {
 }
 
 // listLabelKeys returns the distinct label keys available as a group-by
-// dimension (team, tier, domain, …).
-export async function listLabelKeys(): Promise<string[]> {
-  const r = await readJSON<{ keys: string[] }>("/api/v1/analytics/label-keys");
+// dimension (team, tier, domain, …). With windowDays, only keys on a project
+// that has had a run in that window — so an unused label (no activity) is kept
+// out of the picker where it would otherwise show an all-zero dashboard.
+export async function listLabelKeys(windowDays?: number): Promise<string[]> {
+  const q = windowDays ? `?window_days=${windowDays}` : "";
+  const r = await readJSON<{ keys: string[] }>(`/api/v1/analytics/label-keys${q}`);
   return r.keys ?? [];
 }
 
@@ -203,6 +206,33 @@ export async function getReliability(
 ): Promise<ReliabilityReport> {
   return readJSON<ReliabilityReport>(
     `/api/v1/analytics/reliability?key=${encodeURIComponent(key)}&window_days=${windowDays}`,
+  );
+}
+
+// Build-duration percentiles. A "build" is a successful, non-PR, non-deploy run
+// that produced a ready artifact — the pipelines that build the artifact/image.
+export type BuildTimeStats = {
+  builds: number;
+  p50_seconds: number;
+  p85_seconds: number;
+  p95_seconds: number;
+};
+export type BuildTimeGroup = BuildTimeStats & { group: string };
+export type BuildTimesReport = {
+  key: string;
+  window_days: number;
+  overall: BuildTimeStats;
+  groups: BuildTimeGroup[];
+};
+
+// getBuildTimes reads build-duration percentiles (org-wide + per group) over the
+// window. Run-based, so no environment filter.
+export async function getBuildTimes(
+  key: string,
+  windowDays: number,
+): Promise<BuildTimesReport> {
+  return readJSON<BuildTimesReport>(
+    `/api/v1/analytics/build-times?key=${encodeURIComponent(key)}&window_days=${windowDays}`,
   );
 }
 

@@ -17,17 +17,30 @@ WHERE artifacts.status = 'pending'
 RETURNING id, run_id, job_run_id, pipeline_id, project_id,
           path, storage_key, status, expires_at, created_at;
 
--- name: MarkArtifactReady :execrows
--- Called after the server reads the storage object and verifies the bytes
--- match the agent's ArtifactRef. Bumps status + records the server-observed
--- size/sha. Safe to call once; subsequent calls update nothing (status
--- already 'ready'), returning 0 rows.
-UPDATE artifacts
-SET status = 'ready',
-    size_bytes = $2,
-    content_sha256 = $3,
-    content_type = $4
-WHERE storage_key = $1 AND status = 'pending';
+-- name: MarkArtifactReady :one
+-- Called after the server reads the storage object and verifies the bytes match
+-- the agent's ArtifactRef. Bumps status + records the server-observed size/sha
+-- AND durably flags the producing run (build-time analytics) — both in ONE
+-- atomic statement so a crash can never leave the artifact ready without the
+-- run flag (a later retry sees 'ready' and skips this call). Safe to call once;
+-- subsequent calls flip nothing and return 0. Returns the number of artifacts
+-- flipped (0 or 1).
+WITH flip AS (
+    UPDATE artifacts
+    SET status = 'ready',
+        size_bytes = $2,
+        content_sha256 = $3,
+        content_type = $4
+    WHERE storage_key = $1 AND status = 'pending'
+    RETURNING run_id
+), mark_run AS (
+    UPDATE runs
+    SET produced_artifact = true
+    WHERE id IN (SELECT run_id FROM flip)
+      AND produced_artifact = false
+    RETURNING id
+)
+SELECT count(*) FROM flip;
 
 -- name: ListArtifactsByJobRun :many
 -- Used by server-side JobResult reconciliation to match ArtifactRef
