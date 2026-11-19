@@ -8,6 +8,31 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.132.1 — 2026-11-19
+
+### Fixed
+
+- **Web: users no longer see menus their role can't use, and admin pages no
+  longer crash for non-admins.** The sidebar and the ⌘K palette showed the
+  whole Admin group (Settings, Users, Groups, Profiles, Clusters, Compliance,
+  Audit, Secrets, Service accounts) to every role, and opening one as a viewer
+  or maintainer hit an unhandled server error, since every `/admin/*` and
+  `/settings/*` read is admin-only. The Admin group is now shown only to admins
+  and the project **Schedules** tab only to maintainers and admins. Opening one
+  of those pages by URL, bookmark or a stale tab redirects (to `/`, or back to
+  the project for Schedules) before any privileged read. When the auth probe
+  is unreachable or returns a malformed answer, the dashboard now renders with
+  privileged nav hidden instead of returning a 500, and only a `401` from
+  `/api/v1/me` sends the user to `/login` (a `5xx` no longer risks a login
+  loop). The server's role checks are unchanged and remain the enforcement
+  point. (#414)
+
+### Security
+
+- **Web: Next.js 16.4.2 → 16.4.5** (and `eslint-config-next`), picking up the
+  [November 2026 Next.js security release](https://nextjs.org/blog/november-2026-security-release).
+  (#415)
+
 ## v0.132.0 — 2026-11-18
 
 ### Added
