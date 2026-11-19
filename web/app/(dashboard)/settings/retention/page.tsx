@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/card";
 import { StatusPill } from "@/components/shared/status-pill";
 import { getRetentionSnapshot } from "@/server/queries/admin";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Settings — Retention",
@@ -32,6 +33,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function RetentionPage() {
+  await requireAdmin();
   const snap = await getRetentionSnapshot();
 
   if (!snap.enabled) {

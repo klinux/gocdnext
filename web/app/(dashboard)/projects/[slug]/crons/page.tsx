@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
-import type { Metadata } from "next";
+import type { Metadata, Route } from "next";
 
+import { requireMaintainer } from "@/server/queries/access";
 import { ProjectCronsEditor } from "@/components/projects/project-crons-editor.client";
 import {
   GocdnextAPIError,
@@ -27,6 +28,9 @@ export default async function ProjectCronsPage({
   params: Promise<Params>;
 }) {
   const { slug } = await params;
+  // The schedules read is maintainer-gated; the tab is hidden from viewers and
+  // this sends a direct hit back to the project instead of a 403 crash.
+  await requireMaintainer(`/projects/${encodeURIComponent(slug)}` as Route);
 
   let detail;
   try {

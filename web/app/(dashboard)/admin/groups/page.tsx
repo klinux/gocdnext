@@ -7,6 +7,7 @@ import {
   listAdminGroupMembers,
   listAdminUsers,
 } from "@/server/queries/admin";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Groups — gocdnext",
@@ -19,6 +20,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function GroupsPage() {
+  await requireAdmin();
   const [{ groups }, { users }] = await Promise.all([
     listAdminGroups(),
     listAdminUsers(),

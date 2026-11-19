@@ -21,6 +21,7 @@ import { getAdminHealth } from "@/server/queries/admin";
 import { cn } from "@/lib/utils";
 import type { StatusTone } from "@/lib/status";
 import type { AdminHealth } from "@/types/api";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Settings — Health",
@@ -29,6 +30,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function HealthPage() {
+  await requireAdmin();
   let health: AdminHealth | null = null;
   let error: string | null = null;
   try {

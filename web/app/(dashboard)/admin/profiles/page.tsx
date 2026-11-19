@@ -6,6 +6,7 @@ import {
   listAdminRunnerProfiles,
   listGlobalSecrets,
 } from "@/server/queries/admin";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Runner profiles — gocdnext",
@@ -17,6 +18,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function RunnerProfilesPage() {
+  await requireAdmin();
   // listGlobalSecrets fails open: a 503 (cipher unset) or any other
   // hiccup just means the secrets picker has nothing to offer; the
   // editor still works for literal values. The error path is rare

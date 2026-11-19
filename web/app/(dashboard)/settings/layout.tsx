@@ -3,12 +3,21 @@ import type { ReactNode } from "react";
 import { Settings as SettingsIcon } from "lucide-react";
 
 import { SettingsTabs } from "@/components/settings/settings-tabs.client";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Settings — gocdnext",
 };
 
-export default function SettingsLayout({ children }: { children: ReactNode }) {
+export default async function SettingsLayout({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  // Every /settings/* read is admin-only server-side; the sidebar hides the
+  // link from non-admins and this redirects a direct hit. Not the barrier:
+  // each page also calls requireAdmin() first (see privileged-pages.test.ts).
+  await requireAdmin();
   // Dashboard layout already pads the content area — we'd be
   // doubling horizontal padding by re-applying it here, which
   // is what made /settings look narrower than every other page.
