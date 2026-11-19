@@ -14,7 +14,7 @@ import { CommandPalette } from "@/components/layout/command-palette.client";
 import { ThemeToggle } from "@/components/layout/theme-toggle.client";
 import { QueryClientProvider } from "@/components/providers/query-client-provider.client";
 import { Toaster } from "@/components/ui/sonner";
-import { resolveAuthState } from "@/server/queries/auth";
+import { isAdmin, resolveAuthState } from "@/server/queries/auth";
 
 type Props = { children: ReactNode };
 
@@ -29,6 +29,7 @@ export default async function DashboardLayout({ children }: Props) {
   }
 
   const user = auth.mode === "authenticated" ? auth.user : undefined;
+  const showAdmin = isAdmin(auth);
 
   // shadcn's <Sidebar> writes "sidebar_state" cookie on every toggle
   // (components/ui/sidebar.tsx). Read it SSR-side so the rendered
@@ -44,14 +45,14 @@ export default async function DashboardLayout({ children }: Props) {
   return (
     <QueryClientProvider>
       <SidebarProvider defaultOpen={defaultSidebarOpen}>
-        <AppSidebar user={user} />
+        <AppSidebar user={user} showAdmin={showAdmin} />
         <SidebarInset>
           <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
             <SidebarTrigger className="-ml-1" />
             <Separator orientation="vertical" className="mr-2 h-4" />
             <RouteBreadcrumbs />
             <div className="ml-auto flex items-center gap-2">
-              <CommandPalette />
+              <CommandPalette showAdmin={showAdmin} />
               <ThemeToggle />
             </div>
           </header>

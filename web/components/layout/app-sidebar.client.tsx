@@ -41,6 +41,10 @@ import type { CurrentUser } from "@/types/api";
 
 type Props = {
   user?: CurrentUser;
+  // showAdmin gates the Admin group. Every /admin/* and /settings/* read is
+  // admin-only server-side, so showing the links to anyone else only leads
+  // into a 403. Defaults to hidden (fail closed).
+  showAdmin?: boolean;
 };
 
 type NavItem = {
@@ -91,7 +95,7 @@ const adminNav: NavItem[] = [
   { label: "Service accounts", href: "/admin/service-accounts", icon: Bot },
 ];
 
-export function AppSidebar({ user }: Props) {
+export function AppSidebar({ user, showAdmin = false }: Props) {
   const pathname = usePathname();
 
   return (
@@ -124,20 +128,22 @@ export function AppSidebar({ user }: Props) {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>Admin</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {adminNav.map((item) => (
-                <SidebarNavItem
-                  key={item.label}
-                  item={item}
-                  active={isActive(pathname, item)}
-                />
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {showAdmin ? (
+          <SidebarGroup>
+            <SidebarGroupLabel>Admin</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {adminNav.map((item) => (
+                  <SidebarNavItem
+                    key={item.label}
+                    item={item}
+                    active={isActive(pathname, item)}
+                  />
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ) : null}
       </SidebarContent>
 
       <SidebarFooter>

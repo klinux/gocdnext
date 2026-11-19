@@ -4,6 +4,7 @@ import { Cloud } from "lucide-react";
 import { ClustersManager } from "@/components/clusters/clusters-manager.client";
 import { listAdminClusters } from "@/server/queries/admin";
 import { listProjects } from "@/server/queries/projects";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Kubernetes clusters — gocdnext",
@@ -15,6 +16,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function ClustersPage() {
+  await requireAdmin();
   // listProjects fails open: the allowed-projects picker is a
   // convenience, not a gate (the server is authoritative on the
   // allow-list). A hiccup here just means the picker shows raw IDs

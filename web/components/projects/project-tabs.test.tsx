@@ -29,6 +29,19 @@ describe("ProjectTabs", () => {
     expect(tab.getAttribute("href")).toBe("/projects/acme/rollouts");
   });
 
+  // The schedules read is maintainer-gated, so a viewer clicking the tab would
+  // only hit a 403 — hide it unless the caller can manage the project.
+  it("hides Schedules by default", () => {
+    render(<ProjectTabs slug="acme" />);
+    expect(screen.queryByRole("link", { name: "Schedules" })).toBeNull();
+  });
+
+  it("shows Schedules for a maintainer", () => {
+    render(<ProjectTabs slug="acme" showSchedules />);
+    const tab = screen.getByRole("link", { name: "Schedules" });
+    expect(tab.getAttribute("href")).toBe("/projects/acme/crons");
+  });
+
   it("marks the active section with aria-current", () => {
     render(<ProjectTabs slug="acme" />);
     expect(
