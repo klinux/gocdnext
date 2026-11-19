@@ -15,6 +15,7 @@ import {
   listSCMCredentials,
   listVCSIntegrations,
 } from "@/server/queries/admin";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Settings — Integrations",
@@ -23,6 +24,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function IntegrationsPage() {
+  await requireAdmin();
   const [summary, vcs, creds] = await Promise.all([
     getIntegrationsSummary(),
     listVCSIntegrations(),

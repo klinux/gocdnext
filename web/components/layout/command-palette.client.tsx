@@ -33,11 +33,17 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 
+type Props = {
+  // showAdmin gates Settings + the Admin group — same rule as the sidebar
+  // (admin-only server-side). Defaults to hidden (fail closed).
+  showAdmin?: boolean;
+};
+
 // CommandPalette: always-mounted dialog bound to ⌘K / Ctrl+K. The
 // trigger button on the topbar doubles as a visual hint. Keeping
 // the state here means the shortcut works globally without a
 // context or zustand store.
-export function CommandPalette() {
+export function CommandPalette({ showAdmin = false }: Props) {
   const router = useRouter();
   const { setTheme } = useTheme();
   const [open, setOpen] = useState(false);
@@ -99,25 +105,27 @@ export function CommandPalette() {
               <BookOpen className="size-4" />
               Docs
             </CommandItem>
-            <CommandItem onSelect={() => go("/settings" as Route)}>
-              <Settings className="size-4" />
-              Settings
-            </CommandItem>
           </CommandGroup>
-          <CommandGroup heading="Admin">
-            <CommandItem onSelect={() => go("/admin/users" as Route)}>
-              <Users className="size-4" />
-              Users
-            </CommandItem>
-            <CommandItem onSelect={() => go("/admin/audit" as Route)}>
-              <ClipboardList className="size-4" />
-              Audit log
-            </CommandItem>
-            <CommandItem onSelect={() => go("/admin/secrets" as Route)}>
-              <KeyRound className="size-4" />
-              Global secrets
-            </CommandItem>
-          </CommandGroup>
+          {showAdmin ? (
+            <CommandGroup heading="Admin">
+              <CommandItem onSelect={() => go("/settings" as Route)}>
+                <Settings className="size-4" />
+                Settings
+              </CommandItem>
+              <CommandItem onSelect={() => go("/admin/users" as Route)}>
+                <Users className="size-4" />
+                Users
+              </CommandItem>
+              <CommandItem onSelect={() => go("/admin/audit" as Route)}>
+                <ClipboardList className="size-4" />
+                Audit log
+              </CommandItem>
+              <CommandItem onSelect={() => go("/admin/secrets" as Route)}>
+                <KeyRound className="size-4" />
+                Global secrets
+              </CommandItem>
+            </CommandGroup>
+          ) : null}
           <CommandSeparator />
           <CommandGroup heading="Theme">
             <CommandItem

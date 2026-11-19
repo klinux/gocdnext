@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { ProjectActionsMenu } from "@/components/projects/project-actions-menu.client";
 import { ProjectTabs } from "@/components/projects/project-tabs.client";
 import { rolloutPicksFromTargets } from "@/lib/rollouts";
+import { isMaintainer, resolveAuthState } from "@/server/queries/auth";
 import {
   GocdnextAPIError,
   getProjectDetail,
@@ -34,18 +35,23 @@ export default async function ProjectLayout({
   // maintainer-gated, so a viewer's 403 collapses to "no tab" — which is
   // right, since the rollouts read is maintainer-gated too.
   let showRollouts = false;
+  let showSchedules = false;
   try {
     // runs=1 keeps the layout's fetch lean — it only needs
     // project metadata + scm_source + counts for the actions
     // menu. Sub-pages that need the richer runs/pipelines data
     // re-fetch at their own depth.
-    const [d, targets] = await Promise.all([
+    const [d, targets, auth] = await Promise.all([
       getProjectDetail(slug, 1),
       listDeployTargets(slug)
         .then((r) => r.deploy_targets)
         .catch(() => []),
+      // Best-effort like the targets read: a failed probe hides the
+      // maintainer-only Schedules tab (fail closed) instead of erroring.
+      resolveAuthState().catch(() => ({ mode: "unknown" }) as const),
     ]);
     detail = d;
+    showSchedules = isMaintainer(auth);
     showRollouts = rolloutPicksFromTargets(targets).length > 0;
   } catch (err) {
     if (err instanceof GocdnextAPIError && err.status === 404) notFound();
@@ -75,7 +81,11 @@ export default async function ProjectLayout({
         </div>
       </header>
 
-      <ProjectTabs slug={slug} showRollouts={showRollouts} />
+      <ProjectTabs
+        slug={slug}
+        showRollouts={showRollouts}
+        showSchedules={showSchedules}
+      />
 
       <div>{children}</div>
     </section>

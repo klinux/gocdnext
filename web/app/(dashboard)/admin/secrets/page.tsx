@@ -5,6 +5,7 @@ import { GlobalSecretsTable } from "@/components/secrets/global-secrets-table.cl
 import { SecretDialog } from "@/components/secrets/secret-dialog.client";
 import { Pagination } from "@/components/shared/pagination";
 import { listGlobalSecrets } from "@/server/queries/admin";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = { title: "Global secrets — gocdnext" };
 
@@ -22,6 +23,7 @@ export default async function GlobalSecretsPage({
 }: {
   searchParams: SearchParams;
 }) {
+  await requireAdmin();
   const { offset: offsetParam } = await searchParams;
   const offset = offsetParam ? Math.max(0, Number.parseInt(offsetParam, 10)) : 0;
 

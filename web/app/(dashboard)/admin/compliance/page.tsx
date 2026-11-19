@@ -8,6 +8,7 @@ import {
   listCompliancePolicies,
 } from "@/server/queries/admin";
 import { listProjects } from "@/server/queries/projects";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Compliance — gocdnext",
@@ -18,6 +19,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function CompliancePage() {
+  await requireAdmin();
   const [frameworks, policyList, projectList] = await Promise.all([
     listComplianceFrameworks(),
     listCompliancePolicies(),

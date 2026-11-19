@@ -6,6 +6,7 @@ import {
   listSATokens,
   listServiceAccounts,
 } from "@/server/queries/api-tokens";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Service accounts — gocdnext",
@@ -14,6 +15,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function ServiceAccountsPage() {
+  await requireAdmin();
   const accounts = await listServiceAccounts();
   // Pre-fetch tokens for every SA so the manager has them on first
   // paint. N+1 over a list of <50 SAs is fine; switch to a join

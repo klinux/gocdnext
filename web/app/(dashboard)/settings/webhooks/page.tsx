@@ -16,6 +16,7 @@ import { listWebhookDeliveries } from "@/server/queries/admin";
 import { cn } from "@/lib/utils";
 import type { StatusTone } from "@/lib/status";
 import type { WebhookDeliverySummary } from "@/types/api";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Settings — Webhooks",
@@ -50,6 +51,7 @@ type Props = {
 };
 
 export default async function WebhooksPage({ searchParams }: Props) {
+  await requireAdmin();
   const sp = await searchParams;
   const provider = strParam(sp.provider);
   const status = strParam(sp.status);

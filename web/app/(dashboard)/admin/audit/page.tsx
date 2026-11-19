@@ -18,6 +18,7 @@ import { EntityChip, type EntityKind } from "@/components/shared/entity-chip";
 import { Pagination } from "@/components/shared/pagination";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { listAuditEvents } from "@/server/queries/admin";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Audit log — gocdnext",
@@ -41,6 +42,7 @@ export default async function AuditPage({
 }: {
   searchParams: SearchParams;
 }) {
+  await requireAdmin();
   const params = await searchParams;
   const offset = params.offset
     ? Math.max(0, Number.parseInt(params.offset, 10))

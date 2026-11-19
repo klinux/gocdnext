@@ -5,6 +5,7 @@ import { NewUserDialog } from "@/components/users/new-user-dialog.client";
 import { UsersTable } from "@/components/users/users-table.client";
 import { listAdminUsers } from "@/server/queries/admin";
 import { resolveAuthState } from "@/server/queries/auth";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Users — gocdnext",
@@ -16,6 +17,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function UsersPage() {
+  await requireAdmin();
   const [auth, data] = await Promise.all([
     resolveAuthState(),
     listAdminUsers(),
