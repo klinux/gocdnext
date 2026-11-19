@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { AuthProvidersAdminView } from "@/components/settings/auth-providers.client";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { listConfiguredAuthProviders } from "@/server/queries/admin";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Settings — Auth",
@@ -11,6 +12,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function AuthSettingsPage() {
+  await requireAdmin();
   let payload;
   try {
     payload = await listConfiguredAuthProviders();

@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/card";
 import { OIDCKeysManager } from "@/components/settings/oidc-keys.client";
 import { listOIDCKeys } from "@/server/queries/admin";
+import { requireAdmin } from "@/server/queries/access";
 
 export const metadata: Metadata = {
   title: "Settings — OIDC issuer",
@@ -33,6 +34,7 @@ const wellKnown = [
 ];
 
 export default async function OIDCSettingsPage() {
+  await requireAdmin();
   const { keys } = await listOIDCKeys();
 
   return (

@@ -110,6 +110,9 @@ type Props = {
   // false for a viewer (the rollouts read is maintainer-gated, so they could
   // not load it anyway). The route stays reachable by URL.
   showRollouts?: boolean;
+  // showSchedules gates the Schedules tab: the crons read is maintainer-gated,
+  // so a viewer would only hit a 403. Defaults to hidden (fail closed).
+  showSchedules?: boolean;
 };
 
 // ProjectTabs is the top-level nav inside a project — a row of Next
@@ -117,9 +120,17 @@ type Props = {
 // active section is decided by pathname matching. Styled as a segmented
 // row: transparent track, the active tab takes the brand teal tint —
 // the shared pill language (see lib/tab-pill for the shadcn Tabs variants).
-export function ProjectTabs({ slug, showRollouts = false }: Props) {
+export function ProjectTabs({
+  slug,
+  showRollouts = false,
+  showSchedules = false,
+}: Props) {
   const pathname = usePathname();
-  const visible = tabs.filter((t) => t.label !== "Rollouts" || showRollouts);
+  const visible = tabs.filter(
+    (t) =>
+      (t.label !== "Rollouts" || showRollouts) &&
+      (t.label !== "Schedules" || showSchedules),
+  );
 
   return (
     <nav aria-label="Project sections" className="flex flex-wrap gap-1">
