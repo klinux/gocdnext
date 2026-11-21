@@ -32,7 +32,7 @@
 #
 # golangci-lint v2 also changes the `.golangci.yml` schema (needs
 # `version: "2"`) — see plugin.yaml.
-FROM golang:1.27.3-alpine
+FROM golang:1.27.4-alpine
 
 # git: the entrypoint's dubious-ownership workaround + VCS-aware lint. ca-certs:
 # module fetches over TLS. gcc + musl-dev: the C toolchain golangci-lint needs to
