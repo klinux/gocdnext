@@ -14,7 +14,7 @@ func TestImageRepoBasename(t *testing.T) {
 		{"ghcr.io/klinux/gocdnext-plugin-gradle:v1", "gocdnext-plugin-gradle"},
 		{"ghcr.io/klinux/gocdnext-plugin-gradle", "gocdnext-plugin-gradle"},
 		{"host:5000/klinux/gocdnext-plugin-gradle:v1", "gocdnext-plugin-gradle"},
-		{"img.cora.tools/gocdnext-plugin-gradle:latest", "gocdnext-plugin-gradle"},
+		{"registry.example.com/gocdnext-plugin-gradle:latest", "gocdnext-plugin-gradle"},
 		// Look-alikes must NOT normalise to the real repo.
 		{"ghcr.io/evil/gocdnext-plugin-gradle-backdoor:v1", "gocdnext-plugin-gradle-backdoor"},
 		{"gocdnext-plugin-gradlex", "gocdnext-plugin-gradlex"},

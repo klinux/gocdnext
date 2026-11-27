@@ -205,10 +205,10 @@ func TestDispatchRun_JobWithoutProfileInheritsDefaultScheduling(t *testing.T) {
 		Name:   "default",
 		Engine: "kubernetes",
 		NodeSelector: map[string]string{
-			"cloud.google.com/gke-nodepool": "node-pool-spot-ci",
+			"cloud.google.com/gke-nodepool": "ci-pool",
 		},
 		Tolerations: []store.Toleration{
-			{Key: "team", Operator: "Equal", Value: "spot-ci", Effect: "NoSchedule"},
+			{Key: "team", Operator: "Equal", Value: "ci", Effect: "NoSchedule"},
 			{Key: "spot", Operator: "Exists", Effect: "NoExecute", TolerationSeconds: &tolSeconds},
 		},
 	}); err != nil {
@@ -231,7 +231,7 @@ func TestDispatchRun_JobWithoutProfileInheritsDefaultScheduling(t *testing.T) {
 		if assign == nil {
 			t.Fatalf("message is not JobAssignment: %+v", msg)
 		}
-		if assign.NodeSelector["cloud.google.com/gke-nodepool"] != "node-pool-spot-ci" {
+		if assign.NodeSelector["cloud.google.com/gke-nodepool"] != "ci-pool" {
 			t.Errorf("NodeSelector not inherited from default: %+v", assign.NodeSelector)
 		}
 		if len(assign.Tolerations) != 2 {

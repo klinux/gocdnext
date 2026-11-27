@@ -548,13 +548,13 @@ func TestUploadFromPod_DirectPath(t *testing.T) {
 
 	exec := &fakeArtifactExec{hasCurl: true, directSummary: "GOCDNEXTUP " + sha + " 6769705142\n"}
 	stub := &stubAgentClient{tickets: []*gocdnextv1.ArtifactUploadTicket{
-		{Path: "facetec-server.zip", StorageKey: "k1", PutUrl: srv.URL, ExpiresAt: timestamppb.Now()},
+		{Path: "app-bundle.zip", StorageKey: "k1", PutUrl: srv.URL, ExpiresAt: timestamppb.Now()},
 	}}
 	u := NewArtifactUploader(stub, "sess", srv.Client())
 	u.UseDirectUpload("true")
 
 	refs, err := u.UploadFromPod(context.Background(), exec, "pod", "housekeeper", workDir, "r", "j",
-		[]string{"facetec-server.zip"})
+		[]string{"app-bundle.zip"})
 	if err != nil {
 		t.Fatalf("UploadFromPod: %v", err)
 	}

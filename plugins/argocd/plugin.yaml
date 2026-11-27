@@ -156,7 +156,7 @@ examples:
             server: ${{ ARGOCD_SERVER }}
             auth_token: ${{ ARGOCD_TOKEN }}
             grpc_web: "true"
-            command: app set katools-production
+            command: app set my-app-production
             plugin_env: "HELM_ARGS=--set global.image.tag=1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA} -f ../../platform/configs/values-prod.yaml"
           deploy:
             environment: production

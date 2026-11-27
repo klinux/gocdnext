@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mock-PATH test for the go plugin entrypoint. The load-bearing case
-# (issue surfaced by backoffice-shell PR #35): the official golang image
+# (issue surfaced by a real project): the official golang image
 # pins GOTOOLCHAIN=local, so a project whose go.mod requires a newer Go
 # than the image fails hard. The plugin must default GOTOOLCHAIN=auto so
 # the toolchain is honored (downloaded into $GOMODCACHE, which the cache:

@@ -33,8 +33,8 @@ case "$url" in
         cat <<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
 <metadata>
-  <groupId>br.com.cora.keycloak</groupId>
-  <artifactId>cora-condition-flow</artifactId>
+  <groupId>com.example.libs</groupId>
+  <artifactId>sample-lib</artifactId>
   <versioning>
     <latest>1.4.0</latest>
     <release>1.3.0</release>
@@ -60,8 +60,8 @@ common_env=(
     PLUGIN_ACTION=download
     PLUGIN_URL=https://nexus.test
     PLUGIN_REPOSITORY=maven-repository
-    PLUGIN_GROUP_ID=br.com.cora.keycloak
-    PLUGIN_ARTIFACT_ID=cora-condition-flow
+    PLUGIN_GROUP_ID=com.example.libs
+    PLUGIN_ARTIFACT_ID=sample-lib
     PLUGIN_USERNAME=gocd-nexus
     PLUGIN_PASSWORD=secret
 )
@@ -75,13 +75,13 @@ out=$(cd "$wd" && env "${common_env[@]}" PLUGIN_VERSION=LATEST PLUGIN_DEST=libs 
     TMP_LOG="$log" PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh" 2>&1)
 rc=$?
 [ "$rc" = 0 ] && pass "exit 0" || { fail "exit $rc — $out"; }
-grep -q '/repository/maven-repository/br/com/cora/keycloak/cora-condition-flow/maven-metadata.xml$' "$log" \
+grep -q '/repository/maven-repository/com/example/libs/sample-lib/maven-metadata.xml$' "$log" \
     && pass "read maven-metadata.xml over /repository/" || fail "metadata URL not requested; log: $(cat "$log")"
 # <release> is 1.3.0 (NOT <latest> 1.4.0, which could be a snapshot)
-grep -q '/repository/maven-repository/br/com/cora/keycloak/cora-condition-flow/1.3.0/cora-condition-flow-1.3.0.jar$' "$log" \
+grep -q '/repository/maven-repository/com/example/libs/sample-lib/1.3.0/sample-lib-1.3.0.jar$' "$log" \
     && pass "downloaded the <release> version (1.3.0)" || fail "wrong download URL; log: $(cat "$log")"
 grep -q '/service/rest/' "$log" && fail "search API was hit — must not be" || pass "no /service/rest call"
-[ -s "$wd/libs/cora-condition-flow-1.3.0.jar" ] && pass "jar written to dest" || fail "jar missing in dest"
+[ -s "$wd/libs/sample-lib-1.3.0.jar" ] && pass "jar written to dest" || fail "jar missing in dest"
 
 echo "== 2. explicit version skips metadata, downloads directly =="
 log="$TMP/log2"; : >"$log"
@@ -89,7 +89,7 @@ wd="$TMP/wd2"; mkdir -p "$wd"
 ( cd "$wd" && env "${common_env[@]}" PLUGIN_VERSION=1.2.0 PLUGIN_DEST=libs \
     TMP_LOG="$log" PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh" ) >/dev/null 2>&1
 grep -q 'maven-metadata.xml' "$log" && fail "pinned version must not read metadata" || pass "no metadata fetch for pinned version"
-grep -q '/repository/maven-repository/br/com/cora/keycloak/cora-condition-flow/1.2.0/cora-condition-flow-1.2.0.jar$' "$log" \
+grep -q '/repository/maven-repository/com/example/libs/sample-lib/1.2.0/sample-lib-1.2.0.jar$' "$log" \
     && pass "downloaded the pinned version directly" || fail "wrong pinned URL; log: $(cat "$log")"
 
 if [ "$fails" = 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; exit 1; fi

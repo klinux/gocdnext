@@ -32,9 +32,9 @@ pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; fails=1; }
 
 base_env=(
-    PLUGIN_IMAGE=img.cora.tools/public/keycloak
-    PLUGIN_TAGS=17.0.1.5-cora
-    PLUGIN_CONTEXT=platform/base-images
+    PLUGIN_IMAGE=registry.example.com/org/app
+    PLUGIN_TAGS=1.2.3
+    PLUGIN_CONTEXT=docker
     PLUGIN_PUSH=true
 )
 
